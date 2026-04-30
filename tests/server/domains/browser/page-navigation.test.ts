@@ -1,9 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PageNavigationHandlers } from '@server/domains/browser/handlers/page-navigation';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('PageNavigationHandlers', () => {
   beforeEach(() => {
@@ -34,7 +32,9 @@ describe('PageNavigationHandlers', () => {
       getCamoufoxPage: async () => null,
     });
 
-    const body = parseJson(await handlers.handlePageNavigate({ url: 'https://target.example' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handlePageNavigate({ url: 'https://target.example' }),
+    );
 
     expect(body.success).toBe(true);
     expect(body.url).toBe('https://target.example');
@@ -61,7 +61,9 @@ describe('PageNavigationHandlers', () => {
       getCamoufoxPage: async () => page,
     });
 
-    const body = parseJson(await handlers.handlePageNavigate({ url: 'https://target.example' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handlePageNavigate({ url: 'https://target.example' }),
+    );
 
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');

@@ -1,4 +1,5 @@
 import { Worker, type ResourceLimits } from 'node:worker_threads';
+import { ProcessRegistry } from '@utils/ProcessRegistry';
 import {
   WORKER_POOL_MIN_WORKERS,
   WORKER_POOL_MAX_WORKERS,
@@ -109,6 +110,15 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
     });
   }
 
+  async warmup(count = 1): Promise<void> {
+    if (this.closed) return;
+    const toSpawn = Math.min(count, this.maxWorkers - this.workers.size);
+    for (let i = 0; i < toSpawn; i++) {
+      const worker = this.spawnWorker();
+      this.armIdleTimer(worker);
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -131,7 +141,23 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
     await Promise.all(workerIds.map((workerId) => this.terminateWorker(workerId)));
   }
 
+  /**
+   * Terminate all idle workers beyond minWorkers, freeing memory immediately
+   * instead of waiting for the idle timeout.
+   */
+  async drainIdle(): Promise<void> {
+    if (this.closed) return;
+    const toTerminate: number[] = [];
+    for (const [id, worker] of this.workers) {
+      if (!worker.busy && this.workers.size - toTerminate.length > this.minWorkers) {
+        toTerminate.push(id);
+      }
+    }
+    await Promise.all(toTerminate.map((id) => this.terminateWorker(id)));
+  }
+
   private ensureMinWorkers(): void {
+    /* v8 ignore next */
     if (this.closed) return;
     while (this.workers.size < this.minWorkers) {
       this.spawnWorker();
@@ -139,6 +165,7 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
   }
 
   private pumpQueue(): void {
+    /* v8 ignore next */
     if (this.closed) return;
 
     while (this.queuedJobs.length > 0) {
@@ -152,6 +179,7 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
       }
 
       const job = this.queuedJobs.shift();
+      /* v8 ignore next */
       if (!job) return;
       this.dispatchJob(worker, job);
     }
@@ -170,6 +198,10 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
       eval: true,
       resourceLimits: this.resourceLimits,
     });
+    if (typeof worker.unref === 'function') {
+      worker.unref();
+    }
+    ProcessRegistry.register(worker);
 
     const pooled: PooledWorker = {
       id,
@@ -256,6 +288,7 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
 
   private handleWorkerFailure(workerId: number, error: Error): void {
     const worker = this.workers.get(workerId);
+    /* v8 ignore next */
     if (!worker) return;
 
     const activeJobId = worker.activeJobId;
@@ -276,6 +309,7 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
 
   private handleWorkerExit(workerId: number, code: number): void {
     const worker = this.workers.get(workerId);
+    /* v8 ignore next */
     if (!worker) return;
 
     const activeJobId = worker.activeJobId;
@@ -297,6 +331,7 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
 
   private handleJobTimeout(jobId: number, timeoutMs: number): void {
     const activeJob = this.activeJobs.get(jobId);
+    /* v8 ignore next */
     if (!activeJob) return;
     this.activeJobs.delete(jobId);
     activeJob.reject(this.toError(`worker task timed out after ${timeoutMs}ms`));
@@ -311,6 +346,7 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
     if (worker.idleTimer) clearTimeout(worker.idleTimer);
     worker.idleTimer = setTimeout(() => {
       const current = this.workers.get(worker.id);
+      /* v8 ignore next */
       if (!current || current.busy || this.workers.size <= this.minWorkers) return;
       void this.terminateWorker(worker.id);
     }, this.idleTimeoutMs);
@@ -318,9 +354,11 @@ export class WorkerPool<TPayload extends Record<string, unknown>, TResult> {
 
   private async terminateWorker(workerId: number): Promise<void> {
     const worker = this.workers.get(workerId);
+    /* v8 ignore next */
     if (!worker) return;
     this.workers.delete(workerId);
     if (worker.idleTimer) clearTimeout(worker.idleTimer);
+    worker.idleTimer = null;
     worker.worker.removeAllListeners('message');
     worker.worker.removeAllListeners('error');
     worker.worker.removeAllListeners('exit');

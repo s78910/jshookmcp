@@ -7,7 +7,7 @@ type ExceptionDebuggerManager = Pick<DebuggerManager, 'setPauseOnExceptions'>;
 function parseJson(response: { content: Array<{ text: string }> }): unknown {
   const firstContent = response.content[0];
   expect(firstContent).toBeDefined();
-  return JSON.parse(firstContent!.text) as unknown;
+  return JSON.parse(firstContent!.text) as any;
 }
 
 describe('BreakpointExceptionHandlers', () => {
@@ -28,7 +28,8 @@ describe('BreakpointExceptionHandlers', () => {
   it('defaults pause-on-exception state to none', async () => {
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleBreakpointSetOnException({}));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(await handlers.handleBreakpointSetOnException({}));
 
     expect(debuggerManager.setPauseOnExceptions).toHaveBeenCalledWith('none');
     expect(body).toEqual({
@@ -41,7 +42,8 @@ describe('BreakpointExceptionHandlers', () => {
   it('uses the provided pause-on-exception state', async () => {
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleBreakpointSetOnException({ state: 'all' }));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(await handlers.handleBreakpointSetOnException({ state: 'all' }));
 
     expect(debuggerManager.setPauseOnExceptions).toHaveBeenCalledWith('all');
     expect(body).toEqual({
@@ -56,7 +58,7 @@ describe('BreakpointExceptionHandlers', () => {
     const handlers = createHandlers();
 
     await expect(handlers.handleBreakpointSetOnException({ state: 'uncaught' })).rejects.toThrow(
-      'nope'
+      'nope',
     );
   });
 });

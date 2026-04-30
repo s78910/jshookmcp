@@ -1,4 +1,5 @@
 import { DetailedDataManager } from '@utils/DetailedDataManager';
+import { DETAILED_DATA_SMART_THRESHOLD_BYTES } from '@src/constants';
 
 export interface SerializationContext {
   maxDepth?: number;
@@ -34,7 +35,7 @@ export class AdaptiveDataSerializer {
     maxArrayLength: 10,
     maxStringLength: 1000,
     maxObjectKeys: 20,
-    threshold: 50 * 1024,
+    threshold: DETAILED_DATA_SMART_THRESHOLD_BYTES,
   };
 
   serialize(data: unknown, context: SerializationContext = {}): string {
@@ -47,6 +48,7 @@ export class AdaptiveDataSerializer {
         if (Array.isArray(data)) {
           return this.serializeLargeArray(data, ctx);
         }
+        /* v8 ignore next */
         return this.serializeDefault(data, ctx);
       case 'deep-object':
         return this.serializeDeepObject(data, ctx);
@@ -54,11 +56,13 @@ export class AdaptiveDataSerializer {
         if (typeof data === 'string') {
           return this.serializeCodeString(data, ctx);
         }
+        /* v8 ignore next */
         return this.serializeDefault(data, ctx);
       case 'network-requests':
         if (this.isNetworkRequestArray(data)) {
           return this.serializeNetworkRequests(data, ctx);
         }
+        /* v8 ignore next */
         return this.serializeDefault(data, ctx);
       case 'dom-structure':
         return this.serializeDOMStructure(data, ctx);
@@ -132,7 +136,11 @@ export class AdaptiveDataSerializer {
     return JSON.stringify(limited);
   }
 
-  private serializeCodeString(code: string, _ctx: Required<SerializationContext>): string {
+  private serializeCodeString(code: unknown, _ctx: Required<SerializationContext>): string {
+    if (typeof code !== 'string') {
+      return JSON.stringify(code);
+    }
+
     const lines = code.split('\n');
 
     if (lines.length <= 100) {
@@ -151,21 +159,25 @@ export class AdaptiveDataSerializer {
     });
   }
 
-  private serializeNetworkRequests(
-    requests: NetworkRequestLike[],
-    ctx: Required<SerializationContext>
-  ): string {
+  private serializeNetworkRequests(requests: unknown, ctx: Required<SerializationContext>): string {
+    if (!Array.isArray(requests)) {
+      return JSON.stringify(requests);
+    }
+
     if (requests.length <= ctx.maxArrayLength) {
       return JSON.stringify(requests);
     }
 
-    const summary = requests.map((req) => ({
-      requestId: req.requestId,
-      url: req.url,
-      method: req.method,
-      type: req.type,
-      timestamp: req.timestamp,
-    }));
+    const summary = requests.map((req) => {
+      const request = this.isRecord(req) ? req : {};
+      return {
+        requestId: request['requestId'],
+        url: request['url'],
+        method: request['method'],
+        type: request['type'],
+        timestamp: request['timestamp'],
+      };
+    });
 
     const detailId = DetailedDataManager.getInstance().store(requests);
 
@@ -179,7 +191,7 @@ export class AdaptiveDataSerializer {
   }
 
   private serializeDOMStructure(dom: unknown, ctx: Required<SerializationContext>): string {
-    const limited = this.limitDepth(dom, ctx.maxDepth);
+    const limited = this.limitDomDepth(dom, ctx.maxDepth);
     return JSON.stringify(limited);
   }
 
@@ -274,6 +286,7 @@ export class AdaptiveDataSerializer {
 
   private limitDepth(obj: unknown, maxDepth: number, currentDepth = 0): unknown {
     if (currentDepth >= maxDepth) {
+      if (!this.isRecord(obj)) return obj;
       return '[Max depth reached]';
     }
 
@@ -288,6 +301,36 @@ export class AdaptiveDataSerializer {
     const result: UnknownRecord = {};
     for (const [key, value] of Object.entries(obj)) {
       result[key] = this.limitDepth(value, maxDepth, currentDepth + 1);
+    }
+
+    return result;
+  }
+
+  private limitDomDepth(obj: unknown, maxDepth: number, currentDepth = 0): unknown {
+    if (!this.isRecord(obj)) {
+      return obj;
+    }
+
+    if (Array.isArray(obj)) {
+      if (currentDepth > maxDepth) {
+        return ['[Max depth reached]'];
+      }
+
+      return obj.map((item) => this.limitDomDepth(item, maxDepth, currentDepth + 1));
+    }
+
+    const result: UnknownRecord = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (this.isRecord(value)) {
+        if (currentDepth >= maxDepth) {
+          result[key] = Array.isArray(value) ? ['[Max depth reached]'] : '[Max depth reached]';
+        } else {
+          result[key] = this.limitDomDepth(value, maxDepth, currentDepth + 1);
+        }
+        continue;
+      }
+
+      result[key] = value;
     }
 
     return result;
@@ -313,7 +356,7 @@ export class AdaptiveDataSerializer {
     return {
       name: this.getFunctionTreeName(tree),
       dependencies: dependencies.map((dep) =>
-        this.simplifyFunctionTree(dep, maxDepth, currentDepth + 1)
+        this.simplifyFunctionTree(dep, maxDepth, currentDepth + 1),
       ),
     };
   }

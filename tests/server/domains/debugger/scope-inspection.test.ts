@@ -1,14 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DebuggerManager, RuntimeInspector } from '@server/domains/shared/modules';
 import { ScopeInspectionHandlers } from '@server/domains/debugger/handlers/scope-inspection';
-
-function parseJson(response: { content: Array<{ text: string }> }) {
-  const firstContent = response.content[0];
-  if (!firstContent) {
-    throw new Error('Missing response content');
-  }
-  return JSON.parse(firstContent.text);
-}
 
 describe('ScopeInspectionHandlers', () => {
   type ScopeDebuggerManager = Pick<
@@ -19,19 +12,19 @@ describe('ScopeInspectionHandlers', () => {
   const debuggerManager = {
     getScopeVariables: vi.fn(
       async (
-        _options?: Parameters<DebuggerManager['getScopeVariables']>[0]
+        _options?: Parameters<DebuggerManager['getScopeVariables']>[0],
       ): Promise<Awaited<ReturnType<DebuggerManager['getScopeVariables']>>> => ({
         success: true,
         variables: [],
         callFrameId: 'frame-default',
         totalScopes: 0,
         successfulScopes: 0,
-      })
+      }),
     ),
     getObjectPropertiesById: vi.fn(
       async (
-        _objectId: string
-      ): Promise<Awaited<ReturnType<DebuggerManager['getObjectPropertiesById']>>> => []
+        _objectId: string,
+      ): Promise<Awaited<ReturnType<DebuggerManager['getObjectPropertiesById']>>> => [],
     ),
   } satisfies ScopeDebuggerManager;
   const runtimeInspector = {} as unknown as RuntimeInspector;
@@ -53,12 +46,12 @@ describe('ScopeInspectionHandlers', () => {
       runtimeInspector,
     } as any);
 
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleGetScopeVariablesEnhanced({
         callFrameId: 'frame-1',
         includeObjectProperties: true,
         maxDepth: 3,
-      })
+      }),
     );
 
     expect(debuggerManager.getScopeVariables).toHaveBeenCalledWith({
@@ -83,7 +76,7 @@ describe('ScopeInspectionHandlers', () => {
       runtimeInspector,
     } as any);
 
-    const body = parseJson(await handlers.handleGetScopeVariablesEnhanced({}));
+    const body = parseJson<any>(await handlers.handleGetScopeVariablesEnhanced({}));
 
     expect(body).toEqual({
       success: false,
@@ -98,7 +91,7 @@ describe('ScopeInspectionHandlers', () => {
       runtimeInspector,
     } as any);
 
-    const body = parseJson(await handlers.handleGetObjectProperties({}));
+    const body = parseJson<any>(await handlers.handleGetObjectProperties({}));
 
     expect(body).toEqual({
       success: false,
@@ -115,7 +108,7 @@ describe('ScopeInspectionHandlers', () => {
       runtimeInspector,
     } as any);
 
-    const body = parseJson(await handlers.handleGetObjectProperties({ objectId: 'obj-1' }));
+    const body = parseJson<any>(await handlers.handleGetObjectProperties({ objectId: 'obj-1' }));
 
     expect(debuggerManager.getObjectPropertiesById).toHaveBeenCalledWith('obj-1');
     expect(body).toEqual({
@@ -132,7 +125,7 @@ describe('ScopeInspectionHandlers', () => {
       runtimeInspector,
     } as any);
 
-    const body = parseJson(await handlers.handleGetObjectProperties({ objectId: 'obj-1' }));
+    const body = parseJson<any>(await handlers.handleGetObjectProperties({ objectId: 'obj-1' }));
 
     expect(body).toEqual({
       success: false,

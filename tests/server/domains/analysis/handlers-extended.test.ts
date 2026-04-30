@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { CoreAnalysisHandlers } from '@server/domains/analysis/handlers';
+import { runSourceMapExtract } from '@server/domains/analysis/handlers.web-tools';
 
 const webcrackState = vi.hoisted(() => ({
-  runWebcrack: vi.fn<(...args: any[]) => Promise<any>>(async () => ({
+  runWebcrack: vi.fn<(...args: any[]) => Promise<Record<string, unknown>>>(async () => ({
     applied: true,
     code: 'decoded-bundle',
     bundle: null,
@@ -23,8 +25,85 @@ vi.mock('@utils/logger', () => ({
   },
 }));
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
+interface BaseResponse {
+  success?: boolean;
+  error?: string;
+  hint?: string;
+  warning?: string;
+  recommendations?: string[];
+}
+
+interface CollectCodeResponse extends BaseResponse {
+  totalSize: number;
+  files?: Array<{ url: string; type: string; size: number; content: string }>;
+  mode?: string;
+  filesCount?: number;
+  summary?: Array<{ url: string; preview?: string; truncated?: boolean }>;
+}
+
+interface SearchInScriptsResponse extends BaseResponse {
+  matches?: Array<{ scriptId: string; url: string; line: number; context: string }>;
+  totalMatches?: number;
+  matchesSummary?: string[];
+  truncated?: boolean;
+  reason?: string;
+}
+
+interface ExtractFunctionTreeResponse extends BaseResponse {
+  functionName?: string;
+  availableScripts?: string | string[];
+}
+
+interface UnderstandCodeResponse extends BaseResponse {
+  structure?: Record<string, unknown>;
+  complete?: boolean;
+}
+
+interface DetectCryptoResponse extends BaseResponse {
+  algorithms?: string[];
+}
+
+interface ManageHooksResponse extends BaseResponse {
+  hooks?: Array<{ id: string; target: string; type: string }>;
+  records?: Array<{ timestamp: number; data: Record<string, unknown> }>;
+  message?: string;
+  id?: string;
+}
+
+interface DetectObfuscationResponse extends BaseResponse {
+  techniques?: string[];
+}
+
+interface ClearCollectedDataResponse extends BaseResponse {
+  cleared: { fileCache: boolean; scriptManager: boolean };
+}
+
+interface GetCollectionStatsResponse extends BaseResponse {
+  summary: {
+    totalCachedFiles: number;
+    totalCacheSize: string;
+    compressionRatio: string;
+    cacheHitRate: string;
+  };
+}
+
+interface WebcrackUnpackResponse extends BaseResponse {
+  code?: string;
+  bundle?: {
+    type: string;
+    entryId: string;
+    moduleCount: number;
+    truncated: boolean;
+    modules: Array<{ id: string; path: string; isEntry: boolean; size: number }>;
+  };
+  savedTo?: string;
+  savedArtifacts?: string[];
+  engine?: string;
+}
+
+interface Mapping {
+  path: string;
+  pattern: string;
 }
 
 describe('CoreAnalysisHandlers — extended coverage', () => {
@@ -53,15 +132,23 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
       getHookRecords: vi.fn(),
       clearHookRecords: vi.fn(),
     },
-  } as any;
+  };
 
   let handlers: CoreAnalysisHandlers;
 
   beforeEach(() => {
     vi.clearAllMocks();
     webcrackState.runWebcrack.mockClear();
-    handlers = new CoreAnalysisHandlers(deps);
+    handlers = new CoreAnalysisHandlers(
+      deps as unknown as ConstructorParameters<typeof CoreAnalysisHandlers>[0],
+    );
   });
+
+  const setJsvmpDeobfuscatorResult = (result: Record<string, unknown>) => {
+    const deobfuscate = vi.fn().mockResolvedValue(result);
+    Reflect.set(handlers as object, 'jsvmpDeobfuscator', { deobfuscate });
+    return deobfuscate;
+  };
 
   // ─── handleCollectCode ────────────────────────────────────────────
 
@@ -97,7 +184,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         priorities: ['app.js'],
       });
 
-      const body = parseJson(result);
+      const body = parseJson<CollectCodeResponse>(result);
       expect(body.totalSize).toBe(1000);
     });
 
@@ -117,16 +204,19 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         collectTime: 30,
       });
 
-      const body = parseJson(
-        await handlers.handleCollectCode({ url: 'https://test.com', returnSummaryOnly: true })
+      const body = parseJson<CollectCodeResponse>(
+        await handlers.handleCollectCode({ url: 'https://test.com', returnSummaryOnly: true }),
       );
 
       expect(body.mode).toBe('summary');
       expect(body.filesCount).toBe(2);
       expect(body.summary).toHaveLength(2);
-      expect(body.summary[0].url).toBe('a.js');
-      expect(body.summary[0].preview).toBeDefined();
-      expect(body.summary[1].truncated).toBe(true);
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.summary?.[0].url).toBe('a.js');
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.summary?.[0].preview).toBeDefined();
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.summary?.[1].truncated).toBe(true);
       expect(body.hint).toContain('get_script_source');
     });
 
@@ -140,8 +230,88 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
       await handlers.handleCollectCode({ url: 'https://test.com', returnSummaryOnly: true });
 
       expect(deps.collector.collect).toHaveBeenCalledWith(
-        expect.objectContaining({ smartMode: 'summary' })
+        expect.objectContaining({ smartMode: 'summary' }),
       );
+    });
+
+    it('preserves smart collector summaries when no files are returned', async () => {
+      deps.collector.collect.mockResolvedValue({
+        totalSize: 0,
+        files: [],
+        collectTime: 12,
+        summaries: [
+          {
+            url: 'audit-probe.js',
+            size: 1536,
+            type: 'dynamic',
+            hasEncryption: false,
+            hasAPI: true,
+            hasObfuscation: false,
+            functions: ['auditProbeFn'],
+            imports: [],
+            preview: 'function auditProbeFn(){ return 7; }',
+          },
+        ],
+      });
+
+      const body = parseJson<CollectCodeResponse>(
+        await handlers.handleCollectCode({ url: 'https://test.com', returnSummaryOnly: true }),
+      );
+
+      expect(body.mode).toBe('summary');
+      expect(body.totalSize).toBe(1536);
+      expect(body.filesCount).toBe(1);
+      expect(body.summary).toHaveLength(1);
+      const firstSummary = body.summary?.[0];
+      expect(firstSummary).toBeDefined();
+      expect(firstSummary?.url).toBe('audit-probe.js');
+      expect(firstSummary?.preview).toContain('auditProbeFn');
+    });
+
+    it('treats non-numeric smart summary sizes as zero when summarizing', async () => {
+      deps.collector.collect.mockResolvedValue({
+        totalSize: 0,
+        files: [],
+        collectTime: 12,
+        summaries: [
+          {
+            url: 'mystery.js',
+            type: 'dynamic',
+            preview: 'const hidden = true;',
+          },
+        ],
+      });
+
+      const body = parseJson<CollectCodeResponse>(
+        await handlers.handleCollectCode({ url: 'https://test.com', returnSummaryOnly: true }),
+      );
+
+      expect(body.totalSize).toBe(0);
+      expect(body.filesCount).toBe(1);
+      expect(body.summary?.[0]?.url).toBe('mystery.js');
+    });
+
+    it('falls back to file sizes when smart summaries are unavailable', async () => {
+      deps.collector.collect.mockResolvedValue({
+        totalSize: 0,
+        collectTime: 8,
+        files: [
+          {
+            url: 'fallback.js',
+            type: 'external',
+            size: 24,
+            content: 'const fallback = true;',
+          },
+        ],
+      });
+
+      const body = parseJson<CollectCodeResponse>(
+        await handlers.handleCollectCode({ url: 'https://test.com', returnSummaryOnly: true }),
+      );
+
+      expect(body.totalSize).toBe(24);
+      expect(body.filesCount).toBe(1);
+      expect(body.summary?.[0]?.url).toBe('fallback.js');
     });
 
     it('returns summary with warning when result is too large', async () => {
@@ -152,11 +322,13 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         collectTime: 100,
       });
 
-      const body = parseJson(await handlers.handleCollectCode({ url: 'https://test.com' }));
+      const body = parseJson<CollectCodeResponse>(
+        await handlers.handleCollectCode({ url: 'https://test.com' }),
+      );
 
       expect(body.warning).toContain('safe response threshold');
       expect(body.recommendations).toBeDefined();
-      expect(body.recommendations.length).toBeGreaterThan(0);
+      expect(body.recommendations?.length).toBeGreaterThan(0);
     });
   });
 
@@ -164,7 +336,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
   describe('handleSearchInScripts', () => {
     it('returns error when keyword is missing', async () => {
-      const body = parseJson(await handlers.handleSearchInScripts({}));
+      const body = parseJson<BaseResponse>(await handlers.handleSearchInScripts({}));
       expect(body.success).toBe(false);
       expect(body.error).toContain('keyword is required');
     });
@@ -174,14 +346,14 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         matches: [{ scriptId: '1', url: 'a.js', line: 5, context: 'var x = 1;' }],
       });
 
-      const body = parseJson(
+      const body = parseJson<SearchInScriptsResponse>(
         await handlers.handleSearchInScripts({
           keyword: 'var',
           isRegex: true,
           caseSensitive: true,
           contextLines: 5,
           maxMatches: 50,
-        })
+        }),
       );
 
       expect(deps.scriptManager.init).toHaveBeenCalledOnce();
@@ -202,17 +374,49 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         ],
       });
 
-      const body = parseJson(
+      const body = parseJson<SearchInScriptsResponse>(
         await handlers.handleSearchInScripts({
           keyword: 'token',
           returnSummary: true,
-        })
+        }),
       );
 
       expect(body.success).toBe(true);
       expect(body.totalMatches).toBe(2);
       expect(body.matchesSummary).toBeDefined();
-      expect(body.matchesSummary.length).toBeLessThanOrEqual(10);
+      expect(body.matchesSummary?.length).toBeLessThanOrEqual(10);
+    });
+
+    it('summarizes empty search results when matches are omitted', async () => {
+      deps.scriptManager.searchInScripts.mockResolvedValue({});
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleSearchInScripts({
+          keyword: 'missing',
+          returnSummary: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.totalMatches).toBe(0);
+      expect(body.matchesSummary).toEqual([]);
+    });
+
+    it('uses an empty preview when summarized matches have no context', async () => {
+      deps.scriptManager.searchInScripts.mockResolvedValue({
+        matches: [{ scriptId: '1', url: 'a.js', line: 7 }],
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleSearchInScripts({
+          keyword: 'alpha',
+          returnSummary: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.matchesSummary).toHaveLength(1);
+      expect(body.matchesSummary[0].preview).toBe('...');
     });
 
     it('auto-summarizes when result exceeds maxContextSize', async () => {
@@ -225,11 +429,11 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
       }));
       deps.scriptManager.searchInScripts.mockResolvedValue({ matches });
 
-      const body = parseJson(
+      const body = parseJson<SearchInScriptsResponse>(
         await handlers.handleSearchInScripts({
           keyword: 'test',
           maxContextSize: 100, // very small threshold
-        })
+        }),
       );
 
       expect(body.truncated).toBe(true);
@@ -242,13 +446,17 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
   describe('handleExtractFunctionTree', () => {
     it('returns error when scriptId is missing', async () => {
-      const body = parseJson(await handlers.handleExtractFunctionTree({ functionName: 'myFunc' }));
+      const body = parseJson<BaseResponse>(
+        await handlers.handleExtractFunctionTree({ functionName: 'myFunc' }),
+      );
       expect(body.success).toBe(false);
       expect(body.error).toContain('scriptId is required');
     });
 
     it('returns error when functionName is missing', async () => {
-      const body = parseJson(await handlers.handleExtractFunctionTree({ scriptId: '123' }));
+      const body = parseJson<BaseResponse>(
+        await handlers.handleExtractFunctionTree({ scriptId: '123' }),
+      );
       expect(body.success).toBe(false);
       expect(body.error).toContain('functionName is required');
     });
@@ -256,8 +464,8 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('returns error when script does not exist', async () => {
       deps.scriptManager.getAllScripts.mockResolvedValue([{ scriptId: '1', url: 'a.js' }]);
 
-      const body = parseJson(
-        await handlers.handleExtractFunctionTree({ scriptId: '999', functionName: 'fn' })
+      const body = parseJson<ExtractFunctionTreeResponse>(
+        await handlers.handleExtractFunctionTree({ scriptId: '999', functionName: 'fn' }),
       );
 
       expect(body.success).toBe(false);
@@ -268,8 +476,8 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('returns "No scripts loaded" when no scripts exist', async () => {
       deps.scriptManager.getAllScripts.mockResolvedValue([]);
 
-      const body = parseJson(
-        await handlers.handleExtractFunctionTree({ scriptId: '1', functionName: 'fn' })
+      const body = parseJson<ExtractFunctionTreeResponse>(
+        await handlers.handleExtractFunctionTree({ scriptId: '1', functionName: 'fn' }),
       );
 
       expect(body.success).toBe(false);
@@ -283,14 +491,14 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         tree: { depth: 2, nodes: 5 },
       });
 
-      const body = parseJson(
+      const body = parseJson<ExtractFunctionTreeResponse>(
         await handlers.handleExtractFunctionTree({
           scriptId: '42',
           functionName: 'init',
           maxDepth: 5,
           maxSize: 200,
           includeComments: false,
-        })
+        }),
       );
 
       expect(deps.scriptManager.extractFunctionTree).toHaveBeenCalledWith('42', 'init', {
@@ -306,13 +514,25 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
       deps.scriptManager.getAllScripts.mockResolvedValue([{ scriptId: '1', url: 'test.js' }]);
       deps.scriptManager.extractFunctionTree.mockRejectedValue(new Error('Parse error'));
 
-      const body = parseJson(
-        await handlers.handleExtractFunctionTree({ scriptId: '1', functionName: 'broken' })
+      const body = parseJson<BaseResponse>(
+        await handlers.handleExtractFunctionTree({ scriptId: '1', functionName: 'broken' }),
       );
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('Parse error');
       expect(body.hint).toContain('function name exists');
+    });
+
+    it('serializes non-Error extraction failures', async () => {
+      deps.scriptManager.getAllScripts.mockResolvedValue([{ scriptId: '1', url: 'test.js' }]);
+      deps.scriptManager.extractFunctionTree.mockRejectedValue('boom');
+
+      const body = parseJson<BaseResponse>(
+        await handlers.handleExtractFunctionTree({ scriptId: '1', functionName: 'broken' }),
+      );
+
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('boom');
     });
   });
 
@@ -320,13 +540,13 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
   describe('handleUnderstandCode', () => {
     it('returns error when code is missing', async () => {
-      const body = parseJson(await handlers.handleUnderstandCode({}));
+      const body = parseJson<BaseResponse>(await handlers.handleUnderstandCode({}));
       expect(body.success).toBe(false);
       expect(body.error).toContain('code is required');
     });
 
     it('returns error when code is empty string', async () => {
-      const body = parseJson(await handlers.handleUnderstandCode({ code: '  ' }));
+      const body = parseJson<BaseResponse>(await handlers.handleUnderstandCode({ code: '  ' }));
       expect(body.success).toBe(false);
     });
 
@@ -335,12 +555,12 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         structure: { classes: 1, functions: 5 },
       });
 
-      const body = parseJson(
+      const body = parseJson<UnderstandCodeResponse>(
         await handlers.handleUnderstandCode({
           code: 'class Foo {}',
           focus: 'structure',
           context: { filename: 'test.js' },
-        })
+        }),
       );
 
       expect(deps.analyzer.understand).toHaveBeenCalledWith({
@@ -368,7 +588,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
   describe('handleDetectCrypto', () => {
     it('returns error when code is missing', async () => {
-      const body = parseJson(await handlers.handleDetectCrypto({}));
+      const body = parseJson<BaseResponse>(await handlers.handleDetectCrypto({}));
       expect(body.success).toBe(false);
       expect(body.error).toContain('code is required');
     });
@@ -379,8 +599,8 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         usages: ['encryption'],
       });
 
-      const body = parseJson(
-        await handlers.handleDetectCrypto({ code: 'crypto.subtle.encrypt()' })
+      const body = parseJson<DetectCryptoResponse>(
+        await handlers.handleDetectCrypto({ code: 'crypto.subtle.encrypt()' }),
       );
 
       expect(deps.cryptoDetector.detect).toHaveBeenCalledWith({
@@ -396,22 +616,29 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('lists all hooks', async () => {
       deps.hookManager.getAllHooks.mockReturnValue([{ id: 'h1', target: 'fetch', type: 'fetch' }]);
 
-      const body = parseJson(await handlers.handleManageHooks({ action: 'list' }));
+      const body = parseJson<ManageHooksResponse>(
+        await handlers.handleManageHooks({ action: 'list' }),
+      );
       expect(body.hooks).toHaveLength(1);
-      expect(body.hooks[0].id).toBe('h1');
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.hooks?.[0].id).toBe('h1');
     });
 
     it('returns records for a specific hook', async () => {
       deps.hookManager.getHookRecords.mockReturnValue([{ timestamp: 123, data: { url: '/api' } }]);
 
-      const body = parseJson(await handlers.handleManageHooks({ action: 'records', hookId: 'h1' }));
+      const body = parseJson<ManageHooksResponse>(
+        await handlers.handleManageHooks({ action: 'records', hookId: 'h1' }),
+      );
 
       expect(deps.hookManager.getHookRecords).toHaveBeenCalledWith('h1');
       expect(body.records).toHaveLength(1);
     });
 
     it('clears hook records', async () => {
-      const body = parseJson(await handlers.handleManageHooks({ action: 'clear', hookId: 'h2' }));
+      const body = parseJson<ManageHooksResponse>(
+        await handlers.handleManageHooks({ action: 'clear', hookId: 'h2' }),
+      );
 
       expect(deps.hookManager.clearHookRecords).toHaveBeenCalledWith('h2');
       expect(body.success).toBe(true);
@@ -421,14 +648,14 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('creates hook with custom code', async () => {
       deps.hookManager.createHook.mockResolvedValue({ success: true, id: 'h3' });
 
-      const body = parseJson(
+      const body = parseJson<ManageHooksResponse>(
         await handlers.handleManageHooks({
           action: 'create',
           target: 'document.cookie',
           type: 'cookie',
           hookAction: 'modify',
           customCode: 'return "";',
-        })
+        }),
       );
 
       expect(deps.hookManager.createHook).toHaveBeenCalledWith({
@@ -439,13 +666,29 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
       });
       expect(body.id).toBe('h3');
     });
+
+    it('defaults hook type and action when omitted', async () => {
+      deps.hookManager.createHook.mockResolvedValue({ success: true, id: 'h4' });
+
+      await handlers.handleManageHooks({
+        action: 'create',
+        target: 'fetch',
+      });
+
+      expect(deps.hookManager.createHook).toHaveBeenCalledWith({
+        target: 'fetch',
+        type: 'function',
+        action: 'log',
+        customCode: undefined,
+      });
+    });
   });
 
   // ─── handleDetectObfuscation ──────────────────────────────────────
 
   describe('handleDetectObfuscation', () => {
     it('returns error when code is missing', async () => {
-      const body = parseJson(await handlers.handleDetectObfuscation({}));
+      const body = parseJson<BaseResponse>(await handlers.handleDetectObfuscation({}));
       expect(body.success).toBe(false);
       expect(body.error).toContain('code is required');
     });
@@ -463,7 +706,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
       const textPart = result.content[0];
       expect(textPart?.type).toBe('text');
-      if (!textPart || textPart.type !== 'text') {
+      if (textPart?.type !== 'text') {
         throw new Error('Expected text response');
       }
 
@@ -478,11 +721,11 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         score: 50,
       });
 
-      const body = parseJson(
+      const body = parseJson<DetectObfuscationResponse>(
         await handlers.handleDetectObfuscation({
           code: 'eval("code")',
           generateReport: false,
-        })
+        }),
       );
 
       expect(deps.obfuscationDetector.generateReport).not.toHaveBeenCalled();
@@ -496,7 +739,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('clears collector and script manager data', async () => {
       deps.collector.clearAllData.mockResolvedValue(undefined);
 
-      const body = parseJson(await handlers.handleClearCollectedData());
+      const body = parseJson<ClearCollectedDataResponse>(await handlers.handleClearCollectedData());
 
       expect(deps.collector.clearAllData).toHaveBeenCalledOnce();
       expect(deps.scriptManager.clear).toHaveBeenCalledOnce();
@@ -508,7 +751,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('returns error when clearing fails', async () => {
       deps.collector.clearAllData.mockRejectedValue(new Error('disk error'));
 
-      const body = parseJson(await handlers.handleClearCollectedData());
+      const body = parseJson<BaseResponse>(await handlers.handleClearCollectedData());
 
       expect(body.success).toBe(false);
       expect(body.error).toContain('disk error');
@@ -525,7 +768,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         collector: { collectedUrls: ['https://a.com', 'https://b.com'] },
       });
 
-      const body = parseJson(await handlers.handleGetCollectionStats());
+      const body = parseJson<GetCollectionStatsResponse>(await handlers.handleGetCollectionStats());
 
       expect(body.success).toBe(true);
       expect(body.summary.totalCachedFiles).toBe(8);
@@ -541,7 +784,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         collector: { collectedUrls: [] },
       });
 
-      const body = parseJson(await handlers.handleGetCollectionStats());
+      const body = parseJson<GetCollectionStatsResponse>(await handlers.handleGetCollectionStats());
 
       expect(body.success).toBe(true);
       expect(body.summary.cacheHitRate).toBe('0%');
@@ -550,7 +793,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
     it('returns error when stats retrieval fails', async () => {
       deps.collector.getAllStats.mockRejectedValue(new Error('stats error'));
 
-      const body = parseJson(await handlers.handleGetCollectionStats());
+      const body = parseJson<BaseResponse>(await handlers.handleGetCollectionStats());
 
       expect(body.success).toBe(false);
       expect(body.error).toContain('stats error');
@@ -566,7 +809,9 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         reason: 'unsupported format',
       });
 
-      const body = parseJson(await handlers.handleDeobfuscate({ code: 'broken-code' }));
+      const body = parseJson<BaseResponse>(
+        await handlers.handleDeobfuscate({ code: 'broken-code' }),
+      );
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('unsupported format');
@@ -577,7 +822,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         success: false,
       });
 
-      const body = parseJson(await handlers.handleDeobfuscate({ code: 'broken' }));
+      const body = parseJson<BaseResponse>(await handlers.handleDeobfuscate({ code: 'broken' }));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('deobfuscation failed');
@@ -590,12 +835,13 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         code: 'bundle',
         mappings: [
           { path: './valid.js', pattern: 'bootstrap' }, // valid
-          { noPath: true, pattern: 'bad' }, // invalid: missing path
+          { noPath: true, pattern: 'bad' } as unknown as Mapping, // invalid: missing path
           { path: './also-valid.js', pattern: 'main' }, // valid
-          null, // invalid
+          null as unknown as Mapping, // invalid
         ],
       });
 
+      // @ts-expect-error — auto-suppressed [TS2532]
       const call = deps.deobfuscator.deobfuscate.mock.calls[0][0];
       expect(call.mappings).toHaveLength(2);
       expect(call.mappings[0].path).toBe('./valid.js');
@@ -607,66 +853,9 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
       await handlers.handleDeobfuscate({ code: 'test', outputDir: '  ' });
 
+      // @ts-expect-error — auto-suppressed [TS2532]
       const call = deps.deobfuscator.deobfuscate.mock.calls[0][0];
       expect(call.outputDir).toBeUndefined();
-    });
-  });
-
-  // ─── handleAdvancedDeobfuscate — additional edge cases ────────────
-
-  describe('handleAdvancedDeobfuscate edge cases', () => {
-    it('returns error when code is empty whitespace', async () => {
-      const body = parseJson(await handlers.handleAdvancedDeobfuscate({ code: '   ' }));
-      expect(body.success).toBe(false);
-      expect(body.error).toContain('code is required');
-    });
-
-    it('passes detectOnly option when specified', async () => {
-      deps.advancedDeobfuscator.deobfuscate.mockResolvedValue({
-        success: true,
-        detected: ['string-array'],
-      });
-
-      await handlers.handleAdvancedDeobfuscate({
-        code: 'obf()',
-        detectOnly: true,
-      });
-
-      expect(deps.advancedDeobfuscator.deobfuscate).toHaveBeenCalledWith(
-        expect.objectContaining({ detectOnly: true })
-      );
-    });
-
-    it('passes webcrack args to advancedDeobfuscator', async () => {
-      deps.advancedDeobfuscator.deobfuscate.mockResolvedValue({
-        success: true,
-        code: 'clean',
-      });
-
-      await handlers.handleAdvancedDeobfuscate({
-        code: 'obf()',
-        unpack: true,
-        unminify: false,
-        jsx: false,
-        mangle: true,
-        outputDir: 'out',
-        forceOutput: true,
-        includeModuleCode: true,
-        maxBundleModules: 50,
-      });
-
-      expect(deps.advancedDeobfuscator.deobfuscate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          unpack: true,
-          unminify: false,
-          jsx: false,
-          mangle: true,
-          outputDir: 'out',
-          forceOutput: true,
-          includeModuleCode: true,
-          maxBundleModules: 50,
-        })
-      );
     });
   });
 
@@ -674,7 +863,7 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
 
   describe('handleWebcrackUnpack additional cases', () => {
     it('returns error when code is missing', async () => {
-      const body = parseJson(await handlers.handleWebcrackUnpack({}));
+      const body = parseJson<BaseResponse>(await handlers.handleWebcrackUnpack({}));
       expect(body.success).toBe(false);
       expect(body.error).toContain('code is required');
     });
@@ -695,11 +884,13 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
         optionsUsed: { jsx: true, mangle: false, unminify: true, unpack: true },
       });
 
-      const body = parseJson(await handlers.handleWebcrackUnpack({ code: 'bundled' }));
+      const body = parseJson<WebcrackUnpackResponse>(
+        await handlers.handleWebcrackUnpack({ code: 'bundled' }),
+      );
 
       expect(body.success).toBe(true);
       expect(body.code).toBe('unpacked');
-      expect(body.bundle.type).toBe('webpack');
+      expect(body.bundle?.type).toBe('webpack');
       expect(body.savedTo).toBe('artifacts/webcrack');
       expect(body.savedArtifacts).toContain('artifacts/webcrack/index.js');
       expect(body.engine).toBe('webcrack');
@@ -731,8 +922,1007 @@ describe('CoreAnalysisHandlers — extended coverage', () => {
           mangle: true,
           outputDir: 'custom-dir',
           forceOutput: true,
-        })
+        }),
       );
+    });
+  });
+
+  describe('handleJsDeobfuscatePipeline', () => {
+    it('returns an error when pipeline code is missing', async () => {
+      const body = parseJson<Record<string, any>>(await handlers.handleJsDeobfuscatePipeline({}));
+
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('code is required');
+    });
+
+    it('returns failed response when the webcrack stage throws', async () => {
+      webcrackState.runWebcrack.mockRejectedValueOnce(new Error('webcrack boom'));
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code: 'const answer = 1;',
+          returnStageDetails: true,
+        }),
+      );
+
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('webcrack stage failed: webcrack boom');
+      expect(body.deobfuscatedCode).toBe('const answer = 1;');
+      expect(body.stats.stages.deobfuscator.webcrackApplied).toBe(false);
+      expect(body.stats.stages.deobfuscator.error).toBe('webcrack boom');
+      expect(body.stageDetails.deobfuscated).toBe('const answer = 1;');
+    });
+
+    it('marks the pipeline successful when webcrack applies cleanly', async () => {
+      webcrackState.runWebcrack.mockResolvedValueOnce({
+        applied: true,
+        code: 'const rebuilt = 7;',
+        optionsUsed: { unpack: true },
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({ code: 'const packed = 7;' }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('const rebuilt = 7;');
+      expect(body.stats.stages.deobfuscator.webcrackApplied).toBe(true);
+    });
+
+    it('returns a warning when the webcrack stage does not apply', async () => {
+      webcrackState.runWebcrack.mockResolvedValueOnce({
+        applied: false,
+        code: 'const answer = 1;',
+        optionsUsed: { jsx: true, mangle: false, unminify: true, unpack: true },
+        reason: 'parser could not decode bundle',
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({ code: 'const answer = 1;' }),
+      );
+
+      expect(body.success).toBe(false);
+      expect(body.warning).toBe('webcrack stage did not apply: parser could not decode bundle');
+      expect(body.deobfuscatedCode).toBe('const answer = 1;');
+      expect(body.stats.stages.deobfuscator.webcrackApplied).toBe(false);
+      expect(body.stats.stages.deobfuscator.warning).toBe(
+        'webcrack stage did not apply: parser could not decode bundle',
+      );
+    });
+
+    it('uses the generic warning when webcrack does not return a reason', async () => {
+      webcrackState.runWebcrack.mockResolvedValueOnce({
+        applied: false,
+        code: 'const answer = 1;',
+        optionsUsed: {},
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({ code: 'const answer = 1;' }),
+      );
+
+      expect(body.success).toBe(false);
+      expect(body.warning).toBe('webcrack stage did not apply any transformation.');
+    });
+
+    it('captures non-Error webcrack failures verbatim', async () => {
+      webcrackState.runWebcrack.mockRejectedValueOnce('raw boom');
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({ code: 'const answer = 1;' }),
+      );
+
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('webcrack stage failed: raw boom');
+      expect(body.stats.stages.deobfuscator.error).toBe('raw boom');
+    });
+
+    it('leaves split dispatchers intact when aggressive flattening only finds empty case bodies', async () => {
+      const code =
+        "var seq='1|2'.split('|');var idx=0;while(!![]){switch(seq[idx++]){case '1':continue;case '2':break;}break;}";
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          aggressive: true,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('seq[idx++]');
+      expect(body.deobfuscatedCode).toContain("case '1'");
+    });
+
+    it('leaves array dispatchers intact when aggressive flattening cannot rebuild execution order', async () => {
+      const code =
+        "var list=['A','B'];var cursor=0;while(!![]){switch(list[cursor++]){case 'A':continue;case 'B':break;}break;}";
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          aggressive: true,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('list[cursor++]');
+      expect(body.deobfuscatedCode).toContain("case 'A'");
+    });
+
+    it('preserves object literal keys while humanizing bound identifiers', async () => {
+      const code = 'const a = 1; const b = () => a; const obj = { a: a, b() { return b(); } };';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('a: var_1');
+      expect(body.deobfuscatedCode).toContain('b()');
+      expect(body.deobfuscatedCode).toContain('return var_2()');
+      expect(body.deobfuscatedCode).not.toContain('{ var_1: var_1');
+      expect(body.deobfuscatedCode).not.toContain('var_2() {');
+    });
+
+    it('does not fold numeric expressions inside string literals', async () => {
+      const code = 'console.log("3 + 4 equals 7"); const x = 3 + 4;';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('"3 + 4 equals 7"');
+      expect(body.deobfuscatedCode).toContain('7');
+    });
+
+    it('does not fold numeric expressions inside multiline template literals', async () => {
+      const code = 'const s = `line1\n3 + 4\nline3`; const x = 3 + 4;';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('3 + 4');
+      expect(body.deobfuscatedCode).toContain('const x = 7');
+    });
+
+    it('does not fold numeric expressions inside single-line comments', async () => {
+      const code = '// result is 3 + 4\nconst x = 3 + 4;';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('// result is 3 + 4');
+      expect(body.deobfuscatedCode).toContain('const x = 7');
+    });
+
+    it('does not fold numeric expressions inside block comments', async () => {
+      const code = '/* 3 + 4 should not fold */ const x = 3 + 4;';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('/* 3 + 4 should not fold */');
+      expect(body.deobfuscatedCode).toContain('const x = 7');
+    });
+
+    it('does not fold numeric expressions inside regex literals', async () => {
+      const code = 'const r = /3 \\+ 4/; const x = 3 + 4;';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('/3 \\+ 4/');
+      expect(body.deobfuscatedCode).toContain('const x = 7');
+    });
+
+    it('does not remove dead-code patterns that only appear inside quoted text', async () => {
+      const code =
+        'const s = "if (false) { drop } else { keep }"; if (false) { drop(); } else { keep(); }';
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('"if (false) { drop } else { keep }"');
+      expect(body.deobfuscatedCode).toContain('keep();');
+      expect(body.deobfuscatedCode).not.toContain('drop();');
+    });
+
+    it('uses fallback scanners and rename guards when AST parsing fails', async () => {
+      const code = [
+        'const text = "3 + 4 stays";',
+        'const tpl = `5 + 6 stays`;',
+        '// 7 + 8 comment',
+        '/* 9 + 10 block */',
+        'const regex = /1[23] \\+ 14/g;',
+        'var _x = 1;',
+        'const obj = { _x: _x, keep() { return obj._x + _x; } };',
+        'const math = 8 - 3; const mul = 2 * 5; const div = 8 / 2; const mod = 8 % 3;',
+        'const stayDiv = 8 / 0; const stayMod = 8 % 0;',
+        'if (false) { drop(); } else { keep(); }',
+        'function {',
+      ].join('\n');
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('"3 + 4 stays"');
+      expect(body.deobfuscatedCode).toContain('`5 + 6 stays`');
+      expect(body.deobfuscatedCode).toContain('// 7 + 8 comment');
+      expect(body.deobfuscatedCode).toContain('/* 9 + 10 block */');
+      expect(body.deobfuscatedCode).toContain('/1[23] \\+ 14/g');
+      expect(body.deobfuscatedCode).toContain('const math = 5;');
+      expect(body.deobfuscatedCode).toContain('const mul = 10;');
+      expect(body.deobfuscatedCode).toContain('const div = 4;');
+      expect(body.deobfuscatedCode).toContain('const mod = 2;');
+      expect(body.deobfuscatedCode).toContain('const stayDiv = 8 / 0;');
+      expect(body.deobfuscatedCode).toContain('const stayMod = 8 % 0;');
+      expect(body.deobfuscatedCode).toContain('const obj = { _x: var_1');
+      expect(body.deobfuscatedCode).toContain('return obj._x + var_1;');
+      expect(body.deobfuscatedCode).toContain('keep();');
+      expect(body.deobfuscatedCode).not.toContain('drop();');
+    });
+
+    it('skips humanization when no short bindings qualify for renaming', async () => {
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code: 'const answerValue = call();',
+          useWebcrack: false,
+          humanize: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('const answerValue = call();');
+      expect(body.deobfuscatedCode).not.toContain('var_1');
+    });
+
+    it('flattens string-split and array-based dispatch loops in aggressive mode', async () => {
+      const code = [
+        "var seq='1|2'.split('|');var idx=0;while(!![]){switch(seq[idx++]){case '1':foo();continue;case '2':bar();break;}break;}",
+        "var list=['A','B'];var cursor=0;while(!![]){switch(list[cursor++]){case 'A':alpha();continue;case 'B':beta();break;}break;}",
+        'function {',
+      ].join('\n');
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          aggressive: true,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('foo();');
+      expect(body.deobfuscatedCode).toContain('bar();');
+      expect(body.deobfuscatedCode).toContain('alpha();');
+      expect(body.deobfuscatedCode).toContain('beta();');
+      expect(body.deobfuscatedCode).not.toContain('seq[idx++]');
+      expect(body.deobfuscatedCode).not.toContain('list[cursor++]');
+      expect(body.deobfuscatedCode).not.toContain('case "1"');
+    });
+
+    it('renames shorthand bindings across assignments, updates, and loop targets', async () => {
+      const code = [
+        'let a = 0;',
+        'const obj = { a };',
+        'a = 1;',
+        'a++;',
+        'for (a in { x: 1 }) { console.log(a); }',
+        'for (a of [2, 3]) { console.log(a); }',
+      ].join('\n');
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('const obj = { a: var_1 };');
+      expect(body.deobfuscatedCode).toContain('var_1 = 1;');
+      expect(body.deobfuscatedCode).toContain('var_1++;');
+      expect(body.deobfuscatedCode).toContain('for (var_1 in { x: 1 })');
+      expect(body.deobfuscatedCode).toContain('for (var_1 of [2, 3])');
+    });
+
+    it('formats non-integer constant folds as decimals', async () => {
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code: 'const half = 5 / 2;',
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('const half = 2.5;');
+    });
+
+    it('handles fallback string escapes, regex char classes, and raw dead-code removals', async () => {
+      const huge = `${'9'.repeat(400)} + 1`;
+      const code = [
+        'const text = "a\\\"b 3 + 4";',
+        'if (false) { removeMe(); }',
+        'if (flag) /[a\\]b]/g.test(value);',
+        `const huge = ${huge};`,
+        'function {',
+      ].join('\n');
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code,
+          useWebcrack: false,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('"a\\\"b 3 + 4"');
+      expect(body.deobfuscatedCode).toContain('/[a\\]b]/g');
+      expect(body.deobfuscatedCode).toContain('const huge =');
+      expect(body.deobfuscatedCode).not.toContain('Infinity');
+      expect(body.deobfuscatedCode).not.toContain('removeMe();');
+    });
+
+    it('keeps aggressive mode stable when no dispatcher pattern matches', async () => {
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscatePipeline({
+          code: 'const answer = 40 + 2;',
+          useWebcrack: false,
+          aggressive: true,
+          humanize: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.deobfuscatedCode).toContain('const answer = 42;');
+    });
+  });
+
+  describe('handleJsSolveConstraints', () => {
+    it('returns an error when constraint input code is missing', async () => {
+      const body = parseJson<Record<string, any>>(await handlers.handleJsSolveConstraints({}));
+
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('code is required');
+    });
+
+    it('preserves quoted JSFuck-like text while solving live expressions', async () => {
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsSolveConstraints({
+          code: 'const x = "![]+[]"; const y = ![]+[];',
+          replaceInPlace: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.transformedCode).toContain('const x = "![]+[]";');
+      expect(body.transformedCode).toContain('const y = "false";');
+    });
+
+    it('solves comparison, coercion, opaque predicate, and string-array patterns together', async () => {
+      const code = [
+        'if (1 < 2) hitLt();',
+        'if (3 > 2) hitGt();',
+        'if (2 <= 2) hitLe();',
+        'if (2 >= 2) hitGe();',
+        'if (2 == 2) hitEq();',
+        'if (2 === 2) hitStrictEq();',
+        'if (2 != 3) hitNe();',
+        'if (2 !== 3) hitStrictNe();',
+        'if (1 <> 2) keepWeird();',
+        'const a = !![]+[];',
+        'const b = ![]+[];',
+        'const c = +!![];',
+        'const d = []+[];',
+        'const e = +[];',
+        'const f = !![];',
+        'const g = ![];',
+        'const h = void 0;',
+        'const i = !0;',
+        'const j = !1;',
+        'const k = !0.0;',
+        "var table = ['alpha', 'beta']; const m = table('0x1'); const n = table(9);",
+        'const o = typeof undefined === "undefined";',
+        'const p = typeof null === "object";',
+        'const q = typeof NaN === "number";',
+        'const r = null == undefined;',
+        'const s = null === undefined;',
+        'const t = NaN === NaN;',
+        'const quoted = "!![]+[] and !1";',
+      ].join('\n');
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsSolveConstraints({
+          code,
+          replaceInPlace: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.solvedCount).toBeGreaterThanOrEqual(18);
+      expect(body.transformedCode).toContain('if (true) hitLt();');
+      expect(body.transformedCode).toContain('if (true) hitStrictNe();');
+      expect(body.transformedCode).toContain('if (1 <> 2) keepWeird();');
+      expect(body.transformedCode).toContain('const a = "true";');
+      expect(body.transformedCode).toContain('const b = "false";');
+      expect(body.transformedCode).toContain('const c = 1;');
+      expect(body.transformedCode).toContain('const d = "";');
+      expect(body.transformedCode).toContain('const e = 0;');
+      expect(body.transformedCode).toContain('const f = true;');
+      expect(body.transformedCode).toContain('const g = false;');
+      expect(body.transformedCode).toContain('const h = undefined;');
+      expect(body.transformedCode).toContain('const i = true;');
+      expect(body.transformedCode).toContain('const j = false;');
+      expect(body.transformedCode).toContain('const k = !0.0;');
+      expect(body.transformedCode).toContain('const m = "beta";');
+      expect(body.transformedCode).toContain('const n = table(9);');
+      expect(body.transformedCode).toContain('const o = true;');
+      expect(body.transformedCode).toContain('const p = true;');
+      expect(body.transformedCode).toContain('const q = true;');
+      expect(body.transformedCode).toContain('const r = true;');
+      expect(body.transformedCode).toContain('const s = false;');
+      expect(body.transformedCode).toContain('const t = false;');
+      expect(body.transformedCode).toContain('const quoted = "!![]+[] and !1";');
+    });
+
+    it('respects maxIterations and omits transformedCode when replaceInPlace is false', async () => {
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsSolveConstraints({
+          code: "if (1 < 2) a(); if (2 < 3) b(); var arr = ['x', 'y']; arr(0); arr(1);",
+          maxIterations: 1,
+          replaceInPlace: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.solvedCount).toBe(1);
+      expect(body.transformedCode).toBeUndefined();
+      expect(body.solved).toHaveLength(1);
+    });
+
+    it('leaves string-array accesses unchanged when maxIterations is already exhausted', async () => {
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsSolveConstraints({
+          code: "var arr = ['x', 'y']; const first = arr('0x0');",
+          maxIterations: 0,
+          replaceInPlace: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.solvedCount).toBe(0);
+      expect(body.transformedCode).toContain("arr('0x0')");
+    });
+  });
+
+  describe('handleJsDeobfuscateJsvmp', () => {
+    it('returns an error when JSVMP input code is missing', async () => {
+      const body = parseJson<Record<string, any>>(await handlers.handleJsDeobfuscateJsvmp({}));
+
+      expect(body.success).toBe(false);
+      expect(body.error).toContain('code is required');
+    });
+
+    it('returns detect-only summaries when requested', async () => {
+      const deobfuscate = setJsvmpDeobfuscatorResult({
+        isJSVMP: true,
+        vmType: 'switch-dispatch',
+        vmFeatures: { complexity: 'high', instructionCount: 2 },
+        confidence: 92,
+        instructions: [{ type: 'load' }, { type: 'jump' }],
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscateJsvmp({
+          code: 'vm();',
+          detectOnly: true,
+          aggressive: true,
+          extractInstructions: false,
+          timeout: 1234,
+        }),
+      );
+
+      expect(deobfuscate).toHaveBeenCalledWith({
+        code: 'vm();',
+        aggressive: true,
+        extractInstructions: false,
+        timeout: 1234,
+      });
+      expect(body.success).toBe(true);
+      expect(body.isJSVMP).toBe(true);
+      expect(body.vmType).toBe('switch-dispatch');
+      expect(body.instructionCount).toBe(2);
+    });
+
+    it('returns the full deobfuscation payload when detectOnly is false', async () => {
+      setJsvmpDeobfuscatorResult({
+        isJSVMP: false,
+        vmType: 'unknown',
+        vmFeatures: { complexity: 'low' },
+        instructions: [],
+        deobfuscatedCode: '',
+        confidence: 14,
+        warnings: ['pattern too weak'],
+        unresolvedParts: ['dispatcher'],
+        stats: { passes: 1 },
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsDeobfuscateJsvmp({
+          code: 'plain();',
+        }),
+      );
+
+      expect(body.success).toBe(false);
+      expect(body.isJSVMP).toBe(false);
+      expect(body.warnings).toContain('pattern too weak');
+      expect(body.unresolvedParts).toContain('dispatcher');
+      expect(body.stats.passes).toBe(1);
+    });
+  });
+
+  describe('handleJsAnalyzeVm', () => {
+    it('returns an error when VM analysis code is missing', async () => {
+      const body = parseJson<Record<string, any>>(await handlers.handleJsAnalyzeVm({}));
+
+      expect(body.success).toBe(false);
+      expect(body.error).toBe('code is required');
+    });
+
+    it('returns a non-VM summary when no VM patterns are detected', async () => {
+      setJsvmpDeobfuscatorResult({
+        isJSVMP: false,
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsAnalyzeVm({
+          code: 'function plain() { return 1; }',
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.isVM).toBe(false);
+      expect(body.message).toContain('No VM/JSVMP patterns detected');
+    });
+
+    it('reports dispatch type, bytecode, and opcode distribution for VM handlers', async () => {
+      setJsvmpDeobfuscatorResult({
+        isJSVMP: true,
+        vmType: 'custom-vm',
+        vmFeatures: {
+          complexity: 'high',
+          instructionCount: 3,
+          interpreterLocation: 'vmLoop',
+        },
+        instructions: [{ type: 'load' }, { type: 'load' }, { type: 'jump' }],
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsAnalyzeVm({
+          code: 'while(flag){switch(op){case 1: break;}}',
+          extractBytecode: true,
+          mapOpcodes: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.analysis.isVM).toBe(true);
+      expect(body.analysis.dispatchType).toBe('while-switch');
+      expect(body.analysis.bytecode).toHaveLength(3);
+      expect(body.analysis.opcodeDistribution).toEqual({ load: 2, jump: 1 });
+      expect(body.analysis.suggestedStrategy).toContain('symbolic execution');
+    });
+
+    it('maps missing opcode types to unknown when building the distribution', async () => {
+      setJsvmpDeobfuscatorResult({
+        isJSVMP: true,
+        vmType: 'custom-vm',
+        vmFeatures: {
+          complexity: 'medium',
+          instructionCount: 2,
+          interpreterLocation: 'vmLoop',
+        },
+        instructions: [{}, { type: 'jump' }],
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsAnalyzeVm({
+          code: 'while(flag){switch(op){case 1: break;}}',
+          extractBytecode: true,
+          mapOpcodes: true,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.analysis.opcodeDistribution).toEqual({ unknown: 1, jump: 1 });
+    });
+
+    it('reports if-else dispatch without bytecode details when optional flags are disabled', async () => {
+      setJsvmpDeobfuscatorResult({
+        isJSVMP: true,
+        vmType: 'branch-vm',
+        vmFeatures: {
+          complexity: 'low',
+          instructionCount: 1,
+          interpreterLocation: 'branchFn',
+        },
+        instructions: [{ type: 'branch' }],
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsAnalyzeVm({
+          code: 'if (left === right) { dispatch(); }',
+          extractBytecode: false,
+          mapOpcodes: false,
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.analysis.dispatchType).toBe('if-else-chain');
+      expect(body.analysis.bytecode).toBeUndefined();
+      expect(body.analysis.opcodeDistribution).toBeUndefined();
+      expect(body.analysis.suggestedStrategy).toBeUndefined();
+    });
+
+    it('classifies for-switch dispatchers separately', async () => {
+      setJsvmpDeobfuscatorResult({
+        isJSVMP: true,
+        vmType: 'loop-vm',
+        vmFeatures: {
+          complexity: 'low',
+          instructionCount: 1,
+          interpreterLocation: 'forLoop',
+        },
+        instructions: [{ type: 'step' }],
+      });
+
+      const body = parseJson<Record<string, any>>(
+        await handlers.handleJsAnalyzeVm({
+          code: 'for(;;){switch(op){case 1: break;}}',
+        }),
+      );
+
+      expect(body.success).toBe(true);
+      expect(body.analysis.dispatchType).toBe('for-switch');
+    });
+  });
+
+  describe('web tools coverage', () => {
+    const page = {
+      evaluate: vi.fn(async (fn: (...args: unknown[]) => unknown, ...args: unknown[]) =>
+        fn(...args),
+      ),
+    };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      deps.collector.getActivePage.mockResolvedValue(page as any);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('enumerates webpack modules without requiring them when forceRequireAll is false', async () => {
+      vi.stubGlobal('window', {
+        webpackChunkmain: Object.assign([], {
+          m: {
+            '1': () => ({ name: 'alpha' }),
+          },
+        }),
+        __webpack_modules__: {
+          '2': () => ({ name: 'beta' }),
+        },
+      } as unknown as Window & typeof globalThis);
+
+      const body = parseJson<any>(
+        await handlers.handleWebpackEnumerate({ searchKeyword: 'alpha', forceRequireAll: false }),
+      );
+
+      expect(body.total).toBe(2);
+      expect(body.requireFound).toBe(true);
+      expect(body.matches).toEqual([]);
+      expect(body.moduleIds).toEqual(expect.arrayContaining(['1', '2']));
+    });
+
+    it('enumerates and filters webpack modules when forceRequireAll is true', async () => {
+      vi.stubGlobal('window', {
+        webpackChunkmain: Object.assign([], {
+          m: {
+            '1': () => ({ name: 'alpha' }),
+            '2': () => {
+              throw new Error('boom');
+            },
+          },
+        }),
+      } as unknown as Window & typeof globalThis);
+
+      const body = parseJson<any>(
+        await handlers.handleWebpackEnumerate({ searchKeyword: 'alpha', forceRequireAll: true }),
+      );
+
+      expect(body.total).toBe(2);
+      expect(body.requireFound).toBe(true);
+      expect(body.matches).toHaveLength(1);
+      expect(body.matches[0].id).toBe('1');
+      expect(body.matches[0].preview).toContain('alpha');
+    });
+
+    it('uses __webpack_require__ directly and falls back to String() for circular exports', async () => {
+      const circular = { label: 'alpha' } as { label: string; self?: unknown };
+      circular.self = circular;
+
+      vi.stubGlobal('window', {
+        __webpack_require__: vi.fn((id: string) => {
+          if (id === '1') return circular;
+          return { label: 'beta' };
+        }),
+        webpackChunkapp: [[[0], { '1': true, '2': true }]],
+      } as unknown as Window & typeof globalThis);
+
+      const body = parseJson<any>(
+        await handlers.handleWebpackEnumerate({
+          searchKeyword: 'beta',
+          forceRequireAll: true,
+          maxResults: 1,
+        }),
+      );
+
+      expect(body.requireFound).toBe(true);
+      expect(body.matches).toHaveLength(1);
+      expect(body.matches[0].id).toBe('2');
+    });
+
+    it('uses fallback chunk metadata for direct object exports when require is inferred from .m', async () => {
+      vi.stubGlobal('window', {
+        webpackChunkbad: { nope: true },
+        webpackChunkapp: Object.assign([], {
+          m: {
+            '1': { label: 'direct-object' },
+          },
+        }),
+      } as unknown as Window & typeof globalThis);
+
+      const body = parseJson<any>(
+        await handlers.handleWebpackEnumerate({
+          searchKeyword: 'direct-object',
+          forceRequireAll: true,
+        }),
+      );
+
+      expect(body.requireFound).toBe(true);
+      expect(body.matches).toHaveLength(1);
+      expect(body.matches[0].id).toBe('1');
+    });
+
+    it('respects zero maxResults when searching webpack exports', async () => {
+      vi.stubGlobal('window', {
+        webpackChunkapp: Object.assign([], {
+          m: {
+            '1': () => ({ label: 'alpha' }),
+          },
+        }),
+      } as unknown as Window & typeof globalThis);
+
+      const body = parseJson<any>(
+        await handlers.handleWebpackEnumerate({
+          searchKeyword: 'alpha',
+          forceRequireAll: true,
+          maxResults: 0,
+        }),
+      );
+
+      expect(body.requireFound).toBe(true);
+      expect(body.matches).toEqual([]);
+    });
+
+    it('returns a structured error when webpack enumeration cannot get an active page', async () => {
+      deps.collector.getActivePage.mockRejectedValueOnce(new Error('no page'));
+
+      const result = await handlers.handleWebpackEnumerate({ searchKeyword: 'alpha' });
+      const textPart = result.content[0];
+
+      expect(textPart?.type).toBe('text');
+      if (textPart?.type !== 'text') {
+        throw new Error('Expected text response');
+      }
+      expect(textPart.text).toContain('no page');
+    });
+
+    it('extracts inline source maps with content filtering', async () => {
+      const inlineMap = Buffer.from(
+        JSON.stringify({
+          sources: ['src/app.ts', 'vendor/lib.ts'],
+          sourcesContent: ['export const app = 1;', 'export const lib = 2;'],
+        }),
+      ).toString('base64');
+
+      vi.stubGlobal('document', {
+        querySelectorAll: vi.fn(() => [{ src: 'https://cdn.example/app.js' }]),
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({
+          text: async () =>
+            `console.log("app");\n//# sourceMappingURL=data:application/json;base64,${inlineMap}`,
+        })),
+      );
+
+      const body = parseJson<any>(
+        await runSourceMapExtract(deps.collector as any, {
+          includeContent: true,
+          filterPath: 'src/',
+          maxFiles: 10,
+        }),
+      );
+
+      expect(body.total).toBe(1);
+      expect(body.files[0].path).toBe('src/app.ts');
+      expect(body.files[0].content).toContain('app = 1');
+    });
+
+    it('extracts external source maps and skips malformed or missing mappings', async () => {
+      vi.stubGlobal('document', {
+        querySelectorAll: vi.fn(() => [
+          { src: 'https://cdn.example/no-map.js' },
+          { src: 'https://cdn.example/bad-inline.js' },
+          { src: 'https://cdn.example/good-map.js' },
+          { src: 'https://cdn.example/fetch-error.js' },
+        ]),
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          if (url.endsWith('no-map.js')) {
+            return { text: async () => 'console.log("plain");' };
+          }
+          if (url.endsWith('bad-inline.js')) {
+            return {
+              text: async () =>
+                'console.log("bad");\n//# sourceMappingURL=data:application/json;base64,@@@',
+            };
+          }
+          if (url.endsWith('good-map.js')) {
+            return {
+              text: async () => 'console.log("good");\n//# sourceMappingURL=good-map.js.map',
+            };
+          }
+          if (url.endsWith('good-map.js.map')) {
+            return {
+              json: async () => ({
+                sources: ['src/keep.ts', '', 'src/other.ts'],
+              }),
+            };
+          }
+          throw new Error(`boom:${url}`);
+        }),
+      );
+
+      const body = parseJson<any>(
+        await runSourceMapExtract(deps.collector as any, {
+          includeContent: false,
+          filterPath: 'src/',
+          maxFiles: 2,
+        }),
+      );
+
+      expect(body.total).toBe(2);
+      expect(body.files.map((file: { path: string }) => file.path)).toEqual([
+        'src/keep.ts',
+        'src/other.ts',
+      ]);
+    });
+
+    it('handles absolute map URLs, missing sources, and null sourcesContent entries', async () => {
+      vi.stubGlobal('document', {
+        querySelectorAll: vi.fn(() => [
+          { src: 'https://cdn.example/absolute-map.js' },
+          { src: 'https://cdn.example/no-sources.js' },
+        ]),
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string) => {
+          if (url.endsWith('absolute-map.js')) {
+            return {
+              text: async () =>
+                'console.log("abs");\n//# sourceMappingURL=https://cdn.example/absolute-map.js.map',
+            };
+          }
+          if (url.endsWith('absolute-map.js.map')) {
+            return {
+              json: async () => ({
+                sources: ['src/first.ts'],
+                sourcesContent: [null],
+              }),
+            };
+          }
+          if (url.endsWith('no-sources.js')) {
+            return {
+              text: async () =>
+                'console.log("none");\n//# sourceMappingURL=https://cdn.example/no-sources.js.map',
+            };
+          }
+          return {
+            json: async () => ({}),
+          };
+        }),
+      );
+
+      const body = parseJson<any>(
+        await runSourceMapExtract(deps.collector as any, {
+          includeContent: true,
+          maxFiles: 10,
+        }),
+      );
+
+      expect(body.total).toBe(1);
+      expect(body.files[0].path).toBe('src/first.ts');
+      expect(body.files[0].content).toBeUndefined();
+    });
+
+    it('returns an error response when source map extraction cannot get an active page', async () => {
+      deps.collector.getActivePage.mockRejectedValueOnce(new Error('source page missing'));
+
+      const result = await runSourceMapExtract(deps.collector as any, {});
+      const textPart = result.content[0];
+
+      expect(textPart?.type).toBe('text');
+      if (textPart?.type !== 'text') {
+        throw new Error('Expected text response');
+      }
+      expect(textPart.text).toContain('source page missing');
     });
   });
 });

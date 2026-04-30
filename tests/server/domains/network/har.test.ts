@@ -250,7 +250,7 @@ describe('buildHar', () => {
 
   it('parses response cookies from Set-Cookie header', async () => {
     getResponseMock.mockReturnValue(
-      makeResponse({ headers: { 'set-cookie': 'token=xyz789; sid=aaa' } })
+      makeResponse({ headers: { 'set-cookie': 'token=xyz789; sid=aaa' } }),
     );
     getResponseBodyMock.mockResolvedValue(null);
 
@@ -346,7 +346,7 @@ describe('buildHar', () => {
         status: 404,
         statusText: 'Not Found',
         headers: { 'x-powered-by': 'test' },
-      })
+      }),
     );
     getResponseBodyMock.mockResolvedValue(null);
 
@@ -386,7 +386,7 @@ describe('buildHar', () => {
       makeResponse({
         status: 302,
         headers: { location: 'https://example.com/redirected' },
-      })
+      }),
     );
     getResponseBodyMock.mockResolvedValue(null);
 
@@ -567,7 +567,7 @@ describe('buildHar', () => {
   // -----------------------------------------------------------------------
   it('fetches bodies in batches of 8 to limit concurrency', async () => {
     const requests = Array.from({ length: 20 }, (_, i) =>
-      makeRequest({ requestId: `r-${i}`, url: `https://example.com/${i}` })
+      makeRequest({ requestId: `r-${i}`, url: `https://example.com/${i}` }),
     );
 
     getResponseMock.mockReturnValue(makeResponse());

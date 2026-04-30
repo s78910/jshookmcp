@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import '../shared/manifest-test-mocks';
+import { manifestTestMocksInstalled } from '../shared/manifest-test-mocks';
 import { assertDomainExportContract } from '../shared/export-contract-helpers';
+
+void manifestTestMocksInstalled;
 
 describe('server/domains/process exports', () => {
   beforeEach(() => {

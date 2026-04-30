@@ -453,7 +453,7 @@ describe('StreamingToolHandlersSse — additional coverage', () => {
       });
 
       const second = parseJson(
-        await handler.handleSseMonitorEnable({ maxEvents: 5000, urlFilter: '/events/.*' })
+        await handler.handleSseMonitorEnable({ maxEvents: 5000, urlFilter: '/events/.*' }),
       );
       expect(second.config.maxEvents).toBe(5000);
       expect(second.config.urlFilter).toBe('/events/.*');

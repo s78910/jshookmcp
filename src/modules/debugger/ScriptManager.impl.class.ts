@@ -80,8 +80,6 @@ export class ScriptManager {
     const page = await this.collector.getActivePage();
     this.cdpSession = await page.createCDPSession();
 
-    await this.cdpSession.send('Debugger.enable');
-
     this.cdpSession.on('Debugger.scriptParsed', (params: DebuggerScriptParsedEvent) => {
       const scriptInfo: ScriptInfo = {
         scriptId: params.scriptId,
@@ -104,6 +102,8 @@ export class ScriptManager {
 
       logger.debug(`Script parsed: ${params.url || 'inline'} (${params.scriptId})`);
     });
+
+    await this.cdpSession.send('Debugger.enable');
 
     this.initialized = true;
     logger.info('ScriptManager initialized');
@@ -143,7 +143,7 @@ export class ScriptManager {
 
     if (scripts.length > maxScripts) {
       logger.warn(
-        `Found ${scripts.length} scripts, limiting to ${maxScripts}. Increase maxScripts parameter if needed.`
+        `Found ${scripts.length} scripts, limiting to ${maxScripts}. Increase maxScripts parameter if needed.`,
       );
     }
 
@@ -151,7 +151,7 @@ export class ScriptManager {
 
     if (includeSource) {
       logger.warn(
-        `Loading source code for ${limitedScripts.length} scripts. This may use significant memory.`
+        `Loading source code for ${limitedScripts.length} scripts. This may use significant memory.`,
       );
 
       let loadedCount = 0;
@@ -165,7 +165,7 @@ export class ScriptManager {
       ) {
         const batch = missingScripts.slice(
           batchStart,
-          batchStart + ScriptManager.SOURCE_LOAD_BATCH_SIZE
+          batchStart + ScriptManager.SOURCE_LOAD_BATCH_SIZE,
         );
         const settled = await Promise.allSettled(
           batch.map(async (script) => {
@@ -178,7 +178,7 @@ export class ScriptManager {
             } else {
               failedCount++;
             }
-          })
+          }),
         );
 
         for (const result of settled) {
@@ -191,7 +191,7 @@ export class ScriptManager {
       }
 
       logger.info(
-        `getAllScripts: ${limitedScripts.length} scripts (loaded: ${loadedCount}, failed: ${failedCount})`
+        `getAllScripts: ${limitedScripts.length} scripts (loaded: ${loadedCount}, failed: ${failedCount})`,
       );
     } else {
       logger.info(`getAllScripts: ${limitedScripts.length} scripts (source not included)`);
@@ -239,7 +239,7 @@ export class ScriptManager {
     }
 
     logger.info(
-      `getScriptSource: ${targetScript.url || 'inline'} (${targetScript.sourceLength} bytes)`
+      `getScriptSource: ${targetScript.url || 'inline'} (${targetScript.sourceLength} bytes)`,
     );
     return targetScript;
   }
@@ -274,7 +274,7 @@ export class ScriptManager {
       caseSensitive?: boolean;
       contextLines?: number;
       maxMatches?: number;
-    } = {}
+    } = {},
   ): Promise<{
     keyword: string;
     totalMatches: number;
@@ -326,7 +326,18 @@ export class ScriptManager {
           const startLine = Math.max(0, i - contextLines);
           const endLine = Math.min(lines.length - 1, i + contextLines);
           const contextArray = lines.slice(startLine, endLine + 1);
-          const context = contextArray.join('\n');
+          let context = contextArray.join('\n');
+
+          if (context.length > 2000) {
+            const matchIndex = match.index || 0;
+            // On a huge single-line bundle, extract a safe window around the match
+            const snippetStart = Math.max(0, matchIndex - 100);
+            const snippetEnd = Math.min(line.length, matchIndex + 100);
+            context =
+              (snippetStart > 0 ? '...' : '') +
+              line.substring(snippetStart, snippetEnd) +
+              (snippetEnd < line.length ? '...' : '');
+          }
 
           matches.push({
             scriptId: script.scriptId,
@@ -364,7 +375,7 @@ export class ScriptManager {
       maxDepth?: number;
       maxSize?: number;
       includeComments?: boolean;
-    } = {}
+    } = {},
   ): Promise<ExtractFunctionTreeResult> {
     return extractFunctionTreeCore(this, scriptId, functionName, options);
   }
@@ -430,7 +441,17 @@ export class ScriptManager {
 
         const startLine = Math.max(0, i - 3);
         const endLine = Math.min(lines.length - 1, i + 3);
-        const context = lines.slice(startLine, endLine + 1).join('\n');
+        let context = lines.slice(startLine, endLine + 1).join('\n');
+
+        if (context.length > 1000) {
+          const matchIndex = match.index || 0;
+          const snippetStart = Math.max(0, matchIndex - 50);
+          const snippetEnd = Math.min(line.length, matchIndex + 50);
+          context =
+            (snippetStart > 0 ? '...' : '') +
+            line.substring(snippetStart, snippetEnd) +
+            (snippetEnd < line.length ? '...' : '');
+        }
 
         const entry: KeywordIndexEntry = {
           scriptId,
@@ -487,7 +508,7 @@ export class ScriptManager {
       caseSensitive?: boolean;
       contextLines?: number;
       maxMatches?: number;
-    } = {}
+    } = {},
   ): Promise<{
     keyword: string;
     totalMatches: number;

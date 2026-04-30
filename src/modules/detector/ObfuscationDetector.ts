@@ -34,16 +34,14 @@ export class ObfuscationDetector {
       confidence['javascript-obfuscator'] = 0.9;
       features.push('String array with rotation');
       features.push('Control flow flattening');
-      recommendations.push('Use deobfuscate/advanced_deobfuscate with webcrack enabled');
+      recommendations.push('Use deobfuscate(engine="webcrack") for aggressive webcrack cleanup');
     }
 
     if (this.detectWebpack(code)) {
       types.push('webpack');
       confidence['webpack'] = 0.85;
       features.push('__webpack_require__');
-      recommendations.push(
-        'Use deobfuscate/advanced_deobfuscate with unpack=true to recover modules'
-      );
+      recommendations.push('Use deobfuscate(engine="webcrack", unpack=true) to recover modules');
     }
 
     if (this.detectUglify(code)) {
@@ -188,7 +186,7 @@ export class ObfuscationDetector {
 
   private buildToolRecommendations(
     types: ObfuscationType[],
-    code: string
+    code: string,
   ): DetectionResult['toolRecommendations'] {
     const recommendations = new Map<
       string,
@@ -202,7 +200,7 @@ export class ObfuscationDetector {
     const addRecommendation = (
       tool: string,
       reason: string,
-      suggestedArgs?: Record<string, unknown>
+      suggestedArgs?: Record<string, unknown>,
     ) => {
       if (!recommendations.has(tool)) {
         recommendations.set(tool, { tool, reason, suggestedArgs });
@@ -213,7 +211,7 @@ export class ObfuscationDetector {
       addRecommendation(
         'webcrack_unpack',
         'Bundle or wrapper markers detected; unpacking modules is likely the highest-value first step.',
-        { code, unpack: true, unminify: true }
+        { code, unpack: true, unminify: true },
       );
     }
 
@@ -226,13 +224,13 @@ export class ObfuscationDetector {
           'base64-encoding',
           'urlencoded',
           'unknown',
-        ].includes(type)
+        ].includes(type),
       )
     ) {
       addRecommendation(
         'deobfuscate',
         'Static cleanup is likely sufficient; start with the standard webcrack-backed deobfuscation path.',
-        { code, unminify: true }
+        { code, unminify: true },
       );
     }
 
@@ -248,21 +246,21 @@ export class ObfuscationDetector {
           'jsfuck',
           'aaencode',
           'jjencode',
-        ].includes(type)
+        ].includes(type),
       )
     ) {
       addRecommendation(
-        'advanced_deobfuscate',
+        'deobfuscate',
         'Complex protections detected; use the advanced webcrack-backed flow for deeper cleanup.',
-        { code, detectOnly: false, unminify: true }
+        { code, engine: 'webcrack', detectOnly: false, unminify: true },
       );
     }
 
     if (types.includes('eval-obfuscation') || types.includes('self-modifying')) {
       addRecommendation(
-        'manage_hooks',
+        'ai_hook',
         'Runtime-generated code is present; capture or hook execution points before static cleanup if analysis stalls.',
-        { action: 'create', target: 'eval', type: 'function' }
+        { action: 'inject', target: 'eval', type: 'function' },
       );
     }
 
@@ -270,7 +268,7 @@ export class ObfuscationDetector {
       addRecommendation(
         'deobfuscate',
         'No strong signature matched; start with the standard webcrack-backed path.',
-        { code }
+        { code },
       );
     }
 

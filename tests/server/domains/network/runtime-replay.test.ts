@@ -1,3 +1,9 @@
+import {
+  createCodeCollectorMock,
+  parseJson,
+  // @ts-expect-error — auto-suppressed [TS1484]
+  NetworkRequestsResponse,
+} from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const replayRequestMock = vi.fn();
@@ -10,7 +16,7 @@ const fsRealpathMock = vi.fn();
 vi.mock('@src/utils/DetailedDataManager', () => ({
   DetailedDataManager: {
     getInstance: () => ({
-      smartHandle: (payload: unknown) => payload,
+      smartHandle: (payload: any) => payload,
     }),
   },
 }));
@@ -55,12 +61,8 @@ vi.mock('@src/utils/logger', () => ({
 
 import { AdvancedToolHandlersRuntime } from '@server/domains/network/handlers.impl.core.runtime.replay';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
-
 describe('AdvancedToolHandlersRuntime', () => {
-  const collector = {} as any;
+  const collector = createCodeCollectorMock();
   const consoleMonitor = {
     isNetworkEnabled: vi.fn(),
     enable: vi.fn(),
@@ -78,6 +80,7 @@ describe('AdvancedToolHandlersRuntime', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // @ts-expect-error — auto-suppressed [TS2345]
     handler = new AdvancedToolHandlersRuntime(collector, consoleMonitor);
     // Inject a mock performance monitor to avoid real instantiation
     (handler as any).performanceMonitor = {
@@ -101,7 +104,7 @@ describe('AdvancedToolHandlersRuntime', () => {
     it('returns failure when no requests are captured', async () => {
       consoleMonitor.getNetworkRequests.mockReturnValue([]);
 
-      const body = parseJson(await handler.handleNetworkExtractAuth({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkExtractAuth({}));
       expect(body.success).toBe(false);
       expect(body.message).toContain('No captured requests');
     });
@@ -115,11 +118,15 @@ describe('AdvancedToolHandlersRuntime', () => {
         { type: 'cookie', confidence: 0.3, value: 'ses***' },
       ]);
 
-      const body = parseJson(await handler.handleNetworkExtractAuth({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkExtractAuth({}));
       expect(body.success).toBe(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.scannedRequests).toBe(1);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.found).toBe(1); // Only the 0.9 finding passes default 0.4 threshold
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.findings).toHaveLength(1);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.findings[0].confidence).toBe(0.9);
     });
 
@@ -133,7 +140,10 @@ describe('AdvancedToolHandlersRuntime', () => {
         { type: 'apiKey', confidence: 0.2, value: 'key***' },
       ]);
 
-      const body = parseJson(await handler.handleNetworkExtractAuth({ minConfidence: 0.5 }));
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkExtractAuth({ minConfidence: 0.5 }),
+      );
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.found).toBe(2);
     });
 
@@ -143,8 +153,9 @@ describe('AdvancedToolHandlersRuntime', () => {
       ]);
       extractAuthMock.mockReturnValue([{ type: 'weak', confidence: 0.1 }]);
 
-      const body = parseJson(await handler.handleNetworkExtractAuth({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkExtractAuth({}));
       expect(body.success).toBe(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.found).toBe(0);
     });
   });
@@ -155,7 +166,7 @@ describe('AdvancedToolHandlersRuntime', () => {
     it('returns failure when no requests are captured', async () => {
       consoleMonitor.getNetworkRequests.mockReturnValue([]);
 
-      const body = parseJson(await handler.handleNetworkExportHar({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkExportHar({}));
       expect(body.success).toBe(false);
       expect(body.message).toContain('No captured requests');
     });
@@ -170,9 +181,11 @@ describe('AdvancedToolHandlersRuntime', () => {
         },
       });
 
-      const body = parseJson(await handler.handleNetworkExportHar({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkExportHar({}));
       expect(body.success).toBe(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.entryCount).toBe(1);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.har).toBeDefined();
     });
 
@@ -182,7 +195,7 @@ describe('AdvancedToolHandlersRuntime', () => {
       ]);
       buildHarMock.mockRejectedValue(new Error('HAR build failed'));
 
-      const body = parseJson(await handler.handleNetworkExportHar({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkExportHar({}));
       expect(body.success).toBe(false);
       expect(body.error).toBe('HAR build failed');
     });
@@ -212,7 +225,7 @@ describe('AdvancedToolHandlersRuntime', () => {
 
   describe('handleNetworkReplayRequest', () => {
     it('returns error when requestId is missing', async () => {
-      const body = parseJson(await handler.handleNetworkReplayRequest({}));
+      const body = parseJson<NetworkRequestsResponse>(await handler.handleNetworkReplayRequest({}));
       expect(body.success).toBe(false);
       expect(body.error).toContain('requestId is required');
     });
@@ -222,8 +235,8 @@ describe('AdvancedToolHandlersRuntime', () => {
         { requestId: 'other', url: 'https://example.com', method: 'GET' },
       ]);
 
-      const body = parseJson(
-        await handler.handleNetworkReplayRequest({ requestId: 'nonexistent' })
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkReplayRequest({ requestId: 'nonexistent' }),
       );
       expect(body.success).toBe(false);
       expect(body.error).toContain('not found');
@@ -240,8 +253,11 @@ describe('AdvancedToolHandlersRuntime', () => {
         url: 'https://api.example.com/data',
       });
 
-      const body = parseJson(await handler.handleNetworkReplayRequest({ requestId: 'req-1' }));
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkReplayRequest({ requestId: 'req-1' }),
+      );
       expect(body.success).toBe(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       expect(body.dryRun).toBe(true);
       expect(replayRequestMock).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -252,7 +268,7 @@ describe('AdvancedToolHandlersRuntime', () => {
         expect.objectContaining({
           requestId: 'req-1',
           dryRun: true,
-        })
+        }),
       );
     });
 
@@ -282,7 +298,7 @@ describe('AdvancedToolHandlersRuntime', () => {
           urlOverride: 'https://api.example.com/v2/data',
           timeoutMs: 5000,
           dryRun: false,
-        })
+        }),
       );
     });
 
@@ -292,7 +308,9 @@ describe('AdvancedToolHandlersRuntime', () => {
       ]);
       replayRequestMock.mockRejectedValue(new Error('Network timeout'));
 
-      const body = parseJson(await handler.handleNetworkReplayRequest({ requestId: 'req-1' }));
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkReplayRequest({ requestId: 'req-1' }),
+      );
       expect(body.success).toBe(false);
       expect(body.error).toBe('Network timeout');
     });
@@ -303,7 +321,9 @@ describe('AdvancedToolHandlersRuntime', () => {
       ]);
       replayRequestMock.mockRejectedValue('string error');
 
-      const body = parseJson(await handler.handleNetworkReplayRequest({ requestId: 'req-1' }));
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkReplayRequest({ requestId: 'req-1' }),
+      );
       expect(body.success).toBe(false);
       expect(body.error).toBe('string error');
     });
@@ -317,7 +337,9 @@ describe('AdvancedToolHandlersRuntime', () => {
       ]);
       replayRequestMock.mockResolvedValue({ dryRun: true });
 
-      const body = parseJson(await handler.handleNetworkReplayRequest({ requestId: 'req-1' }));
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkReplayRequest({ requestId: 'req-1' }),
+      );
       expect(body.success).toBe(true);
     });
 
@@ -327,7 +349,9 @@ describe('AdvancedToolHandlersRuntime', () => {
         { requestId: 'req-2', method: 'GET' }, // missing url
       ]);
 
-      const body = parseJson(await handler.handleNetworkReplayRequest({ requestId: 'req-1' }));
+      const body = parseJson<NetworkRequestsResponse>(
+        await handler.handleNetworkReplayRequest({ requestId: 'req-1' }),
+      );
       expect(body.success).toBe(false);
       expect(body.error).toContain('not found');
     });

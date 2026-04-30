@@ -1,8 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
 import { bindByDepKey, toolLookup } from '@server/domains/shared/registry';
 import { antidebugTools } from '@server/domains/antidebug/definitions';
-import { AntiDebugToolHandlers } from '@server/domains/antidebug/index';
-import { CodeCollector } from '@server/domains/shared/modules';
+import type { AntiDebugToolHandlers } from '@server/domains/antidebug/index';
 
 const DOMAIN = 'antidebug' as const;
 const DEP_KEY = 'antidebugHandlers' as const;
@@ -11,12 +10,16 @@ const t = toolLookup(antidebugTools);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { CodeCollector } = await import('@server/domains/shared/modules');
+  const { AntiDebugToolHandlers } = await import('@server/domains/antidebug/index');
   if (!ctx.collector) {
     ctx.collector = new CodeCollector(ctx.config.puppeteer);
     void ctx.registerCaches();
   }
-  if (!ctx.antidebugHandlers) ctx.antidebugHandlers = new AntiDebugToolHandlers(ctx.collector);
+  if (!ctx.antidebugHandlers) {
+    ctx.antidebugHandlers = new AntiDebugToolHandlers(ctx.collector);
+  }
   return ctx.antidebugHandlers;
 }
 
@@ -29,29 +32,9 @@ const manifest = {
   ensure,
   registrations: [
     {
-      tool: t('antidebug_bypass_all'),
+      tool: t('antidebug_bypass'),
       domain: DOMAIN,
-      bind: b((h, a) => h.handleAntiDebugBypassAll(a)),
-    },
-    {
-      tool: t('antidebug_bypass_debugger_statement'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleAntiDebugBypassDebuggerStatement(a)),
-    },
-    {
-      tool: t('antidebug_bypass_timing'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleAntiDebugBypassTiming(a)),
-    },
-    {
-      tool: t('antidebug_bypass_stack_trace'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleAntiDebugBypassStackTrace(a)),
-    },
-    {
-      tool: t('antidebug_bypass_console_detect'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleAntiDebugBypassConsoleDetect(a)),
+      bind: b((h, a) => h.handleAntidebugBypass(a)),
     },
     {
       tool: t('antidebug_detect_protections'),

@@ -1,456 +1,166 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { tool } from '@server/registry/tool-builder';
 
 export const browserPageCoreTools: Tool[] = [
-  {
-    name: 'page_navigate',
-    description: `Navigate to a URL
-
-Features:
-- Automatic CAPTCHA detection
-- Optional network monitoring (set enableNetworkMonitoring=true to auto-enable)
-- Waits for page load based on waitUntil strategy
-
-Network Monitoring:
-If you want to capture network requests, you have two options:
-1. Call network_enable before page_navigate (recommended for full control)
-2. Set enableNetworkMonitoring=true in page_navigate (convenient for quick capture)
-
-Example with network monitoring:
-page_navigate(url="https:
--> Network monitoring auto-enabled
--> Page loads
--> Use network_get_requests to see captured requests`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: 'Target URL to navigate to',
-        },
-        waitUntil: {
-          type: 'string',
-          description: 'When to consider navigation succeeded',
-          enum: ['load', 'domcontentloaded', 'networkidle', 'commit'],
-          default: 'networkidle',
-        },
-        timeout: {
-          type: 'number',
-          description: 'Navigation timeout in milliseconds',
-          default: 30000,
-        },
-        enableNetworkMonitoring: {
-          type: 'boolean',
-          description:
-            ' Auto-enable network monitoring before navigation to capture all requests. If already enabled, this has no effect.',
-          default: false,
-        },
-      },
-      required: ['url'],
-    },
-  },
-  {
-    name: 'page_reload',
-    description: 'Reload current page',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-  },
-  {
-    name: 'page_back',
-    description: 'Navigate back in history',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-  },
-  {
-    name: 'page_forward',
-    description: 'Navigate forward in history',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-  },
-
-  {
-    name: 'dom_query_selector',
-    description:
-      'Query single element (like document.querySelector). AI should use this BEFORE clicking to verify element exists.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector',
-        },
-        getAttributes: {
-          type: 'boolean',
-          description: 'Whether to get element attributes',
-          default: true,
-        },
-      },
-      required: ['selector'],
-    },
-  },
-  {
-    name: 'dom_query_all',
-    description: 'Query all matching elements (like document.querySelectorAll)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of elements to return',
-          default: 100,
-        },
-      },
-      required: ['selector'],
-    },
-  },
-  {
-    name: 'dom_get_structure',
-    description: `Get page DOM structure (for AI to understand page layout).
-
-IMPORTANT: Large DOM structures (>50KB) automatically return summary + detailId.
-
-Best Practices:
-1. Use maxDepth=2 for initial exploration (faster, smaller)
-2. Use maxDepth=3 only when needed (may be large)
-3. Set includeText=false to reduce size if text not needed
-
-Example:
-dom_get_structure(maxDepth=2, includeText=false)
--> Returns compact structure without text content`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        maxDepth: {
-          type: 'number',
-          description: 'Maximum depth of DOM tree (default: 3, recommend: 2 for large pages)',
-          default: 3,
-        },
-        includeText: {
-          type: 'boolean',
-          description: 'Whether to include text content (set false to reduce size)',
-          default: true,
-        },
-      },
-    },
-  },
-  {
-    name: 'dom_find_clickable',
-    description:
-      'Find all clickable elements (buttons, links). Use this to discover what can be clicked.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        filterText: {
-          type: 'string',
-          description: 'Filter by text content (optional)',
-        },
-      },
-    },
-  },
-
-  {
-    name: 'page_click',
-    description: 'Click an element. Use dom_query_selector FIRST to verify element exists.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector of element to click',
-        },
-        button: {
-          type: 'string',
-          description: 'Mouse button to click',
-          enum: ['left', 'right', 'middle'],
-          default: 'left',
-        },
-        clickCount: {
-          oneOf: [{ type: 'number' }, { type: 'string' }],
-          description: 'Number of clicks (numeric string is accepted and auto-normalized)',
-          default: 1,
-        },
-        delay: {
-          oneOf: [{ type: 'number' }, { type: 'string' }],
-          description:
-            'Delay between mousedown and mouseup in milliseconds (numeric string is accepted)',
-        },
-      },
-      required: ['selector'],
-    },
-  },
-  {
-    name: 'page_type',
-    description: 'Type text into an input element',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector of input element',
-        },
-        text: {
-          type: 'string',
-          description: 'Text to type',
-        },
-        delay: {
-          type: 'number',
-          description: 'Delay between key presses in milliseconds',
-        },
-      },
-      required: ['selector', 'text'],
-    },
-  },
-  {
-    name: 'page_select',
-    description: 'Select option(s) in a <select> element',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector of select element',
-        },
-        values: {
-          type: 'array',
-          description: 'Values to select',
-          items: {
-            type: 'string',
+  tool('page_navigate', (t) =>
+    t
+      .desc('Navigate to a URL.')
+      .string('url', 'Target URL')
+      .enum(
+        'waitUntil',
+        ['load', 'domcontentloaded', 'networkidle', 'commit'],
+        'When to consider navigation succeeded',
+        { default: 'networkidle' },
+      )
+      .number('timeout', 'Navigation timeout in ms', {
+        default: 30000,
+        minimum: 1000,
+        maximum: 120000,
+      })
+      .boolean('enableNetworkMonitoring', 'Enable network monitoring before navigation', {
+        default: false,
+      })
+      .required('url')
+      .idempotent()
+      .openWorld(),
+  ),
+  tool('page_reload', (t) => t.desc('Reload current page').idempotent().openWorld()),
+  tool('page_back', (t) => t.desc('Go back in history').openWorld()),
+  tool('page_forward', (t) => t.desc('Go forward in history').openWorld()),
+  tool('page_click', (t) =>
+    t
+      .desc('Click an element.')
+      .string('selector', 'CSS selector')
+      .enum('button', ['left', 'right', 'middle'], 'Mouse button', { default: 'left' })
+      .number('clickCount', 'Number of clicks', {
+        default: 1,
+        minimum: 1,
+        maximum: 10,
+      })
+      .number('delay', 'Delay between mousedown and mouseup in ms', {
+        minimum: 0,
+        maximum: 10000,
+      })
+      .string('frameUrl', 'iframe URL substring')
+      .string('frameSelector', 'iframe CSS selector')
+      .requiredOpenWorld('selector'),
+  ),
+  tool('page_type', (t) =>
+    t
+      .desc('Type text into an element.')
+      .string('selector', 'CSS selector')
+      .string('text', 'Text to type')
+      .number('delay', 'Delay between key presses in ms', { minimum: 0, maximum: 1000 })
+      .string('frameUrl', 'iframe URL substring')
+      .string('frameSelector', 'iframe CSS selector')
+      .requiredOpenWorld('selector', 'text'),
+  ),
+  tool('page_select', (t) =>
+    t
+      .desc('Select option(s) in a <select> element.')
+      .string('selector', 'CSS selector')
+      .array('values', { type: 'string' }, 'Values to select')
+      .string('frameUrl', 'iframe URL substring')
+      .string('frameSelector', 'iframe CSS selector')
+      .required('selector', 'values')
+      .idempotent()
+      .openWorld(),
+  ),
+  tool('page_hover', (t) =>
+    t
+      .desc('Hover over an element.')
+      .string('selector', 'CSS selector')
+      .string('frameUrl', 'iframe URL substring')
+      .string('frameSelector', 'iframe CSS selector')
+      .required('selector')
+      .idempotent()
+      .openWorld(),
+  ),
+  tool('page_scroll', (t) =>
+    t
+      .desc('Scroll the page.')
+      .number('x', 'Horizontal position', { default: 0 })
+      .number('y', 'Vertical position', { default: 0 })
+      .idempotent(),
+  ),
+  tool('page_wait_for_selector', (t) =>
+    t
+      .desc('Wait for an element to appear.')
+      .string('selector', 'CSS selector')
+      .number('timeout', 'Timeout in ms', {
+        default: 30000,
+        minimum: 1000,
+        maximum: 120000,
+      })
+      .required('selector')
+      .query(),
+  ),
+  tool('page_evaluate', (t) =>
+    t
+      .desc('Execute JavaScript in page context.')
+      .string('code', 'JavaScript code')
+      .boolean('autoSummarize', 'Auto-summarize large results', { default: true })
+      .number('maxSize', 'Max result size in bytes before summarizing', {
+        default: 51200,
+        minimum: 1024,
+        maximum: 10485760,
+      })
+      .array('fieldFilter', { type: 'string' }, 'Field names to strip from result (recursive)')
+      .boolean('stripBase64', 'Strip base64 strings from result', { default: false })
+      .string('frameUrl', 'iframe URL substring')
+      .string('frameSelector', 'iframe CSS selector')
+      .requiredOpenWorld('code'),
+  ),
+  tool('page_screenshot', (t) =>
+    t
+      .desc('Take a screenshot.')
+      .prop('selector', {
+        oneOf: [
+          { type: 'string', description: 'CSS selector' },
+          {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Multiple CSS selectors',
           },
+        ],
+        description: 'Element selector(s). Omit for full page viewport.',
+      })
+      .object(
+        'clip',
+        {
+          x: { type: 'number', description: 'Left offset' },
+          y: { type: 'number', description: 'Top offset' },
+          width: { type: 'number', description: 'Width' },
+          height: { type: 'number', description: 'Height' },
         },
-      },
-      required: ['selector', 'values'],
-    },
-  },
-  {
-    name: 'page_hover',
-    description: 'Hover over an element',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector of element to hover',
-        },
-      },
-      required: ['selector'],
-    },
-  },
-  {
-    name: 'page_scroll',
-    description: 'Scroll the page',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        x: {
-          type: 'number',
-          description: 'Horizontal scroll position',
-          default: 0,
-        },
-        y: {
-          type: 'number',
-          description: 'Vertical scroll position',
-          default: 0,
-        },
-      },
-    },
-  },
-
-  {
-    name: 'page_wait_for_selector',
-    description: 'Wait for an element to appear',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          type: 'string',
-          description: 'CSS selector to wait for',
-        },
-        timeout: {
-          type: 'number',
-          description: 'Timeout in milliseconds',
-          default: 30000,
-        },
-      },
-      required: ['selector'],
-    },
-  },
-  {
-    name: 'page_evaluate',
-    description: `Execute JavaScript code in page context and get result.
-
-IMPORTANT: Large results (>50KB) automatically return summary + detailId to prevent context overflow.
-Use get_detailed_data(detailId) to retrieve full data if needed.
-
-Best Practices:
--  Query specific properties: { hasAcrawler: !!window.byted_acrawler }
--  Return only needed data: Object.keys(window.byted_acrawler)
--  Avoid returning entire objects: window (too large!)
-
-Example:
-page_evaluate("({ keys: Object.keys(window.byted_acrawler), type: typeof window.byted_acrawler })")
--> Returns small summary
--> If you need full object, use the returned detailId`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'JavaScript code to execute',
-        },
-        autoSummarize: {
-          type: 'boolean',
-          description: 'Auto-summarize large results (default: true)',
-          default: true,
-        },
-        maxSize: {
-          type: 'number',
-          description: 'Max result size in bytes before auto-summarizing (default: 50KB)',
-          default: 51200,
-        },
-        fieldFilter: {
-          type: 'array',
-          items: { type: 'string' },
-          description:
-            'Server-side field filter: remove keys matching these names from the result object (recursive). Useful to strip noise fields like "icon", "avatar", "base64Image".',
-        },
-        stripBase64: {
-          type: 'boolean',
-          description:
-            'Strip data URI and bare base64 strings from the result, replacing them with a size placeholder. Prevents context overflow from embedded images/fonts (default: false).',
-          default: false,
-        },
-      },
-      required: ['code'],
-    },
-  },
-  {
-    name: 'page_screenshot',
-    description: `Take a screenshot of the page, a specific DOM element, multiple elements, or a pixel region.
-
-Modes:
-- Full page: omit selector or pass "all"
-- Single element: selector = ".my-class"
-- Multiple elements: selector = [".header", "#main", ".footer"] — returns one screenshot per element
-- Pixel region: pass clip = {x, y, width, height} (ignored when selector is set)`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: {
-          oneOf: [
-            { type: 'string', description: 'Single CSS selector' },
-            {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Array of CSS selectors for batch element screenshots',
-            },
-          ],
-          description:
-            'CSS selector(s) of the element(s) to screenshot. Omit or pass "all" for full page viewport.',
-        },
-        clip: {
-          type: 'object',
-          description: 'Pixel region to capture (ignored when selector is set)',
-          properties: {
-            x: { type: 'number', description: 'Left offset in pixels' },
-            y: { type: 'number', description: 'Top offset in pixels' },
-            width: { type: 'number', description: 'Region width in pixels' },
-            height: { type: 'number', description: 'Region height in pixels' },
-          },
-          required: ['x', 'y', 'width', 'height'],
-        },
-        path: {
-          type: 'string',
-          description:
-            'File path to save screenshot (optional). For batch mode, used as directory or base name.',
-        },
-        type: {
-          type: 'string',
-          description: 'Image format',
-          enum: ['png', 'jpeg'],
-          default: 'png',
-        },
-        quality: {
-          type: 'number',
-          description: 'Image quality (0-100, only for jpeg)',
-        },
-        fullPage: {
-          type: 'boolean',
-          description: 'Capture full scrollable page (ignored when selector or clip is set)',
-          default: false,
-        },
-      },
-    },
-  },
-
-  {
-    name: 'get_all_scripts',
-    description: 'Get list of all loaded scripts on the page',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        includeSource: {
-          type: 'boolean',
-          description: 'Whether to include script source code',
-          default: false,
-        },
-      },
-    },
-  },
-  {
-    name: 'get_script_source',
-    description: `Get source code of a specific script.
-
-IMPORTANT: Large scripts (>50KB) automatically return summary + detailId.
-Use preview mode first to check script size before fetching full source.
-
-Best Practices:
-1. Use preview=true first to see script overview
-2. If script is large, use detailId to get full source
-3. Or use startLine/endLine to get specific sections
-
-Example:
-get_script_source(scriptId="abc", preview=true)
--> Returns: { lines: 5000, size: "500KB", preview: "...", detailId: "..." }
--> Then: get_detailed_data(detailId) to get full source`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        scriptId: {
-          type: 'string',
-          description: 'Script ID from get_all_scripts',
-        },
-        url: {
-          type: 'string',
-          description: 'Script URL (supports wildcards like *.js)',
-        },
-        preview: {
-          type: 'boolean',
-          description: 'Return preview only (first 100 lines + metadata)',
-          default: false,
-        },
-        maxLines: {
-          type: 'number',
-          description: 'Max lines to return in preview mode (default: 100)',
-          default: 100,
-        },
-        startLine: {
-          type: 'number',
-          description: 'Start line number (1-based, for partial fetch)',
-        },
-        endLine: {
-          type: 'number',
-          description: 'End line number (1-based, for partial fetch)',
-        },
-      },
-    },
-  },
+        'Pixel region to capture',
+        { required: ['x', 'y', 'width', 'height'] },
+      )
+      .string('path', 'File path to save screenshot')
+      .enum('type', ['png', 'jpeg'], 'Image format', { default: 'png' })
+      .number('quality', 'Image quality 0-100 (jpeg only)', { minimum: 1, maximum: 100 })
+      .boolean('fullPage', 'Capture full scrollable page', { default: false })
+      .query(),
+  ),
+  tool('get_all_scripts', (t) =>
+    t
+      .desc('List all loaded scripts.')
+      .boolean('includeSource', 'Include source code', { default: false })
+      .query(),
+  ),
+  tool('get_script_source', (t) =>
+    t
+      .desc('Get source code of a script.')
+      .string('scriptId', 'Script ID')
+      .string('url', 'Script URL (supports wildcards)')
+      .boolean('preview', 'Preview only (first N lines + metadata)', { default: false })
+      .number('maxLines', 'Max lines in preview', {
+        default: 100,
+        minimum: 1,
+        maximum: 10000,
+      })
+      .number('startLine', 'Start line (1-based)', { minimum: 1 })
+      .number('endLine', 'End line (1-based)', { minimum: 1 })
+      .query(),
+  ),
 ];

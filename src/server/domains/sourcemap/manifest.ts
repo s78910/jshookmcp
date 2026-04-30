@@ -1,8 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
 import { bindByDepKey, toolLookup } from '@server/domains/shared/registry';
 import { sourcemapTools } from '@server/domains/sourcemap/definitions';
-import { SourcemapToolHandlers } from '@server/domains/sourcemap/index';
-import { CodeCollector } from '@server/domains/shared/modules';
+import type { SourcemapToolHandlers } from '@server/domains/sourcemap/index';
 
 const DOMAIN = 'sourcemap' as const;
 const DEP_KEY = 'sourcemapHandlers' as const;
@@ -11,7 +10,9 @@ const t = toolLookup(sourcemapTools);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { CodeCollector } = await import('@server/domains/shared/modules');
+  const { SourcemapToolHandlers } = await import('@server/domains/sourcemap/index');
   if (!ctx.collector) {
     ctx.collector = new CodeCollector(ctx.config.puppeteer);
     void ctx.registerCaches();
@@ -44,14 +45,9 @@ const manifest = {
       bind: b((h, a) => h.handleSourcemapReconstructTree(a)),
     },
     {
-      tool: t('extension_list_installed'),
+      tool: t('sourcemap_parse_v4'),
       domain: DOMAIN,
-      bind: b((h, a) => h.handleExtensionListInstalled(a)),
-    },
-    {
-      tool: t('extension_execute_in_context'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleExtensionExecuteInContext(a)),
+      bind: b((h, a) => h.handleSourcemapParseV4(a)),
     },
   ],
 } satisfies DomainManifest<typeof DEP_KEY, H, typeof DOMAIN>;

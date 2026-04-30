@@ -7,22 +7,22 @@ import { getToolsByDomains } from '@server/ToolCatalog';
 import { createToolHandlerMap } from '@server/ToolHandlerMap';
 import type { MCPServerContext } from '@server/MCPServer.context';
 import type { ToolResponse } from '@server/types';
-import { getAllDomains } from '@server/registry/index';
+import { getAllKnownDomains, ensureDomainLoaded } from '@server/registry/index';
 import { getActiveToolNames } from '@server/MCPServer.search.helpers';
 import { startDomainTtl } from '@server/MCPServer.activation.ttl';
 import { ACTIVATION_TTL_MINUTES } from '@src/constants';
 
 export async function handleActivateDomain(
   ctx: MCPServerContext,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
 ): Promise<ToolResponse> {
   const domain = typeof args.domain === 'string' ? args.domain : '';
   if (!domain) {
     return asTextResponse(
-      JSON.stringify({ success: false, error: 'domain must be a non-empty string' })
+      JSON.stringify({ success: false, error: 'domain must be a non-empty string' }),
     );
   }
-  const validDomains = new Set<string>(getAllDomains());
+  const validDomains = new Set<string>(getAllKnownDomains());
   for (const record of ctx.extensionToolsByName.values()) {
     validDomains.add(record.domain);
   }
@@ -32,9 +32,12 @@ export async function handleActivateDomain(
       JSON.stringify({
         success: false,
         error: `Unknown domain "${domain}". Valid: ${[...validDomains].join(', ')}`,
-      })
+      }),
     );
   }
+
+  // Ensure the domain manifest is loaded before accessing tools/handlers
+  await ensureDomainLoaded(domain);
 
   const ttlMinutes = typeof args.ttlMinutes === 'number' ? args.ttlMinutes : ACTIVATION_TTL_MINUTES;
 
@@ -89,7 +92,7 @@ export async function handleActivateDomain(
   }
 
   logger.info(
-    `activate_domain: domain="${domain}", activated ${activated.length} tools, ttl=${ttlMinutes}min`
+    `activate_domain: domain="${domain}", activated ${activated.length} tools, ttl=${ttlMinutes}min`,
   );
 
   return asTextResponse(
@@ -104,6 +107,6 @@ export async function handleActivateDomain(
         activated.length > 0
           ? 'Tools activated. If they do not appear in your tool list, use call_tool({ name: "<tool>", args: {...} }) to invoke them.'
           : undefined,
-    })
+    }),
   );
 }

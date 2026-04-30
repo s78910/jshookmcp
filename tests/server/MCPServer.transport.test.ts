@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => {
   const logger = {
     success: vi.fn(),
     warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
   };
 
   function createMockHttpServer(handler: (req: any, res: any) => void) {
@@ -37,6 +39,9 @@ const mocks = vi.hoisted(() => {
     return server;
   }
 
+  // Mutable reference so individual tests can replace the send implementation
+  const stdioSendMock = vi.fn(() => Promise.resolve());
+
   return {
     httpServers,
     httpTransports,
@@ -52,6 +57,7 @@ const mocks = vi.hoisted(() => {
     readBodyWithLimit: vi.fn(async () => '{"ok":true}'),
     logger,
     stdioConnects: [] as any[],
+    stdioSendMock,
   };
 });
 
@@ -64,10 +70,16 @@ vi.mock('node:crypto', () => ({
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
-  StdioServerTransport: class MockStdioServerTransport {
-    constructor() {
-      mocks.stdioConnects.push(this);
-    }
+  // StdioServerTransport uses `onclose` as a callback property, not addEventListener.
+  // eslint-disable-next-line unicorn/prefer-add-event-listener
+  StdioServerTransport: function MockStdioServerTransport(this: {
+    onclose?: () => void;
+    send?: (...args: any[]) => any;
+  }) {
+    mocks.stdioConnects.push(this);
+    // eslint-disable-next-line unicorn/prefer-add-event-listener
+    this.onclose = undefined;
+    this.send = (...args: any[]) => (mocks.stdioSendMock as any)(...args);
   },
 }));
 
@@ -158,7 +170,11 @@ describe('MCPServer.transport', () => {
     mocks.httpServers.length = 0;
     mocks.httpTransports.length = 0;
     mocks.stdioConnects.length = 0;
-    vi.clearAllMocks();
+    // Reset mock implementations without clearing call history
+    mocks.logger.success.mockRestore();
+    mocks.logger.warn.mockRestore();
+    mocks.logger.info.mockRestore();
+    mocks.logger.error.mockRestore();
     mocks.checkOrigin.mockReturnValue(true);
     mocks.checkAuth.mockReturnValue(true);
     mocks.checkRateLimit.mockReturnValue(true);
@@ -180,22 +196,58 @@ describe('MCPServer.transport', () => {
     expect(mocks.logger.success).toHaveBeenCalledWith('MCP stdio server started');
   });
 
-  it('registers stdin end/close and stdout error listeners for zombie prevention', async () => {
-    const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
-    const stdoutOnSpy = vi.spyOn(process.stdout, 'on').mockReturnValue(process.stdout);
+  it('sets transport.onclose to trigger cleanup on transport close', async () => {
     const ctx = createCtx();
-
     await startStdioTransport(ctx);
+    const transport = mocks.stdioConnects[0];
+    expect(typeof transport.onclose).toBe('function');
+  });
 
-    const stdinEvents = stdinOnSpy.mock.calls.map(([event]) => event);
-    expect(stdinEvents).toContain('end');
-    expect(stdinEvents).toContain('close');
+  it('handles transport.onclose and closeServer failures gracefully', async () => {
+    const ctx = createCtx();
+    // Make closeServer's internal steps fail so the outer catch in onclose fires
+    ctx.server.close = vi.fn(async () => {
+      throw new Error('close error');
+    });
+    await startStdioTransport(ctx);
+    const transport = mocks.stdioConnects[0];
+    mocks.logger.error.mockClear();
+    mocks.logger.warn.mockClear();
+    transport.onclose?.();
+    await new Promise((r) => setTimeout(r, 0));
+    // closeServer's own catch logs 'MCP server close failed:' — this is correct
+    expect(mocks.logger.warn).toHaveBeenCalledWith(
+      'MCP server close failed:',
+      expect.objectContaining({ message: 'close error' }),
+    );
+    expect(mocks.logger.success).toHaveBeenCalledWith('MCP server closed');
+  });
 
-    const stdoutEvents = stdoutOnSpy.mock.calls.map(([event]) => event);
-    expect(stdoutEvents).toContain('error');
+  it('handles transport.onclose idempotently', async () => {
+    const ctx = createCtx();
+    await startStdioTransport(ctx);
+    const transport = mocks.stdioConnects[0];
+    mocks.logger.info.mockClear();
+    transport.onclose?.();
+    transport.onclose?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mocks.logger.info).toHaveBeenCalledWith('stdio transport closed — running cleanup...');
+    expect(mocks.logger.info).toHaveBeenCalledTimes(1);
+    expect(ctx.server.close).toHaveBeenCalledTimes(1);
+  });
 
-    stdinOnSpy.mockRestore();
-    stdoutOnSpy.mockRestore();
+  it('does not re-enter cleanup when transport.onclose fires during server.close()', async () => {
+    const ctx = createCtx();
+    await startStdioTransport(ctx);
+    const transport = mocks.stdioConnects[0];
+    ctx.server.close = vi.fn(async () => {
+      transport.onclose?.();
+    });
+
+    await closeServer(ctx);
+
+    expect(ctx.server.close).toHaveBeenCalledTimes(1);
+    expect(mocks.logger.success).toHaveBeenCalledWith('MCP server closed');
   });
 
   it('starts HTTP transport, configures timeouts, and tracks sockets', async () => {
@@ -232,7 +284,7 @@ describe('MCPServer.transport', () => {
     const sessionId = transport.options.sessionIdGenerator as () => string;
     expect(sessionId()).toBe('uuid-123');
     expect(mocks.logger.success).toHaveBeenCalledWith(
-      'MCP Streamable HTTP server listening on http://0.0.0.0:4321/mcp'
+      'MCP Streamable HTTP server listening on http://0.0.0.0:4321/mcp',
     );
   });
 
@@ -267,9 +319,9 @@ describe('MCPServer.transport', () => {
     });
   });
 
-  it('serves /health correctly when baseTier is restricted', async () => {
+  it('serves /health correctly when baseTier is search', async () => {
     process.env.MCP_HEALTH_VERBOSE = 'true';
-    const ctx = createCtx({ baseTier: 'restricted' });
+    const ctx = createCtx({ baseTier: 'search' });
     await startHttpTransport(ctx);
 
     const server = mocks.httpServers[0];
@@ -280,8 +332,8 @@ describe('MCPServer.transport', () => {
 
     expect(res.status).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.baseTier).toBe('restricted');
-    expect(body.tier).toBe('restricted');
+    expect(body.baseTier).toBe('search');
+    expect(body.tier).toBe('search');
   });
 
   it('returns 404 for non-MCP paths', async () => {
@@ -418,8 +470,250 @@ describe('MCPServer.transport', () => {
     expect(ctx.server.close).toHaveBeenCalledTimes(1);
     expect(mocks.logger.warn).toHaveBeenCalledWith(
       'runtimeInspector cleanup failed:',
-      expect.any(Error)
+      expect.any(Error),
     );
     expect(mocks.logger.success).toHaveBeenCalledWith('MCP server closed');
+  });
+
+  it('registers stdin end/close listeners after connect (zombie prevention)', async () => {
+    const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
+    await startStdioTransport(createCtx());
+    const events = stdinOnSpy.mock.calls.map(([ev]) => ev);
+    expect(events).toContain('end');
+    expect(events).toContain('close');
+    stdinOnSpy.mockRestore();
+  });
+
+  it('handles stdin EOF gracefully — cleanup + exit', async () => {
+    const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const ctx = createCtx();
+    await startStdioTransport(ctx);
+
+    const handleStdinEnd = stdinOnSpy.mock.calls.find(([ev]) => ev === 'end')?.[1] as () => void;
+    handleStdinEnd();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ctx.server.close).toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(0);
+
+    stdinOnSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('handles stdin EOF idempotently — shuttingDown flag prevents double-exit', async () => {
+    const stdinOnSpy = vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const ctx = createCtx();
+    await startStdioTransport(ctx);
+
+    const handleStdinEnd = stdinOnSpy.mock.calls.find(([ev]) => ev === 'end')?.[1] as () => void;
+    handleStdinEnd(); // first call
+    handleStdinEnd(); // second call — should be no-op
+    await new Promise((r) => setTimeout(r, 0));
+    // server.close called once (second call returns early via shuttingDown guard)
+    expect(ctx.server.close).toHaveBeenCalledTimes(1);
+    expect(exitSpy).toHaveBeenCalledTimes(1);
+
+    stdinOnSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('wraps transport.send with a timeout guard', async () => {
+    const ctx = createCtx();
+    await startStdioTransport(ctx);
+    const transport = mocks.stdioConnects[0];
+    expect(typeof transport.send).toBe('function');
+  });
+
+  it('transport.send timeout guard resolves early when origSend hangs', async () => {
+    vi.useFakeTimers();
+
+    // Replace send mock with one that hangs indefinitely
+    mocks.stdioSendMock.mockImplementationOnce(
+      () => new Promise<void>(() => {}), // never resolves
+    );
+
+    const ctx = createCtx();
+    await startStdioTransport(ctx);
+    const transport = mocks.stdioConnects[0] as { send?: (...args: any[]) => any };
+
+    // Call the wrapped send — the 500ms timeout should resolve early
+    const sendPromise = transport.send!('test-message');
+    await vi.advanceTimersByTimeAsync(600);
+
+    await expect(sendPromise).resolves.toBeUndefined();
+    // Restore normal behavior for subsequent tests
+    mocks.stdioSendMock.mockResolvedValueOnce(undefined);
+    vi.useRealTimers();
+  });
+
+  it('ignores errors when readBodyWithLimit rejects during POST', async () => {
+    const ctx = createCtx();
+    await startHttpTransport(ctx);
+    const server = mocks.httpServers[0];
+    const transport = mocks.httpTransports[0];
+    const req = { url: '/mcp', method: 'POST' };
+    const res = createRes();
+
+    mocks.readBodyWithLimit.mockRejectedValueOnce(new Error('Body too large'));
+    server.__handler(req, res);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(transport.handleRequest).not.toHaveBeenCalled();
+  });
+
+  it('rethrows when server.connect() throws during HTTP transport startup', async () => {
+    const ctx = createCtx();
+    ctx.server.connect = vi.fn(async () => {
+      throw new Error('connect failed');
+    });
+
+    await expect(startHttpTransport(ctx)).rejects.toThrow('connect failed');
+  });
+
+  it('rethrows when server.connect() throws during stdio transport startup', async () => {
+    const ctx = createCtx();
+    ctx.server.connect = vi.fn(async () => {
+      throw new Error('stdio connect failed');
+    });
+
+    await expect(startStdioTransport(ctx)).rejects.toThrow('stdio connect failed');
+  });
+
+  it('throws an error if createServer assigns undefined to ctx.httpServer', async () => {
+    const originalCreateServer = mocks.createServer.getMockImplementation();
+    mocks.createServer.mockImplementationOnce(() => undefined as any);
+    const ctx = createCtx();
+    await expect(startHttpTransport(ctx)).rejects.toThrow('HTTP server initialization failed');
+    if (originalCreateServer) {
+      mocks.createServer.mockImplementation(originalCreateServer);
+    }
+  });
+
+  it('rejects if HTTP server emits error during listen', async () => {
+    const originalCreateServer = mocks.createServer.getMockImplementation();
+    let errCb: any;
+    mocks.createServer.mockImplementationOnce((handler: any) => {
+      return {
+        __handler: handler,
+        __listeners: new Map(),
+        requestTimeout: 0,
+        headersTimeout: 0,
+        keepAliveTimeout: 0,
+        listen: vi.fn(),
+        on: vi.fn((event: string, cb: any) => {
+          if (event === 'error') errCb = cb;
+        }),
+        emit: vi.fn(),
+        close: vi.fn(),
+      } as any;
+    });
+
+    const ctx = createCtx();
+    const p = startHttpTransport(ctx);
+
+    // Wait microtasks so the 'on' handler is registered
+    await new Promise((r) => setTimeout(r, 0));
+    errCb?.(new Error('listen error'));
+
+    await expect(p).rejects.toThrow('listen error');
+
+    if (originalCreateServer) {
+      mocks.createServer.mockImplementation(originalCreateServer);
+    }
+  });
+
+  it('handles activationController dispose via getDomainInstance', async () => {
+    const ctx = createCtx();
+    const disposeMock = vi.fn(() => {
+      throw new Error('dispose failed');
+    });
+    ctx.getDomainInstance = vi.fn().mockReturnValue({ dispose: disposeMock });
+
+    await closeServer(ctx);
+    expect(disposeMock).toHaveBeenCalled();
+  });
+
+  it('returns the existing shutdownPromise when closeServer is re-entered after shutdown starts', async () => {
+    const shutdownPromise = Promise.resolve();
+    const ctx = createCtx({
+      shutdownStarted: true,
+      shutdownPromise,
+    });
+
+    const result = closeServer(ctx);
+
+    await expect(result).resolves.toBeUndefined();
+    expect(ctx.server.close).not.toHaveBeenCalled();
+  });
+
+  it('handles activationController dispose directly on ctx', async () => {
+    const ctx = createCtx();
+    const disposeMock = vi.fn(() => {
+      throw new Error('dispose failed');
+    });
+    ctx.activationController = { dispose: disposeMock };
+
+    await closeServer(ctx);
+    expect(disposeMock).toHaveBeenCalled();
+  });
+
+  it('closeServer uses ctx.activationController fallback when getDomainInstance is not a function', async () => {
+    const ctx = createCtx();
+    const disposeMock = vi.fn(() => {
+      throw new Error('fallback dispose failed');
+    });
+    ctx.activationController = { dispose: disposeMock };
+    // Remove getDomainInstance to trigger the fallback path
+    ctx.getDomainInstance = undefined as any;
+
+    await closeServer(ctx);
+    expect(disposeMock).toHaveBeenCalled();
+  });
+
+  it('closeServer skips activationController cleanup when dispose is not a function', async () => {
+    const ctx = createCtx();
+    // activationController without dispose method
+    ctx.getDomainInstance = vi.fn().mockReturnValue({});
+
+    await closeServer(ctx);
+    // Should complete without throwing
+    expect(mocks.logger.warn).not.toHaveBeenCalledWith(
+      'activationController cleanup failed:',
+      expect.any(Error),
+    );
+  });
+
+  it('forces socket destruction after MCP_HTTP_FORCE_CLOSE_TIMEOUT_MS', async () => {
+    vi.useFakeTimers();
+    const ctx = createCtx();
+    const socket = { destroy: vi.fn() };
+    ctx.httpSockets.add(socket);
+    ctx.httpServer = {
+      close: vi.fn(),
+    };
+
+    const closePromise = closeServer(ctx);
+    vi.advanceTimersByTime(5000); // 5000ms > 4000ms timeout
+
+    expect(socket.destroy).toHaveBeenCalled();
+    ctx.httpServer.close.mock.calls[0][0](); // manually resolve close
+    await closePromise;
+  });
+
+  it('handles collector close rejection gracefully', async () => {
+    const ctx = createCtx();
+    ctx.collector = { close: vi.fn().mockRejectedValue(new Error('failed')) };
+
+    await closeServer(ctx);
+    expect(ctx.collector).toBeUndefined();
+  });
+
+  it('handles server close rejection gracefully', async () => {
+    const ctx = createCtx();
+    ctx.server.close.mockRejectedValue(new Error('failed'));
+
+    await closeServer(ctx);
+    expect(mocks.logger.warn).toHaveBeenCalledWith('MCP server close failed:', expect.any(Error));
   });
 });

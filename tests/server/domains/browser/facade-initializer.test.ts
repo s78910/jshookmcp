@@ -6,7 +6,7 @@ vi.mock('@server/domains/shared/modules', () => ({
   CamoufoxBrowserManager: vi.fn(),
   CodeCollector: vi.fn(),
   PageController: vi.fn(),
-  DOMInspector: vi.fn(),
+
   ScriptManager: vi.fn(),
   ConsoleMonitor: vi.fn(),
 }));
@@ -23,44 +23,34 @@ vi.mock('@modules/browser/TabRegistry', () => ({
 const handlers = vi.hoisted(() => ({
   BrowserControlHandlers: vi
     .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'browserControl', deps: d })),
-  CamoufoxBrowserHandlers: vi
-    .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'camoufox', deps: d })),
-  PageNavigationHandlers: vi
-    .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'pageNav', deps: d })),
+    .mockImplementation((d: any) => ({ _type: 'browserControl', deps: d })),
+  CamoufoxBrowserHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'camoufox', deps: d })),
+  PageNavigationHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'pageNav', deps: d })),
   PageInteractionHandlers: vi
     .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'pageInteract', deps: d })),
-  PageEvaluationHandlers: vi
+    .mockImplementation((d: any) => ({ _type: 'pageInteract', deps: d })),
+  PageEvaluationHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'pageEval', deps: d })),
+  TargetEvaluationHandlers: vi
     .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'pageEval', deps: d })),
-  PageDataHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'pageData', deps: d })),
-  DOMQueryHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'domQuery', deps: d })),
-  DOMStyleHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'domStyle', deps: d })),
-  DOMSearchHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'domSearch', deps: d })),
-  ConsoleHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'console', deps: d })),
+    .mockImplementation((d: any) => ({ _type: 'targetEval', deps: d })),
+  TargetControlHandlers: vi
+    .fn()
+    .mockImplementation((d: any) => ({ _type: 'targetControl', deps: d })),
+  PageDataHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'pageData', deps: d })),
+
+  ConsoleHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'console', deps: d })),
   ScriptManagementHandlers: vi
     .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'scriptMgmt', deps: d })),
-  CaptchaHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'captcha', deps: d })),
-  StealthInjectionHandlers: vi
-    .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'stealth', deps: d })),
-  FrameworkStateHandlers: vi
-    .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'framework', deps: d })),
-  IndexedDBDumpHandlers: vi
-    .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'indexeddb', deps: d })),
-  JSHeapSearchHandlers: vi.fn().mockImplementation((d: unknown) => ({ _type: 'jsHeap', deps: d })),
-  TabWorkflowHandlers: vi
-    .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'tabWorkflow', deps: d })),
+    .mockImplementation((d: any) => ({ _type: 'scriptMgmt', deps: d })),
+  CaptchaHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'captcha', deps: d })),
+  StealthInjectionHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'stealth', deps: d })),
+  FrameworkStateHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'framework', deps: d })),
+  IndexedDBDumpHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'indexeddb', deps: d })),
+  JSHeapSearchHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'jsHeap', deps: d })),
+  TabWorkflowHandlers: vi.fn().mockImplementation((d: any) => ({ _type: 'tabWorkflow', deps: d })),
   DetailedDataHandlers: vi
     .fn()
-    .mockImplementation((d: unknown) => ({ _type: 'detailedData', deps: d })),
+    .mockImplementation((d: any) => ({ _type: 'detailedData', deps: d })),
 }));
 
 vi.mock('@server/domains/browser/handlers/browser-control', () => ({
@@ -78,18 +68,16 @@ vi.mock('@server/domains/browser/handlers/page-interaction', () => ({
 vi.mock('@server/domains/browser/handlers/page-evaluation', () => ({
   PageEvaluationHandlers: handlers.PageEvaluationHandlers,
 }));
+vi.mock('@server/domains/browser/handlers/target-evaluation', () => ({
+  TargetEvaluationHandlers: handlers.TargetEvaluationHandlers,
+}));
+vi.mock('@server/domains/browser/handlers/target-control', () => ({
+  TargetControlHandlers: handlers.TargetControlHandlers,
+}));
 vi.mock('@server/domains/browser/handlers/page-data', () => ({
   PageDataHandlers: handlers.PageDataHandlers,
 }));
-vi.mock('@server/domains/browser/handlers/dom-query', () => ({
-  DOMQueryHandlers: handlers.DOMQueryHandlers,
-}));
-vi.mock('@server/domains/browser/handlers/dom-style', () => ({
-  DOMStyleHandlers: handlers.DOMStyleHandlers,
-}));
-vi.mock('@server/domains/browser/handlers/dom-search', () => ({
-  DOMSearchHandlers: handlers.DOMSearchHandlers,
-}));
+
 vi.mock('@server/domains/browser/handlers/console-handlers', () => ({
   ConsoleHandlers: handlers.ConsoleHandlers,
 }));
@@ -128,7 +116,7 @@ describe('initializeBrowserHandlerModules', () => {
     return {
       collector: { getActivePage: vi.fn() } as any,
       pageController: {} as any,
-      domInspector: {} as any,
+
       scriptManager: {} as any,
       consoleMonitor: {} as any,
       captchaDetector: {} as any,
@@ -151,20 +139,20 @@ describe('initializeBrowserHandlerModules', () => {
     vi.clearAllMocks();
   });
 
-  it('returns all required handler modules', () => {
+  it('returns all required handler modules', async () => {
     const deps = makeDeps();
     const modules = initializeBrowserHandlerModules(deps);
 
     expect(modules.tabRegistry).toBeDefined();
     expect(modules.browserControl).toBeDefined();
+    expect(modules.targetControl).toBeDefined();
     expect(modules.camoufoxBrowser).toBeDefined();
     expect(modules.pageNavigation).toBeDefined();
     expect(modules.pageInteraction).toBeDefined();
     expect(modules.pageEvaluation).toBeDefined();
+    expect(modules.targetEvaluation).toBeDefined();
     expect(modules.pageData).toBeDefined();
-    expect(modules.domQuery).toBeDefined();
-    expect(modules.domStyle).toBeDefined();
-    expect(modules.domSearch).toBeDefined();
+
     expect(modules.consoleHandlers).toBeDefined();
     expect(modules.scriptManagement).toBeDefined();
     expect(modules.captchaHandlers).toBeDefined();
@@ -176,19 +164,19 @@ describe('initializeBrowserHandlerModules', () => {
     expect(modules.detailedData).toBeDefined();
   });
 
-  it('creates all 18 handler instances', () => {
+  it('creates all 17 handler instances', async () => {
     const deps = makeDeps();
     initializeBrowserHandlerModules(deps);
 
     expect(handlers.BrowserControlHandlers).toHaveBeenCalledTimes(1);
+    expect(handlers.TargetControlHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.CamoufoxBrowserHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.PageNavigationHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.PageInteractionHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.PageEvaluationHandlers).toHaveBeenCalledTimes(1);
+    expect(handlers.TargetEvaluationHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.PageDataHandlers).toHaveBeenCalledTimes(1);
-    expect(handlers.DOMQueryHandlers).toHaveBeenCalledTimes(1);
-    expect(handlers.DOMStyleHandlers).toHaveBeenCalledTimes(1);
-    expect(handlers.DOMSearchHandlers).toHaveBeenCalledTimes(1);
+
     expect(handlers.ConsoleHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.ScriptManagementHandlers).toHaveBeenCalledTimes(1);
     expect(handlers.CaptchaHandlers).toHaveBeenCalledTimes(1);
@@ -200,7 +188,7 @@ describe('initializeBrowserHandlerModules', () => {
     expect(handlers.DetailedDataHandlers).toHaveBeenCalledTimes(1);
   });
 
-  it('passes correct deps to BrowserControlHandlers', () => {
+  it('passes correct deps to BrowserControlHandlers', async () => {
     const deps = makeDeps();
     initializeBrowserHandlerModules(deps);
 
@@ -209,9 +197,20 @@ describe('initializeBrowserHandlerModules', () => {
     expect(call.pageController).toBe(deps.pageController);
     expect(call.consoleMonitor).toBe(deps.consoleMonitor);
     expect(call.getActiveDriver).toBe(deps.getActiveDriver);
+    expect(typeof call.clearAttachedTargetContext).toBe('function');
   });
 
-  it('passes getCamoufoxManager deps to CamoufoxBrowserHandlers', () => {
+  it('passes correct deps to TargetControlHandlers', async () => {
+    const deps = makeDeps();
+    initializeBrowserHandlerModules(deps);
+
+    const call = handlers.TargetControlHandlers.mock.calls[0]![0];
+    expect(call.collector).toBe(deps.collector);
+    expect(call.consoleMonitor).toBe(deps.consoleMonitor);
+    expect(typeof call.getTabRegistry).toBe('function');
+  });
+
+  it('passes getCamoufoxManager deps to CamoufoxBrowserHandlers', async () => {
     const deps = makeDeps();
     initializeBrowserHandlerModules(deps);
 
@@ -221,7 +220,7 @@ describe('initializeBrowserHandlerModules', () => {
     expect(call.closeCamoufox).toBe(deps.closeCamoufox);
   });
 
-  it('passes captcha settings to CaptchaHandlers', () => {
+  it('passes captcha settings to CaptchaHandlers', async () => {
     const deps = makeDeps();
     (deps.getAutoDetectCaptcha as any).mockReturnValue(true);
     (deps.getCaptchaTimeout as any).mockReturnValue(60000);
@@ -233,16 +232,7 @@ describe('initializeBrowserHandlerModules', () => {
     expect(call.setAutoDetectCaptcha).toBe(deps.setAutoDetectCaptcha);
   });
 
-  it('passes domInspector to DOM handlers', () => {
-    const deps = makeDeps();
-    initializeBrowserHandlerModules(deps);
-
-    expect(handlers.DOMQueryHandlers.mock.calls[0]![0].domInspector).toBe(deps.domInspector);
-    expect(handlers.DOMStyleHandlers.mock.calls[0]![0].domInspector).toBe(deps.domInspector);
-    expect(handlers.DOMSearchHandlers.mock.calls[0]![0].domInspector).toBe(deps.domInspector);
-  });
-
-  it('provides getActivePage to framework state handlers', () => {
+  it('provides getActivePage to framework state handlers', async () => {
     const deps = makeDeps();
     initializeBrowserHandlerModules(deps);
 
@@ -250,7 +240,7 @@ describe('initializeBrowserHandlerModules', () => {
     expect(call.getActivePage).toBeTypeOf('function');
   });
 
-  it('shares tabRegistry between browserControl and tabWorkflow', () => {
+  it('shares tabRegistry between browserControl and tabWorkflow', async () => {
     const deps = makeDeps();
     const modules = initializeBrowserHandlerModules(deps);
 

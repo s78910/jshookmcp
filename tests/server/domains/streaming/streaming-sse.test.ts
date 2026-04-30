@@ -10,14 +10,14 @@ function parseJson(response: TextToolResponse): any {
   const first = response.content[0];
   expect(first).toBeDefined();
   expect(first?.type).toBe('text');
-  if (!first || first.type !== 'text') {
+  if (first?.type !== 'text') {
     throw new Error('Expected text tool response');
   }
   return JSON.parse(first.text);
 }
 
 function getFirstEvaluateArgs<T = Record<string, unknown>>(
-  mocks: ReturnType<typeof createMocks>
+  mocks: ReturnType<typeof createMocks>,
 ): T {
   const firstCall = mocks.page.evaluate.mock.calls[0];
   expect(firstCall).toBeDefined();
@@ -303,7 +303,7 @@ describe('StreamingToolHandlersSse', () => {
       });
 
       const body = parseJson(
-        await handler.handleSseGetEvents({ sourceUrl: 'http://example.com/events' })
+        await handler.handleSseGetEvents({ sourceUrl: 'http://example.com/events' }),
       );
       expect(body.filters.sourceUrl).toBe('http://example.com/events');
     });
@@ -384,14 +384,14 @@ describe('StreamingToolHandlersSse', () => {
           nextOffset: null,
         },
         monitor: { enabled: true, patched: true, maxEvents: 2000, urlFilter: null, sourceCount: 1 },
-        events: new Array(5).fill({
+        events: Array.from({ length: 5 }, () => ({
           sourceUrl: 'http://example.com/sse',
           eventType: 'message',
           dataPreview: 'data',
           dataLength: 4,
           lastEventId: null,
           timestamp: 1700000000000,
-        }),
+        })),
       });
 
       await handler.handleSseGetEvents({ limit: 10 });
@@ -594,7 +594,7 @@ describe('StreamingToolHandlersSse', () => {
       });
 
       const body = parseJson(
-        await handler.handleSseMonitorEnable({ maxEvents: 750, urlFilter: '/stream' })
+        await handler.handleSseMonitorEnable({ maxEvents: 750, urlFilter: '/stream' }),
       );
 
       expect(body.success).toBe(true);
@@ -643,7 +643,7 @@ describe('StreamingToolHandlersSse', () => {
       });
 
       const body = parseJson(
-        await handler.handleSseMonitorEnable({ maxEvents: 1000, urlFilter: '/second' })
+        await handler.handleSseMonitorEnable({ maxEvents: 1000, urlFilter: '/second' }),
       );
 
       expect(body.config.maxEvents).toBe(1000);

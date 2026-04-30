@@ -1,15 +1,18 @@
 /**
- * macOS memory scanner — uses lldb + Python scripting.
+ * macOS memory scanner — uses native Mach API (zero-pause) with lldb fallback.
  */
 import { promises as fs } from 'node:fs';
+import { logger } from '@utils/logger';
 import type { MemoryScanResult } from '@modules/process/memory/types';
 import { execAsync } from '@modules/process/memory/types';
+import { MEMORY_SCAN_TIMEOUT_MS } from '@src/constants';
 import { patternToBytesMac } from './scanner.patterns';
+import { findPatternInBuffer } from '@native/NativeMemoryManager.utils';
 
 export async function scanMemoryMac(
   pid: number,
   pattern: string,
-  patternType: string
+  patternType: string,
 ): Promise<MemoryScanResult> {
   let patternBytes: number[];
   let patternMask: number[];
@@ -25,6 +28,79 @@ export async function scanMemoryMac(
     };
   }
 
+  // ── Native fast-path: task_for_pid + mach_vm_region/read (zero-pause) ──
+  try {
+    const nativeResult = await scanMemoryMacNative(pid, patternBytes, patternMask);
+    if (nativeResult) return nativeResult;
+  } catch (nativeErr) {
+    logger.debug('Native Mach scan failed, falling back to lldb:', nativeErr);
+  }
+
+  // ── Fallback: lldb + Python scripting (pauses target briefly) ──
+  return scanMemoryMacLldb(pid, patternBytes, patternMask);
+}
+
+/**
+ * Native scan using Mach kernel APIs — zero target pause.
+ * Returns null if the native provider is unavailable.
+ */
+async function scanMemoryMacNative(
+  pid: number,
+  patternBytes: number[],
+  patternMask: number[],
+): Promise<MemoryScanResult | null> {
+  const { createPlatformProvider } = await import('@native/platform/factory.js');
+  const provider = createPlatformProvider();
+  const avail = await provider.checkAvailability();
+  if (!avail.available) return null;
+
+  const handle = provider.openProcess(pid, false);
+  const foundAddresses: string[] = [];
+  const maxResults = 1000;
+  const maxRegionSize = 32 * 1024 * 1024; // 32MB cap per region
+
+  try {
+    let address = 0n;
+    for (let i = 0; i < 50000 && foundAddresses.length < maxResults; i++) {
+      const region = provider.queryRegion(handle, address);
+      if (!region) break;
+
+      if (region.isReadable && region.size > 0 && region.size <= maxRegionSize) {
+        try {
+          const result = provider.readMemory(handle, region.baseAddress, region.size);
+          const matches = findPatternInBuffer(result.data, patternBytes, patternMask);
+          for (const offset of matches) {
+            foundAddresses.push(`0x${(region.baseAddress + BigInt(offset)).toString(16)}`);
+            if (foundAddresses.length >= maxResults) break;
+          }
+        } catch {
+          // Skip unreadable regions
+        }
+      }
+
+      address = region.baseAddress + BigInt(region.size);
+      if (address <= region.baseAddress) break; // overflow guard
+    }
+  } finally {
+    provider.closeProcess(handle);
+  }
+
+  logger.debug(`Native Mach scan completed (zero-pause): ${foundAddresses.length} results`);
+  return {
+    success: true,
+    addresses: foundAddresses,
+    stats: { patternLength: patternBytes.length, resultsFound: foundAddresses.length },
+  };
+}
+
+/**
+ * lldb-based scan fallback — uses Python scripting.
+ */
+async function scanMemoryMacLldb(
+  pid: number,
+  patternBytes: number[],
+  patternMask: number[],
+): Promise<MemoryScanResult> {
   const byteList = patternBytes.map((b) => `0x${b.toString(16)}`).join(',');
   const maskList = patternMask.join(',');
   const tag = `${pid}_${Date.now()}`;
@@ -78,7 +154,7 @@ def __lldb_init_module(debugger, internal_dict):
   await fs.writeFile(cmdFile, `command script import ${pyFile}\nprocess detach\n`, 'utf8');
   try {
     const { stdout } = await execAsync(`lldb --batch -p ${pid} --source ${cmdFile}`, {
-      timeout: 120000,
+      timeout: MEMORY_SCAN_TIMEOUT_MS,
       maxBuffer: 1024 * 1024 * 5,
     });
     const line = stdout.split('\n').find((l) => l.startsWith('SCAN_RESULT:'));
@@ -90,7 +166,20 @@ def __lldb_init_module(debugger, internal_dict):
         error: `lldb scan returned no result. ${errLine}`.trim(),
       };
     }
-    return JSON.parse(line.slice('SCAN_RESULT:'.length)) as MemoryScanResult;
+    try {
+      return JSON.parse(line.slice('SCAN_RESULT:'.length)) as MemoryScanResult;
+    } catch {
+      const errLine = stdout.split('\n').find((l) => l.includes('error:')) ?? '';
+      if (errLine) {
+        return {
+          success: false,
+          addresses: [],
+          error: errLine.trim(),
+        };
+      }
+
+      throw new Error('Unexpected end of JSON input');
+    }
   } catch (error) {
     return {
       success: false,

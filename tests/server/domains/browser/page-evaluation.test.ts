@@ -1,4 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import type {
+  PageEvaluateResponse,
+  PageInjectScriptResponse,
+  PageScreenshotResponse,
+  PageWaitForSelectorResponse,
+} from '@tests/shared/common-test-types';
 
 vi.mock('@utils/outputPaths', () => ({
   resolveScreenshotOutputPath: vi.fn(async (opts: any) => ({
@@ -10,12 +17,28 @@ vi.mock('@utils/outputPaths', () => ({
 
 import { PageEvaluationHandlers } from '@server/domains/browser/handlers/page-evaluation';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
+interface PageControllerMock {
+  evaluate: Mock<(code: string, frameOptions?: unknown) => Promise<any>>;
+  screenshot: Mock<(options?: any) => Promise<Buffer>>;
+  getPage: Mock<() => Promise<any>>;
+  injectScript: Mock<(script: string) => Promise<void>>;
+  waitForSelector: Mock<(selector: string, timeout?: number) => Promise<any>>;
+  resolveFrame: Mock<(page: unknown, options?: unknown) => Promise<unknown>>;
 }
 
-function createChromeDeps(overrides: Record<string, any> = {}) {
-  const pageController = {
+interface DetailedDataManagerMock {
+  smartHandle: Mock<(value: any, maxSize: number) => any>;
+}
+
+function createChromeDeps(
+  overrides: {
+    pageController?: Partial<PageControllerMock>;
+    detailedDataManager?: Partial<DetailedDataManagerMock>;
+    getActiveDriver?: () => 'chrome' | 'camoufox';
+    getCamoufoxPage?: () => Promise<any>;
+  } = {},
+) {
+  const pageController: PageControllerMock = {
     evaluate: vi.fn(async () => ({ result: 42 })),
     screenshot: vi.fn(async () => Buffer.from('png-data')),
     getPage: vi.fn(async () => ({
@@ -28,17 +51,18 @@ function createChromeDeps(overrides: Record<string, any> = {}) {
       success: true,
       message: 'found',
     })),
+    resolveFrame: vi.fn(async (page: unknown) => page),
     ...overrides.pageController,
-  } as any;
+  };
 
-  const detailedDataManager = {
-    smartHandle: vi.fn((value: unknown) => value),
+  const detailedDataManager: DetailedDataManagerMock = {
+    smartHandle: vi.fn((value: any) => value),
     ...overrides.detailedDataManager,
-  } as any;
+  };
 
   return {
-    pageController,
-    detailedDataManager,
+    pageController: pageController as any,
+    detailedDataManager: detailedDataManager as any,
     getActiveDriver: overrides.getActiveDriver ?? (() => 'chrome' as const),
     getCamoufoxPage: overrides.getCamoufoxPage ?? (async () => null),
   };
@@ -49,64 +73,72 @@ function createChromeDeps(overrides: Record<string, any> = {}) {
 describe('PageEvaluationHandlers – handlePageEvaluate', () => {
   let handlers: PageEvaluationHandlers;
   let deps: ReturnType<typeof createChromeDeps>;
+  let pageController: PageControllerMock;
+  let detailedDataManager: DetailedDataManagerMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
     deps = createChromeDeps();
+    pageController = deps.pageController as any;
+    detailedDataManager = deps.detailedDataManager as any;
     handlers = new PageEvaluationHandlers(deps);
   });
 
   it('evaluates code on chrome and returns result', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce({ count: 5 });
-    const body = parseJson(await handlers.handlePageEvaluate({ code: 'document.title' }));
-    expect(deps.pageController.evaluate).toHaveBeenCalledWith('document.title');
+    pageController.evaluate.mockResolvedValueOnce({ count: 5 });
+    const body = parseJson<PageEvaluateResponse>(
+      await handlers.handlePageEvaluate({ code: 'document.title' }),
+    );
+    expect(pageController.evaluate).toHaveBeenCalledWith('document.title');
     expect(body.success).toBe(true);
     expect(body.result).toEqual({ count: 5 });
   });
 
   it('accepts script arg as an alias for code', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce('title');
-    const body = parseJson(await handlers.handlePageEvaluate({ script: 'document.title' }));
-    expect(deps.pageController.evaluate).toHaveBeenCalledWith('document.title');
+    pageController.evaluate.mockResolvedValueOnce('title');
+    const body = parseJson<PageEvaluateResponse>(
+      await handlers.handlePageEvaluate({ script: 'document.title' }),
+    );
+    expect(pageController.evaluate).toHaveBeenCalledWith('document.title');
     expect(body.success).toBe(true);
   });
 
   it('uses detailedDataManager.smartHandle with autoSummarize=true (default)', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce({ big: 'data' });
+    pageController.evaluate.mockResolvedValueOnce({ big: 'data' });
     await handlers.handlePageEvaluate({ code: '1+1' });
-    expect(deps.detailedDataManager.smartHandle).toHaveBeenCalledWith({ big: 'data' }, 51200);
+    expect(detailedDataManager.smartHandle).toHaveBeenCalledWith({ big: 'data' }, 51200);
   });
 
   it('skips smartHandle when autoSummarize=false', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce('raw');
-    const body = parseJson(
+    pageController.evaluate.mockResolvedValueOnce('raw');
+    const body = parseJson<PageEvaluateResponse>(
       await handlers.handlePageEvaluate({
         code: '1+1',
         autoSummarize: false,
-      })
+      }),
     );
-    expect(deps.detailedDataManager.smartHandle).not.toHaveBeenCalled();
+    expect(detailedDataManager.smartHandle).not.toHaveBeenCalled();
     expect(body.result).toBe('raw');
   });
 
   it('respects custom maxSize for smartHandle', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce('data');
+    pageController.evaluate.mockResolvedValueOnce('data');
     await handlers.handlePageEvaluate({ code: '1', maxSize: 1024 });
-    expect(deps.detailedDataManager.smartHandle).toHaveBeenCalledWith('data', 1024);
+    expect(detailedDataManager.smartHandle).toHaveBeenCalledWith('data', 1024);
   });
 
   it('applies fieldFilter to strip specified keys', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce({
+    pageController.evaluate.mockResolvedValueOnce({
       name: 'test',
       secret: 'hidden',
       nested: { secret: 'also-hidden', visible: true },
     });
-    const body = parseJson(
+    const body = parseJson<PageEvaluateResponse>(
       await handlers.handlePageEvaluate({
         code: 'obj',
         fieldFilter: ['secret'],
         autoSummarize: false,
-      })
+      }),
     );
     expect(body.result.name).toBe('test');
     expect(body.result.secret).toBeUndefined();
@@ -115,15 +147,15 @@ describe('PageEvaluationHandlers – handlePageEvaluate', () => {
   });
 
   it('strips base64 data URIs when stripBase64=true', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce({
+    pageController.evaluate.mockResolvedValueOnce({
       image: 'data:image/png;base64,' + 'A'.repeat(1000),
     });
-    const body = parseJson(
+    const body = parseJson<PageEvaluateResponse>(
       await handlers.handlePageEvaluate({
         code: 'img',
         stripBase64: true,
         autoSummarize: false,
-      })
+      }),
     );
     expect(body.result.image).toContain('stripped');
     expect(body.result.image).not.toContain('AAAA');
@@ -131,25 +163,25 @@ describe('PageEvaluationHandlers – handlePageEvaluate', () => {
 
   it('strips bare base64 strings >500 chars when stripBase64=true', async () => {
     const longBase64 = 'A'.repeat(600);
-    deps.pageController.evaluate.mockResolvedValueOnce({ data: longBase64 });
-    const body = parseJson(
+    pageController.evaluate.mockResolvedValueOnce({ data: longBase64 });
+    const body = parseJson<PageEvaluateResponse>(
       await handlers.handlePageEvaluate({
         code: 'x',
         stripBase64: true,
         autoSummarize: false,
-      })
+      }),
     );
     expect(body.result.data).toContain('stripped');
   });
 
   it('does not strip short base64-like strings', async () => {
-    deps.pageController.evaluate.mockResolvedValueOnce({ data: 'AAAA' });
-    const body = parseJson(
+    pageController.evaluate.mockResolvedValueOnce({ data: 'AAAA' });
+    const body = parseJson<PageEvaluateResponse>(
       await handlers.handlePageEvaluate({
         code: 'x',
         stripBase64: true,
         autoSummarize: false,
-      })
+      }),
     );
     expect(body.result.data).toBe('AAAA');
   });
@@ -164,11 +196,48 @@ describe('PageEvaluationHandlers – handlePageEvaluate', () => {
     });
     handlers = new PageEvaluationHandlers(deps);
 
-    const body = parseJson(await handlers.handlePageEvaluate({ code: 'document.title' }));
+    const body = parseJson<PageEvaluateResponse>(
+      await handlers.handlePageEvaluate({ code: 'document.title' }),
+    );
     expect(camoPage.evaluate).toHaveBeenCalled();
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');
     expect(body.result).toBe('camoufox-result');
+  });
+
+  it('evaluates inside a resolved camoufox frame when frameSelector is provided', async () => {
+    const camoPage = {
+      evaluate: vi.fn(async () => 'page-result'),
+    };
+    const camoFrame = {
+      evaluate: vi.fn(async () => 'frame-result'),
+    };
+    deps = createChromeDeps({
+      pageController: {
+        resolveFrame: vi.fn(async () => camoFrame),
+      },
+      getActiveDriver: () => 'camoufox',
+      getCamoufoxPage: async () => camoPage,
+    });
+    pageController = deps.pageController as any;
+    handlers = new PageEvaluationHandlers(deps);
+
+    const body = parseJson<any>(
+      await handlers.handlePageEvaluate({
+        code: 'document.title',
+        frameSelector: 'iframe#game',
+        autoSummarize: false,
+      }),
+    );
+    expect(pageController.resolveFrame).toHaveBeenCalledWith(camoPage, {
+      frameUrl: undefined,
+      frameSelector: 'iframe#game',
+    });
+    expect(camoFrame.evaluate).toHaveBeenCalled();
+    expect(camoPage.evaluate).not.toHaveBeenCalled();
+    expect(body.driver).toBe('camoufox');
+    expect(body.frame).toEqual({ frameSelector: 'iframe#game' });
+    expect(body.result).toBe('frame-result');
   });
 });
 
@@ -177,16 +246,18 @@ describe('PageEvaluationHandlers – handlePageEvaluate', () => {
 describe('PageEvaluationHandlers – handlePageScreenshot', () => {
   let handlers: PageEvaluationHandlers;
   let deps: ReturnType<typeof createChromeDeps>;
+  let pageController: PageControllerMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
     deps = createChromeDeps();
+    pageController = deps.pageController as any;
     handlers = new PageEvaluationHandlers(deps);
   });
 
   it('takes a full-page screenshot with defaults', async () => {
-    deps.pageController.screenshot.mockResolvedValueOnce(Buffer.from('png-bytes'));
-    const body = parseJson(await handlers.handlePageScreenshot({}));
+    pageController.screenshot.mockResolvedValueOnce(Buffer.from('png-bytes'));
+    const body = parseJson<PageScreenshotResponse>(await handlers.handlePageScreenshot({}));
     expect(body.success).toBe(true);
     expect(body.path).toBeDefined();
     expect(body.size).toBeGreaterThan(0);
@@ -196,22 +267,26 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
     const elementMock = {
       screenshot: vi.fn(async () => Buffer.from('el-data')),
     };
-    deps.pageController.getPage.mockResolvedValueOnce({
+    pageController.getPage.mockResolvedValueOnce({
       $: vi.fn(async () => elementMock),
     });
 
-    const body = parseJson(await handlers.handlePageScreenshot({ selector: '#header' }));
+    const body = parseJson<PageScreenshotResponse>(
+      await handlers.handlePageScreenshot({ selector: '#header' }),
+    );
 
     expect(body.success).toBe(true);
     expect(body.selector).toBe('#header');
   });
 
   it('returns error when element not found for selector', async () => {
-    deps.pageController.getPage.mockResolvedValueOnce({
+    pageController.getPage.mockResolvedValueOnce({
       $: vi.fn(async () => null),
     });
 
-    const body = parseJson(await handlers.handlePageScreenshot({ selector: '#missing' }));
+    const body = parseJson<PageScreenshotResponse>(
+      await handlers.handlePageScreenshot({ selector: '#missing' }),
+    );
 
     expect(body.success).toBe(false);
     expect(body.error).toContain('Element not found');
@@ -219,23 +294,25 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
 
   it('uses clip option when provided', async () => {
     const clip = { x: 10, y: 20, width: 100, height: 50 };
-    deps.pageController.screenshot.mockResolvedValueOnce(Buffer.from('clip-data'));
+    pageController.screenshot.mockResolvedValueOnce(Buffer.from('clip-data'));
 
-    const body = parseJson(await handlers.handlePageScreenshot({ clip }));
+    const body = parseJson<PageScreenshotResponse>(await handlers.handlePageScreenshot({ clip }));
 
-    expect(deps.pageController.screenshot).toHaveBeenCalledWith(
+    expect(pageController.screenshot).toHaveBeenCalledWith(
       expect.objectContaining({
         clip,
         fullPage: false,
-      })
+      }),
     );
     expect(body.success).toBe(true);
   });
 
   it('ignores selector value "all" (case-insensitive)', async () => {
-    deps.pageController.screenshot.mockResolvedValueOnce(Buffer.from('png-data'));
+    pageController.screenshot.mockResolvedValueOnce(Buffer.from('png-data'));
 
-    const body = parseJson(await handlers.handlePageScreenshot({ selector: 'ALL' }));
+    const body = parseJson<PageScreenshotResponse>(
+      await handlers.handlePageScreenshot({ selector: 'ALL' }),
+    );
 
     // Should treat as no selector (page screenshot)
     expect(body.success).toBe(true);
@@ -246,14 +323,14 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
     const elementMock = {
       screenshot: vi.fn(async () => Buffer.from('batch-el')),
     };
-    deps.pageController.getPage.mockResolvedValue({
+    pageController.getPage.mockResolvedValue({
       $: vi.fn(async () => elementMock),
     });
 
-    const body = parseJson(
+    const body = parseJson<PageScreenshotResponse>(
       await handlers.handlePageScreenshot({
         selector: ['#a', '#b'],
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
@@ -272,19 +349,24 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
         })
         .mockResolvedValueOnce(null),
     };
-    deps.pageController.getPage.mockResolvedValue(pageObj);
+    pageController.getPage.mockResolvedValue(pageObj);
 
-    const body = parseJson(
+    const body = parseJson<PageScreenshotResponse>(
       await handlers.handlePageScreenshot({
         selector: ['#found', '#missing'],
-      })
+      }),
     );
 
     expect(body.total).toBe(2);
     expect(body.succeeded).toBe(1);
-    expect(body.results[0].success).toBe(true);
-    expect(body.results[1].success).toBe(false);
-    expect(body.results[1].error).toContain('Element not found');
+    if (body.results) {
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.results[0].success).toBe(true);
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.results[1].success).toBe(false);
+      // @ts-expect-error — auto-suppressed [TS2532]
+      expect(body.results[1].error).toContain('Element not found');
+    }
   });
 
   it('takes screenshot on camoufox page (no selector)', async () => {
@@ -298,7 +380,7 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
     });
     handlers = new PageEvaluationHandlers(deps);
 
-    const body = parseJson(await handlers.handlePageScreenshot({}));
+    const body = parseJson<PageScreenshotResponse>(await handlers.handlePageScreenshot({}));
     expect(camoPage.screenshot).toHaveBeenCalled();
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');
@@ -318,7 +400,9 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
     });
     handlers = new PageEvaluationHandlers(deps);
 
-    const body = parseJson(await handlers.handlePageScreenshot({ selector: '.btn' }));
+    const body = parseJson<PageScreenshotResponse>(
+      await handlers.handlePageScreenshot({ selector: '.btn' }),
+    );
     expect(camoPage.$).toHaveBeenCalledWith('.btn');
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');
@@ -335,7 +419,9 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
     });
     handlers = new PageEvaluationHandlers(deps);
 
-    const body = parseJson(await handlers.handlePageScreenshot({ selector: '#gone' }));
+    const body = parseJson<PageScreenshotResponse>(
+      await handlers.handlePageScreenshot({ selector: '#gone' }),
+    );
     expect(body.success).toBe(false);
     expect(body.error).toContain('Element not found');
   });
@@ -346,16 +432,20 @@ describe('PageEvaluationHandlers – handlePageScreenshot', () => {
 describe('PageEvaluationHandlers – handlePageInjectScript', () => {
   let handlers: PageEvaluationHandlers;
   let deps: ReturnType<typeof createChromeDeps>;
+  let pageController: PageControllerMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
     deps = createChromeDeps();
+    pageController = deps.pageController as any;
     handlers = new PageEvaluationHandlers(deps);
   });
 
   it('injects a script and returns success', async () => {
-    const body = parseJson(await handlers.handlePageInjectScript({ script: 'console.log("hi")' }));
-    expect(deps.pageController.injectScript).toHaveBeenCalledWith('console.log("hi")');
+    const body = parseJson<PageInjectScriptResponse>(
+      await handlers.handlePageInjectScript({ script: 'console.log("hi")' }),
+    );
+    expect(pageController.injectScript).toHaveBeenCalledWith('console.log("hi")');
     expect(body.success).toBe(true);
     expect(body.message).toBe('Script injected');
   });
@@ -366,25 +456,27 @@ describe('PageEvaluationHandlers – handlePageInjectScript', () => {
 describe('PageEvaluationHandlers – handlePageWaitForSelector', () => {
   let handlers: PageEvaluationHandlers;
   let deps: ReturnType<typeof createChromeDeps>;
+  let pageController: PageControllerMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
     deps = createChromeDeps();
+    pageController = deps.pageController as any;
     handlers = new PageEvaluationHandlers(deps);
   });
 
   it('waits for selector via chrome pageController', async () => {
-    deps.pageController.waitForSelector.mockResolvedValueOnce({
+    pageController.waitForSelector.mockResolvedValueOnce({
       success: true,
       message: 'found #btn',
     });
-    const body = parseJson(
+    const body = parseJson<PageWaitForSelectorResponse>(
       await handlers.handlePageWaitForSelector({
         selector: '#btn',
         timeout: 5000,
-      })
+      }),
     );
-    expect(deps.pageController.waitForSelector).toHaveBeenCalledWith('#btn', 5000);
+    expect(pageController.waitForSelector).toHaveBeenCalledWith('#btn', 5000);
     expect(body.success).toBe(true);
   });
 
@@ -405,11 +497,11 @@ describe('PageEvaluationHandlers – handlePageWaitForSelector', () => {
     });
     handlers = new PageEvaluationHandlers(deps);
 
-    const body = parseJson(
+    const body = parseJson<PageWaitForSelectorResponse>(
       await handlers.handlePageWaitForSelector({
         selector: '#main',
         timeout: 2000,
-      })
+      }),
     );
 
     expect(camoPage.waitForSelector).toHaveBeenCalledWith('#main', {
@@ -417,7 +509,9 @@ describe('PageEvaluationHandlers – handlePageWaitForSelector', () => {
     });
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');
-    expect(body.element.tagName).toBe('div');
+    if (body.element) {
+      expect(body.element.tagName).toBe('div');
+    }
   });
 
   it('uses default 30s timeout on camoufox when none provided', async () => {
@@ -450,11 +544,11 @@ describe('PageEvaluationHandlers – handlePageWaitForSelector', () => {
     });
     handlers = new PageEvaluationHandlers(deps);
 
-    const body = parseJson(
+    const body = parseJson<PageWaitForSelectorResponse>(
       await handlers.handlePageWaitForSelector({
         selector: '#nope',
         timeout: 100,
-      })
+      }),
     );
     expect(body.success).toBe(false);
     expect(body.driver).toBe('camoufox');

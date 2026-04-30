@@ -1,3 +1,5 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { injectAllMock, setRealisticUserAgentMock } = vi.hoisted(() => ({
@@ -13,10 +15,6 @@ vi.mock('@server/domains/shared/modules', () => ({
 }));
 
 import { StealthInjectionHandlers } from '@server/domains/browser/handlers/stealth-injection';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('StealthInjectionHandlers', () => {
   const page = { id: 'page-1' } as any;
@@ -37,7 +35,7 @@ describe('StealthInjectionHandlers', () => {
   it('skips JS stealth injection for camoufox', async () => {
     getActiveDriver.mockReturnValue('camoufox');
 
-    const body = parseJson(await handlers.handleStealthInject({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleStealthInject({}));
 
     expect(pageController.getPage).not.toHaveBeenCalled();
     expect(injectAllMock).not.toHaveBeenCalled();
@@ -49,34 +47,39 @@ describe('StealthInjectionHandlers', () => {
   it('injects stealth scripts for non-camoufox drivers', async () => {
     injectAllMock.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handleStealthInject({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleStealthInject({}));
 
     expect(pageController.getPage).toHaveBeenCalledOnce();
     expect(injectAllMock).toHaveBeenCalledWith(page);
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       success: true,
       message: 'Stealth scripts injected successfully',
+      fingerprintApplied: false,
     });
+    expect(body._nextStepHint).toBeDefined();
   });
 
   it('sets a realistic user agent and defaults platform to windows', async () => {
     setRealisticUserAgentMock.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handleStealthSetUserAgent({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleStealthSetUserAgent({}));
 
     expect(pageController.getPage).toHaveBeenCalledOnce();
     expect(setRealisticUserAgentMock).toHaveBeenCalledWith(page, 'windows');
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       success: true,
       platform: 'windows',
       message: 'User-Agent set for windows',
     });
+    expect(body._nextStepHint).toBeDefined();
   });
 
   it('passes through the requested platform', async () => {
     setRealisticUserAgentMock.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handleStealthSetUserAgent({ platform: 'linux' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleStealthSetUserAgent({ platform: 'linux' }),
+    );
 
     expect(setRealisticUserAgentMock).toHaveBeenCalledWith(page, 'linux');
     expect(body.platform).toBe('linux');

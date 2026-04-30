@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as parser from '@babel/parser';
-import * as t from '@babel/types';
+import type * as t from '@babel/types';
 
 const loggerState = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -72,6 +72,28 @@ describe('SecurityCodeAnalyzer', () => {
     expect(risks.some((r) => r.description.includes('eval'))).toBe(true);
     expect(risks.some((r) => r.description.includes('Hardcoded'))).toBe(true);
     expect(risks.some((r) => r.description.includes('Math.random'))).toBe(true);
+  });
+
+  it('covers remaining assignment, call, and hardcoded secret branches', () => {
+    const code = `
+      element.outerHTML = html;
+      element.insertAdjacentHTML = payload;
+      document.write = writeFn;
+      setTimeout('alert(1)', 0);
+      Function('return userInput');
+      db.execute(\`SELECT * FROM users WHERE id=\${userId}\`);
+      const privateKey = '1234567890abcdef';
+    `;
+
+    const risks = identifySecurityRisks(code, {});
+
+    expect(risks.some((r) => r.description.includes('outerHTML'))).toBe(true);
+    expect(risks.some((r) => r.description.includes('insertAdjacentHTML'))).toBe(true);
+    expect(risks.some((r) => r.description.includes('document.write'))).toBe(true);
+    expect(risks.some((r) => r.description.includes('setTimeout'))).toBe(true);
+    expect(risks.some((r) => r.description.includes('Function constructor'))).toBe(true);
+    expect(risks.some((r) => r.description.includes('SQL injection'))).toBe(true);
+    expect(risks.some((r) => r.description.includes('private key'))).toBe(true);
   });
 
   it('deduplicates same type+line risks from AI and static analysis', () => {

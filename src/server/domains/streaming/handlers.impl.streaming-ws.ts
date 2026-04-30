@@ -1,3 +1,8 @@
+/**
+ * Legacy compatibility WebSocket handler retained for direct imports/tests.
+ *
+ * Current runtime wiring uses handlers.impl.core.ts + handlers/ws-handlers.ts.
+ */
 import { logger } from '@utils/logger';
 import { RingBuffer } from '@utils/RingBuffer';
 import type {
@@ -47,7 +52,7 @@ export class StreamingToolHandlersWs extends StreamingToolHandlersBase {
       try {
         this.wsSession.off(
           'Network.webSocketHandshakeResponseReceived',
-          this.wsListeners.handshake
+          this.wsListeners.handshake,
         );
       } catch (e) {
         logger.debug('[ws-teardown] Failed to remove handshakeResponseReceived listener', e);
@@ -289,7 +294,7 @@ export class StreamingToolHandlersWs extends StreamingToolHandlersBase {
       summary: {
         trackedConnections: connections.length,
         activeConnections: connections.filter(
-          (c) => c.status === 'open' || c.status === 'connecting'
+          (c) => c.status === 'open' || c.status === 'connecting',
         ).length,
         closedConnections: connections.filter((c) => c.status === 'closed').length,
         totalFrames: stats.total,
@@ -372,7 +377,7 @@ export class StreamingToolHandlersWs extends StreamingToolHandlersBase {
 
   async handleWsGetConnections(_args: Record<string, unknown>): Promise<TextToolResponse> {
     const connections = Array.from(this.wsConnections.values())
-      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+      .toSorted((a, b) => a.createdTimestamp - b.createdTimestamp)
       .map((conn) => ({
         requestId: conn.requestId,
         url: conn.url,

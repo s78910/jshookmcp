@@ -1,7 +1,16 @@
 import type { CodeCollector } from '@modules/collector/CodeCollector';
 import { logger } from '@utils/logger';
+import { PAGE_FRAME_SELECTOR_TIMEOUT_MS, PAGE_NETWORK_IDLE_TIMEOUT_MS } from '@src/constants';
 import { setTimeout as asyncSetTimeout } from 'node:timers/promises';
-import type { Page } from 'rebrowser-puppeteer-core';
+import type { Page, Frame } from 'rebrowser-puppeteer-core';
+import type { BrowserTargetInfo } from '@modules/browser/BrowserTargetSessionManager';
+
+export interface FrameResolveOptions {
+  /** URL substring to match against frame URLs */
+  frameUrl?: string;
+  /** CSS selector of the iframe element whose content frame to use */
+  frameSelector?: string;
+}
 
 export interface NavigationOptions {
   waitUntil?: 'load' | 'domcontentloaded' | 'networkidle0' | 'networkidle2';
@@ -12,6 +21,7 @@ export interface ClickOptions {
   button?: 'left' | 'right' | 'middle';
   clickCount?: number;
   delay?: number;
+  offset?: { x: number; y: number };
 }
 
 export interface TypeOptions {
@@ -53,9 +63,34 @@ interface UploadableElementHandle {
 export class PageController {
   constructor(private collector: CodeCollector) {}
 
+  async getBrowser(): Promise<ReturnType<CodeCollector['getBrowser']>> {
+    return this.collector.getBrowser();
+  }
+
+  hasAttachedTargetSession(): boolean {
+    return this.collector.getAttachedTargetSession() !== null;
+  }
+
+  getAttachedTargetInfo(): BrowserTargetInfo | null {
+    return this.collector.getAttachedTargetInfo();
+  }
+
+  async evaluateAttachedTarget<T = unknown>(
+    code: string,
+    options?: { returnByValue?: boolean; awaitPromise?: boolean },
+  ): Promise<T> {
+    return (await this.collector.getBrowserTargetSessionManager().evaluate(code, options)) as T;
+  }
+
+  async addScriptToAttachedTarget(source: string): Promise<unknown> {
+    return await this.collector
+      .getBrowserTargetSessionManager()
+      .addScriptToEvaluateOnNewDocument(source);
+  }
+
   async navigate(
     url: string,
-    options?: NavigationOptions
+    options?: NavigationOptions,
   ): Promise<{
     url: string;
     title: string;
@@ -91,45 +126,68 @@ export class PageController {
     logger.info('Page reloaded');
   }
 
-  async goBack(): Promise<void> {
+  async goBack(timeout = 10_000): Promise<void> {
     const page = await this.collector.getActivePage();
-    await page.goBack();
+    await page.goBack({ waitUntil: 'domcontentloaded', timeout });
     logger.info('Navigated back');
   }
 
-  async goForward(): Promise<void> {
+  async goForward(timeout = 10_000): Promise<void> {
     const page = await this.collector.getActivePage();
-    await page.goForward();
+    await page.goForward({ waitUntil: 'domcontentloaded', timeout });
     logger.info('Navigated forward');
   }
 
-  async click(selector: string, options?: ClickOptions): Promise<void> {
+  async click(
+    selector: string,
+    options?: ClickOptions,
+    frameOptions?: FrameResolveOptions,
+  ): Promise<void> {
     const page = await this.collector.getActivePage();
-    await page.click(selector, {
+    const context = await this.resolveFrame(page, frameOptions);
+    const clickOptions: ClickOptions = {
       button: options?.button || 'left',
       clickCount: options?.clickCount || 1,
       delay: options?.delay,
-    });
-    logger.info(`Clicked: ${selector}`);
+    };
+    if (options?.offset) {
+      clickOptions.offset = options.offset;
+    }
+    await context.click(selector, clickOptions);
+    logger.info(
+      `Clicked: ${selector}${frameOptions?.frameUrl || frameOptions?.frameSelector ? ' (in frame)' : ''}`,
+    );
   }
 
-  async type(selector: string, text: string, options?: TypeOptions): Promise<void> {
+  async type(
+    selector: string,
+    text: string,
+    options?: TypeOptions,
+    frameOptions?: FrameResolveOptions,
+  ): Promise<void> {
     const page = await this.collector.getActivePage();
-    await page.type(selector, text, {
+    const context = await this.resolveFrame(page, frameOptions);
+    await context.type(selector, text, {
       delay: options?.delay,
     });
     logger.info(`Typed into ${selector}: ${text.substring(0, 20)}...`);
   }
 
-  async select(selector: string, ...values: string[]): Promise<void> {
+  async select(
+    selector: string,
+    values: string[],
+    frameOptions?: FrameResolveOptions,
+  ): Promise<void> {
     const page = await this.collector.getActivePage();
-    await page.select(selector, ...values);
+    const context = await this.resolveFrame(page, frameOptions);
+    await context.select(selector, ...values);
     logger.info(`Selected in ${selector}: ${values.join(', ')}`);
   }
 
-  async hover(selector: string): Promise<void> {
+  async hover(selector: string, frameOptions?: FrameResolveOptions): Promise<void> {
     const page = await this.collector.getActivePage();
-    await page.hover(selector);
+    const context = await this.resolveFrame(page, frameOptions);
+    await context.hover(selector);
     logger.info(`Hovered: ${selector}`);
   }
 
@@ -143,7 +201,7 @@ export class PageController {
 
   async waitForSelector(
     selector: string,
-    timeout?: number
+    timeout?: number,
   ): Promise<{
     success: boolean;
     element?: WaitForSelectorElement | null;
@@ -170,7 +228,7 @@ export class PageController {
               acc[attr.name] = attr.value;
               return acc;
             },
-            {} as Record<string, string>
+            {} as Record<string, string>,
           ),
         };
       }, selector);
@@ -200,11 +258,70 @@ export class PageController {
     logger.info('Navigation completed');
   }
 
-  async evaluate<T>(code: string): Promise<T> {
+  async evaluate<T>(code: string, frameOptions?: FrameResolveOptions): Promise<T> {
     const page = await this.collector.getActivePage();
+    if (frameOptions?.frameUrl || frameOptions?.frameSelector) {
+      const frame = await this.resolveFrame(page, frameOptions);
+      const result = await evaluateOnContextWithTimeout(page, frame, code);
+      logger.info('JavaScript executed (in frame)');
+      return result as T;
+    }
     const result = await evaluateWithTimeout(page, code);
     logger.info('JavaScript executed');
     return result as T;
+  }
+
+  /**
+   * Resolve a child frame from the active page.
+   * When no options are provided (or both fields are undefined), returns page.mainFrame().
+   */
+  async resolveFrame(page: Page, options?: FrameResolveOptions): Promise<Frame> {
+    if (!options) return page.mainFrame();
+
+    if (options.frameUrl) {
+      const frames = page.frames();
+      const frame = frames.find((f) => f.url().includes(options.frameUrl!));
+      if (!frame) {
+        const available = frames.map((f) => f.url()).filter((u) => u && u !== 'about:blank');
+        throw new Error(
+          `No frame matching URL substring "${options.frameUrl}". Available frames: ${available.join(', ') || '(none)'}`,
+        );
+      }
+      return frame;
+    }
+
+    if (options.frameSelector) {
+      await page
+        .waitForSelector(options.frameSelector, { timeout: PAGE_FRAME_SELECTOR_TIMEOUT_MS })
+        .catch(() => null);
+      const handle = await page.$(options.frameSelector);
+      if (!handle) {
+        throw new Error(`No element found for iframe selector: ${options.frameSelector}`);
+      }
+      const frame = await handle.contentFrame();
+      if (!frame) {
+        throw new Error(
+          `Element "${options.frameSelector}" exists but has no content frame (not an iframe or not yet loaded).`,
+        );
+      }
+      return frame;
+    }
+
+    return page.mainFrame();
+  }
+
+  /** List all frames in the active page with URL and name info. */
+  async listFrames(): Promise<
+    Array<{ url: string; name: string; id: string; isMainFrame: boolean }>
+  > {
+    const page = await this.collector.getActivePage();
+    const mainFrame = page.mainFrame();
+    return page.frames().map((frame) => ({
+      url: frame.url(),
+      name: frame.name() || '',
+      id: (frame as unknown as { _id?: string })._id || '',
+      isMainFrame: frame === mainFrame,
+    }));
   }
 
   async getURL(): Promise<string> {
@@ -274,7 +391,7 @@ export class PageController {
         scriptElement.textContent = script;
         document.head.appendChild(scriptElement);
       },
-      scriptContent
+      scriptContent,
     );
 
     logger.info('Script injected into page');
@@ -290,7 +407,7 @@ export class PageController {
       httpOnly?: boolean;
       secure?: boolean;
       sameSite?: 'Strict' | 'Lax' | 'None';
-    }>
+    }>,
   ): Promise<void> {
     const page = await this.collector.getActivePage();
     await page.setCookie(...cookies);
@@ -349,7 +466,7 @@ export class PageController {
 
     if (!resolvedDevice) {
       throw new Error(
-        `Unsupported device "${deviceName}". Supported values include: iPhone, iPad, Android (aliases like "iPhone 13" are accepted).`
+        `Unsupported device "${deviceName}". Supported values include: iPhone, iPad, Android (aliases like "iPhone 13" are accepted).`,
       );
     }
 
@@ -361,7 +478,7 @@ export class PageController {
     return resolvedDevice;
   }
 
-  async waitForNetworkIdle(timeout = 30000): Promise<void> {
+  async waitForNetworkIdle(timeout = PAGE_NETWORK_IDLE_TIMEOUT_MS): Promise<void> {
     const page = await this.collector.getActivePage();
     await page.waitForNetworkIdle({ timeout });
     logger.info('Network is idle');
@@ -393,7 +510,7 @@ export class PageController {
         localStorage.setItem(k, v);
       },
       key,
-      value
+      value,
     );
 
     logger.info(`Set localStorage: ${key}`);
@@ -468,10 +585,7 @@ async function checkPageCDPHealth(page: Page, timeoutMs = 500): Promise<void> {
     throw new Error('cdp_unreachable');
   });
   try {
-    const cdp = await Promise.race([
-      page.createCDPSession(),
-      timer as unknown as Promise<never>,
-    ]);
+    const cdp = await Promise.race([page.createCDPSession(), timer as unknown as Promise<never>]);
     await Promise.race([
       cdp.send('Runtime.evaluate', { expression: '1', returnByValue: true }),
       timer as unknown as Promise<never>,
@@ -481,13 +595,26 @@ async function checkPageCDPHealth(page: Page, timeoutMs = 500): Promise<void> {
     if (msg === 'cdp_unreachable') {
       throw new Error(
         'CDP session unresponsive — the debugger may be blocking page evaluation. ' +
-        'Call debugger_disable() before this tool, or run it before debugger_enable().',
+          "Call debugger_lifecycle({ action: 'disable' })() before this tool, or run it before debugger_lifecycle({ action: 'enable' })().",
+        { cause: err },
       );
     }
     throw err;
   } finally {
     ac.abort();
   }
+}
+
+interface EvaluateContextLike {
+  evaluate<Result>(pageFunction: () => Result | Promise<Result>): Promise<Result>;
+  evaluate<Arg, Result>(
+    pageFunction: (arg: Arg) => Result | Promise<Result>,
+    arg: Arg,
+  ): Promise<Result>;
+  evaluate<Args extends readonly unknown[], Result>(
+    pageFunction: string | ((...args: Args) => Result | Promise<Result>),
+    ...args: Args
+  ): Promise<Result>;
 }
 
 /**
@@ -497,6 +624,43 @@ async function checkPageCDPHealth(page: Page, timeoutMs = 500): Promise<void> {
  *
  * Supports both string expressions and function callbacks.
  */
+export async function evaluateOnContextWithTimeout<Args extends readonly unknown[], Result>(
+  page: Page,
+  context: EvaluateContextLike,
+  pageFunction: (...args: Args) => Result,
+  ...args: Args
+): Promise<Awaited<Result>>;
+export async function evaluateOnContextWithTimeout(
+  page: Page,
+  context: EvaluateContextLike,
+  pageFunction: string,
+  ...args: readonly unknown[]
+): Promise<unknown>;
+export async function evaluateOnContextWithTimeout<Args extends readonly unknown[], Result>(
+  page: Page,
+  context: EvaluateContextLike,
+  pageFunction: string | ((...args: never[]) => Result),
+  ...args: Args
+): Promise<Awaited<Result> | unknown> {
+  const timeoutMs = 30000;
+
+  // Fail fast: detect zombie CDP sessions before they block evaluate().
+  await checkPageCDPHealth(page);
+
+  return Promise.race([
+    context.evaluate(
+      pageFunction as string | ((...args: never[]) => Result),
+      ...([...args] as never[]),
+    ),
+    new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`page.evaluate timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      ),
+    ),
+  ]);
+}
+
 export async function evaluateWithTimeout<Args extends readonly unknown[], Result>(
   page: Page,
   pageFunction: (...args: Args) => Result,
@@ -512,20 +676,12 @@ export async function evaluateWithTimeout<Args extends readonly unknown[], Resul
   pageFunction: string | ((...args: never[]) => Result),
   ...args: Args
 ): Promise<Awaited<Result> | unknown> {
-  const timeoutMs = 30000;
-
-  // Fail fast: detect zombie CDP sessions before they block page.evaluate().
-  await checkPageCDPHealth(page);
-
-  return Promise.race([
-    page.evaluate(
-      pageFunction as string | ((...args: never[]) => Result),
-      ...([...args] as never[]),
-    ),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`page.evaluate timed out after ${timeoutMs}ms`)), timeoutMs),
-    ),
-  ]);
+  return evaluateOnContextWithTimeout(
+    page,
+    page,
+    pageFunction as any,
+    ...(args as unknown as never[]),
+  );
 }
 
 /**
@@ -557,13 +713,25 @@ export async function evaluateOnNewDocumentWithTimeout<Args extends readonly unk
   ]);
 }
 
+/** Structural type for pages with coverage API (Puppeteer / rebrowser-puppeteer). */
+interface CoveragePage {
+  coverage: {
+    startJSCoverage(options?: {
+      resetOnNavigation?: boolean;
+      reportAnonymousScripts?: boolean;
+    }): Promise<void>;
+    stopJSCoverage(): Promise<unknown>;
+    startCSSCoverage(options?: { resetOnNavigation?: boolean }): Promise<void>;
+    stopCSSCoverage(): Promise<unknown>;
+  };
+}
+
 /**
  * Wrap page.coverage.startJSCoverage() with a timeout.
  */
 export async function coverageStartJSWithTimeout(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  page: any,
-  options?: { resetOnNavigation?: boolean; reportAnonymousScripts?: boolean }
+  page: CoveragePage,
+  options?: { resetOnNavigation?: boolean; reportAnonymousScripts?: boolean },
 ): Promise<void> {
   const timeoutMs = 30000;
   return Promise.race([
@@ -571,8 +739,8 @@ export async function coverageStartJSWithTimeout(
     new Promise<void>((_, reject) =>
       setTimeout(
         () => reject(new Error(`coverage.startJSCoverage timed out after ${timeoutMs}ms`)),
-        timeoutMs
-      )
+        timeoutMs,
+      ),
     ),
   ]);
 }
@@ -581,9 +749,8 @@ export async function coverageStartJSWithTimeout(
  * Wrap page.coverage.startCSSCoverage() with a timeout.
  */
 export async function coverageStartCSSWithTimeout(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  page: any,
-  options?: { resetOnNavigation?: boolean }
+  page: CoveragePage,
+  options?: { resetOnNavigation?: boolean },
 ): Promise<void> {
   const timeoutMs = 30000;
   return Promise.race([
@@ -591,8 +758,8 @@ export async function coverageStartCSSWithTimeout(
     new Promise<void>((_, reject) =>
       setTimeout(
         () => reject(new Error(`coverage.startCSSCoverage timed out after ${timeoutMs}ms`)),
-        timeoutMs
-      )
+        timeoutMs,
+      ),
     ),
   ]);
 }
@@ -600,18 +767,15 @@ export async function coverageStartCSSWithTimeout(
 /**
  * Wrap page.coverage.stopJSCoverage() with a timeout.
  */
-export async function coverageStopJSWithTimeout(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  page: any
-): Promise<unknown> {
+export async function coverageStopJSWithTimeout(page: CoveragePage): Promise<unknown> {
   const timeoutMs = 30000;
   return Promise.race([
     page.coverage.stopJSCoverage(),
     new Promise<unknown>((_, reject) =>
       setTimeout(
         () => reject(new Error(`coverage.stopJSCoverage timed out after ${timeoutMs}ms`)),
-        timeoutMs
-      )
+        timeoutMs,
+      ),
     ),
   ]);
 }
@@ -619,18 +783,15 @@ export async function coverageStopJSWithTimeout(
 /**
  * Wrap page.coverage.stopCSSCoverage() with a timeout.
  */
-export async function coverageStopCSSWithTimeout(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  page: any
-): Promise<unknown> {
+export async function coverageStopCSSWithTimeout(page: CoveragePage): Promise<unknown> {
   const timeoutMs = 30000;
   return Promise.race([
     page.coverage.stopCSSCoverage(),
     new Promise<unknown>((_, reject) =>
       setTimeout(
         () => reject(new Error(`coverage.stopCSSCoverage timed out after ${timeoutMs}ms`)),
-        timeoutMs
-      )
+        timeoutMs,
+      ),
     ),
   ]);
 }

@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ToolRegistration } from '@server/registry/contracts';
 
-import '../shared/manifest-test-mocks';
+import { manifestTestMocksInstalled } from '../shared/manifest-test-mocks';
+
+void manifestTestMocksInstalled;
+
+async function loadManifest() {
+  const mod = await import('@server/domains/debugger/manifest');
+  return mod.default;
+}
 
 function getToolName(registration: ToolRegistration): string {
   return (registration.tool as { name: string }).name;
@@ -12,11 +19,6 @@ describe('debugger manifest', () => {
     vi.clearAllMocks();
     vi.resetModules();
   });
-
-  async function loadManifest() {
-    const mod = await import('@server/domains/debugger/manifest');
-    return mod.default;
-  }
 
   // ── Manifest shape ─────────────────────────────────────────
 
@@ -71,7 +73,7 @@ describe('debugger manifest', () => {
             tool: expect.objectContaining({ name: expect.any(String) }),
             domain: 'debugger',
             bind: expect.any(Function),
-          })
+          }),
         );
       }
     });
@@ -90,41 +92,20 @@ describe('debugger manifest', () => {
 
     const expectedRegistrations = [
       // Core tools
-      'debugger_enable',
-      'debugger_disable',
+      'debugger_lifecycle',
       'debugger_pause',
       'debugger_resume',
-      'debugger_step_into',
-      'debugger_step_over',
-      'debugger_step_out',
-      'breakpoint_set',
-      'breakpoint_remove',
-      'breakpoint_list',
+      'debugger_step',
+      'breakpoint',
       'get_call_stack',
       'debugger_evaluate',
-      'debugger_evaluate_global',
       'debugger_wait_for_paused',
       'debugger_get_paused_state',
-      'breakpoint_set_on_exception',
       'get_object_properties',
       'get_scope_variables_enhanced',
-      'debugger_save_session',
-      'debugger_load_session',
-      'debugger_export_session',
-      'debugger_list_sessions',
+      'debugger_session',
       // Advanced tools
-      'watch_add',
-      'watch_remove',
-      'watch_list',
-      'watch_evaluate_all',
-      'watch_clear_all',
-      'xhr_breakpoint_set',
-      'xhr_breakpoint_remove',
-      'xhr_breakpoint_list',
-      'event_breakpoint_set',
-      'event_breakpoint_set_category',
-      'event_breakpoint_remove',
-      'event_breakpoint_list',
+      'watch',
       'blackbox_add',
       'blackbox_add_common',
       'blackbox_list',
@@ -138,7 +119,7 @@ describe('debugger manifest', () => {
     it.each(expectedRegistrations)('includes registration for "%s"', async (name) => {
       const manifest = await loadManifest();
       const found = manifest.registrations.find(
-        (registration) => getToolName(registration) === name
+        (registration) => getToolName(registration) === name,
       );
       expect(found).toBeDefined();
     });

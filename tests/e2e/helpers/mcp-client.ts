@@ -1,9 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { ToolResult, ToolStatus } from '@tests/e2e/helpers/types';
+import type { ToolPerformanceMetrics, ToolResult, ToolStatus } from '@tests/e2e/helpers/types';
 
 const KNOWN_EXPECTED_LIMITATION_PATTERNS = [
   'GRACEFUL:',
+  '[PREREQUISITE]',
   'timed out',
   'Timeout',
   'Protocol error',
@@ -21,10 +22,11 @@ function classifyStatus(
   parsed: unknown,
   error: Error | null,
   isError: boolean,
-  detail: string
+  detail: string,
 ): { status: ToolStatus; code?: string } {
   const code = isRecord(parsed) && typeof parsed.code === 'string' ? parsed.code : undefined;
-  const success = isRecord(parsed) && typeof parsed.success === 'boolean' ? parsed.success : undefined;
+  const success =
+    isRecord(parsed) && typeof parsed.success === 'boolean' ? parsed.success : undefined;
   const isKnownExpectedLimitation =
     success === false ||
     KNOWN_EXPECTED_LIMITATION_PATTERNS.some((pattern) => detail.includes(pattern));
@@ -61,6 +63,20 @@ export function parseContent(result: unknown): unknown {
   }
 }
 
+function isPerformanceSamplingEnabled(): boolean {
+  return process.env.E2E_COLLECT_PERFORMANCE === '1';
+}
+
+function isPerformanceMetrics(value: unknown): value is ToolPerformanceMetrics {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).elapsedMs === 'number' &&
+    typeof (value as Record<string, unknown>).startedAt === 'string' &&
+    typeof (value as Record<string, unknown>).finishedAt === 'string'
+  );
+}
+
 export class MCPTestClient {
   private client: Client;
   private transport: StdioClientTransport | null = null;
@@ -70,7 +86,7 @@ export class MCPTestClient {
   constructor() {
     this.client = new Client(
       { name: 'full-e2e-tool-test', version: '1.0.0' },
-      { capabilities: {} }
+      { capabilities: {} },
     );
   }
 
@@ -84,15 +100,52 @@ export class MCPTestClient {
             ? '\u26A0'
             : '\u2717';
     console.info(
-      `  ${icon} ${result.name.padEnd(42)} ${result.status.padEnd(20)} | ${result.detail.substring(0, 80)}`
+      `  ${icon} ${result.name.padEnd(42)} ${result.status.padEnd(20)} | ${result.detail.substring(0, 80)}`,
     );
+  }
+
+  private buildPerformanceMetrics(timeoutMs: number): {
+    startedAt: string;
+    startTime: number;
+    finalize: (serverMetrics?: ToolPerformanceMetrics) => ToolPerformanceMetrics;
+  } {
+    const startedAt = new Date().toISOString();
+    const startTime = performance.now();
+
+    return {
+      startedAt,
+      startTime,
+      finalize: (serverMetrics?: ToolPerformanceMetrics) => {
+        if (serverMetrics) {
+          return serverMetrics;
+        }
+
+        return {
+          source: 'client',
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          elapsedMs: Number((performance.now() - startTime).toFixed(2)),
+          timeoutMs,
+          serverPid: null,
+          cpuUserMicros: null,
+          cpuSystemMicros: null,
+          memoryBefore: null,
+          memoryAfter: null,
+          memoryDelta: null,
+        };
+      },
+    };
   }
 
   recordSynthetic(
     name: string,
     status: ToolStatus,
     detail: string,
-    options?: { code?: string; isError?: boolean }
+    options?: {
+      code?: string;
+      isError?: boolean;
+      performance?: ToolPerformanceMetrics;
+    },
   ): ToolResult {
     const result: ToolResult = {
       name,
@@ -100,6 +153,7 @@ export class MCPTestClient {
       code: options?.code,
       detail: detail.substring(0, 200),
       isError: options?.isError ?? status === 'FAIL',
+      performance: options?.performance,
       ok: status === 'PASS',
     };
     this.results.push(result);
@@ -107,38 +161,52 @@ export class MCPTestClient {
     return result;
   }
 
-  private record(name: string, resp: unknown, error: Error | null): { parsed: unknown; result: ToolResult } {
+  private record(
+    name: string,
+    resp: unknown,
+    error: Error | null,
+    performance?: ToolPerformanceMetrics,
+  ): { parsed: unknown; result: ToolResult } {
     const parsed = error ? null : parseContent(resp);
+    let parsedForResult = parsed;
+    let performanceMetrics = performance;
+
+    if (!error && isRecord(parsed) && isPerformanceMetrics(parsed['_executionMetrics'])) {
+      performanceMetrics = parsed['_executionMetrics'];
+      const { _executionMetrics: _ignored, ...rest } = parsed;
+      parsedForResult = rest;
+    }
     const isError = isRecord(resp) && resp.isError === true;
 
     let detail: string;
     if (error) {
       detail = error.message;
-    } else if (isRecord(parsed)) {
-      if (parsed.success === false) {
-        detail = `GRACEFUL: ${String(parsed.message ?? parsed.error ?? 'success=false')}`;
-      } else if (parsed.success === true) {
+    } else if (isRecord(parsedForResult)) {
+      if (parsedForResult.success === false) {
+        detail = `GRACEFUL: ${String(parsedForResult.message ?? parsedForResult.error ?? 'success=false')}`;
+      } else if (parsedForResult.success === true) {
         detail = 'success=true';
       } else {
-        detail = JSON.stringify(parsed).substring(0, 120);
+        detail = JSON.stringify(parsedForResult).substring(0, 120);
       }
     } else {
-      detail = String(parsed).substring(0, 120);
+      detail = String(parsedForResult).substring(0, 120);
     }
 
     const normalizedDetail = detail.substring(0, 200);
-    const { status, code } = classifyStatus(parsed, error, isError, normalizedDetail);
+    const { status, code } = classifyStatus(parsedForResult, error, isError, normalizedDetail);
     const result: ToolResult = {
       name,
       status,
       code,
       detail: normalizedDetail,
       isError,
+      performance: performanceMetrics,
       ok: status === 'PASS',
     };
     this.results.push(result);
     this.logResult(result);
-    return { parsed, result };
+    return { parsed: parsedForResult, result };
   }
 
   async connect(): Promise<void> {
@@ -147,13 +215,13 @@ export class MCPTestClient {
       if (typeof v === 'string') env[k] = v;
     }
     env.MCP_TRANSPORT = 'stdio';
-    env.MCP_TOOL_PROFILE = 'full';
+    env.MCP_TOOL_PROFILE = process.env.MCP_TOOL_PROFILE ?? 'full';
     env.LOG_LEVEL = 'error';
-    env.PUPPETEER_HEADLESS = 'false';
+    env.PUPPETEER_HEADLESS = process.env.PUPPETEER_HEADLESS ?? 'false';
 
     const transport = new StdioClientTransport({
       command: 'node',
-      args: ['dist/src/index.js'],
+      args: ['dist/index.mjs'],
       cwd: process.cwd(),
       env,
       stderr: 'pipe',
@@ -170,7 +238,7 @@ export class MCPTestClient {
       tools.map((tool) => [
         tool.name,
         { name: tool.name, inputSchema: tool.inputSchema as Record<string, unknown> | undefined },
-      ])
+      ]),
     );
 
     console.info(`Server has ${this.toolMap.size} tools registered.\n`);
@@ -180,17 +248,31 @@ export class MCPTestClient {
     return this.toolMap;
   }
 
-  async call(name: string, args?: Record<string, unknown>, timeoutMs = 30000): Promise<{ parsed: unknown; result: ToolResult }> {
+  async call(
+    name: string,
+    args?: Record<string, unknown>,
+    timeoutMs = 30000,
+  ): Promise<{ parsed: unknown; result: ToolResult }> {
+    const collectPerformance = isPerformanceSamplingEnabled();
+    const metrics = collectPerformance ? this.buildPerformanceMetrics(timeoutMs) : null;
+
     try {
       const resp = await withTimeout(
         this.client.callTool({ name, arguments: args ?? {} }),
         timeoutMs,
-        name
+        name,
       );
-      return this.record(name, resp, null);
+      const parsedResponse = parseContent(resp);
+      const serverMetrics =
+        collectPerformance &&
+        isRecord(parsedResponse) &&
+        isPerformanceMetrics(parsedResponse['_executionMetrics'])
+          ? (parsedResponse['_executionMetrics'] as ToolPerformanceMetrics)
+          : undefined;
+      return this.record(name, resp, null, metrics ? metrics.finalize(serverMetrics) : undefined);
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));
-      return this.record(name, null, error);
+      return this.record(name, null, error, metrics ? metrics.finalize() : undefined);
     }
   }
 
@@ -207,7 +289,11 @@ export class MCPTestClient {
     }
     try {
       const proc = this.transport as unknown as { _process?: { pid?: number } } | null;
-      if (proc?._process?.pid) process.kill(proc._process.pid, 'SIGKILL');
+      if (proc?._process?.pid) {
+        process.kill(proc._process.pid, 'SIGTERM');
+        // Give the server time to gracefully shut down (triggering Puppeteer browser.close)
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
     } catch {
       /* best-effort teardown */
     }

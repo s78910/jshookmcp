@@ -89,7 +89,7 @@ export class WatchExpressionManager {
         const value: WatchValue = await Promise.race([
           this.runtimeInspector.evaluate(watch.expression, callFrameId),
           new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`Evaluation timeout after ${timeout}ms`)), timeout)
+            setTimeout(() => reject(new Error(`Evaluation timeout after ${timeout}ms`)), timeout),
           ),
         ]);
 
@@ -148,7 +148,7 @@ export class WatchExpressionManager {
 
   private deepEqual(a: unknown, b: unknown): boolean {
     if (a === b) return true;
-    if (a == null || b == null) return false;
+    if (a === null || a === undefined || b === null || b === undefined) return false;
     if (!this.isRecord(a) || !this.isRecord(b)) return false;
 
     const keysA = Object.keys(a);

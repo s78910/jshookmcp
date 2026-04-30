@@ -1,9 +1,10 @@
 import { logger } from '@utils/logger';
 import { executePowerShellScript, type Platform } from '@modules/process/memory/types';
+import { MEMORY_MODULES_TIMEOUT_MS } from '@src/constants';
 
 export async function enumerateModules(
   platform: Platform,
-  pid: number
+  pid: number,
 ): Promise<{
   success: boolean;
   modules?: { name: string; baseAddress: string; size: number }[];
@@ -98,7 +99,7 @@ try {
 
     const { stdout } = await executePowerShellScript(psScript, {
       maxBuffer: 1024 * 1024 * 10,
-      timeout: 30000,
+      timeout: MEMORY_MODULES_TIMEOUT_MS,
     });
 
     const _trimmed = stdout.trim();

@@ -1,0 +1,85 @@
+import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
+import { bindByDepKey, toolLookup } from '@server/domains/shared/registry';
+import { extensionRegistryTools } from './definitions';
+import type { ExtensionRegistryHandlers } from './handlers';
+
+const DOMAIN = 'extension-registry';
+const DEP_KEY = 'extensionRegistryHandlers';
+type H = ExtensionRegistryHandlers;
+const t = toolLookup(extensionRegistryTools);
+const b = (invoke: (handlers: H, args: Record<string, unknown>) => Promise<unknown>) =>
+  bindByDepKey<H>(DEP_KEY, invoke);
+
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { ExtensionRegistryHandlers } = await import('./handlers');
+  const existing = ctx.getDomainInstance<H>(DEP_KEY);
+  if (existing) {
+    return existing;
+  }
+
+  const handlers = new ExtensionRegistryHandlers();
+  ctx.setDomainInstance(DEP_KEY, handlers);
+
+  // Start webhook server on demand (lazy)
+  void handlers.startWebhookServer().catch(() => undefined);
+
+  return handlers;
+}
+
+const manifest = {
+  kind: 'domain-manifest',
+  version: 1,
+  domain: DOMAIN,
+  depKey: DEP_KEY,
+  profiles: ['full'],
+  ensure,
+  registrations: [
+    {
+      tool: t('extension_list_installed'),
+      domain: DOMAIN,
+      bind: b((handlers) => handlers.handleListInstalled()),
+    },
+    {
+      tool: t('extension_execute_in_context'),
+      domain: DOMAIN,
+      bind: b((handlers, args) => handlers.handleExecuteInContext(args)),
+    },
+    {
+      tool: t('extension_reload'),
+      domain: DOMAIN,
+      bind: b((handlers, args) => handlers.handleReload(args)),
+    },
+    {
+      tool: t('extension_uninstall'),
+      domain: DOMAIN,
+      bind: b((handlers, args) => handlers.handleUninstall(args)),
+    },
+    {
+      tool: t('webhook'),
+      domain: DOMAIN,
+      bind: b((handlers, args) => handlers.handleWebhookDispatch(args)),
+    },
+  ],
+  workflowRule: {
+    patterns: [
+      /\b(extension|plugin|addon|webhook|c2|bluetooth|ble|hid|serial|esp32|registry)\b/i,
+      /(install|uninstall|reload).*(extension|plugin)/i,
+    ],
+    priority: 70,
+    tools: ['install_extension', 'extension_list_installed', 'webhook'],
+    hint: 'Plugin + webhook C2 + BLE HID + serial flashing pipeline.',
+  },
+  prerequisites: {
+    webhook: [
+      {
+        condition: 'Webhook listen port must be free',
+        fix: 'Pick an unused port via the `port` argument or stop the conflicting service',
+      },
+    ],
+  },
+  toolDependencies: [
+    { from: 'webhook', to: 'extension_list_installed', relation: 'suggests', weight: 0.5 },
+  ],
+} satisfies DomainManifest<typeof DEP_KEY, H, typeof DOMAIN>;
+
+export default manifest;

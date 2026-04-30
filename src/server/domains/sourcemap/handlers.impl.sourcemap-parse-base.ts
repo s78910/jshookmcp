@@ -67,7 +67,7 @@ const enum VlqConstant {
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 const BASE64_DECODE_MAP: ReadonlyMap<string, number> = new Map(
-  Array.from(BASE64_ALPHABET).map((char, index) => [char, index])
+  Array.from(BASE64_ALPHABET).map((char, index) => [char, index]),
 );
 
 export class SourcemapToolHandlersParseBase {
@@ -79,7 +79,7 @@ export class SourcemapToolHandlersParseBase {
 
   protected async parseSourceMap(
     sourceMapUrl: string,
-    scriptUrl?: string
+    scriptUrl?: string,
   ): Promise<ParsedSourceMapResult> {
     const loaded = await this.loadSourceMap(sourceMapUrl, scriptUrl);
     const mappings = this.decodeMappings(loaded.map.mappings);
@@ -94,9 +94,23 @@ export class SourcemapToolHandlersParseBase {
     };
   }
 
+  protected async parseSourceMapStats(
+    sourceMapUrl: string,
+    scriptUrl?: string,
+  ): Promise<{
+    resolvedUrl: string;
+    map: SourceMapV3;
+    mappingsCount: number;
+    segmentCount: number;
+  }> {
+    const loaded = await this.loadSourceMap(sourceMapUrl, scriptUrl);
+    const { mappingsCount, segmentCount } = this.countMappingsStats(loaded.map.mappings);
+    return { resolvedUrl: loaded.resolvedUrl, map: loaded.map, mappingsCount, segmentCount };
+  }
+
   protected async loadSourceMap(
     sourceMapUrl: string,
-    scriptUrl?: string
+    scriptUrl?: string,
   ): Promise<{ resolvedUrl: string; map: SourceMapV3 }> {
     const resolvedUrl = this.resolveSourceMapUrl(sourceMapUrl, scriptUrl ?? '');
 
@@ -227,6 +241,29 @@ export class SourcemapToolHandlersParseBase {
     return decoded;
   }
 
+  protected countMappingsStats(mappings: string): { mappingsCount: number; segmentCount: number } {
+    if (!mappings) return { mappingsCount: 0, segmentCount: 0 };
+    let mappingsCount = 0;
+    let segmentCount = 0;
+    let inNonEmptyLine = false;
+    for (let i = 0; i < mappings.length; i++) {
+      const ch = mappings[i];
+      if (ch === ';') {
+        if (inNonEmptyLine) mappingsCount++;
+        inNonEmptyLine = false;
+      } else if (ch === ',') {
+        segmentCount++;
+      } else {
+        if (!inNonEmptyLine) {
+          inNonEmptyLine = true;
+          segmentCount++;
+        }
+      }
+    }
+    if (inNonEmptyLine) mappingsCount++;
+    return { mappingsCount, segmentCount };
+  }
+
   protected decodeVlqSegment(segment: string): number[] {
     const values: number[] = [];
     let index = 0;
@@ -282,7 +319,7 @@ export class SourcemapToolHandlersParseBase {
         return await response.text();
       } catch (err) {
         if ((err as Error).name === 'AbortError') {
-          throw new Error(`SourceMap fetch timed out after 10s: ${resolvedUrl}`);
+          throw new Error(`SourceMap fetch timed out after 10s: ${resolvedUrl}`, { cause: err });
         }
         // not abort — fall through to browser fallback
       } finally {
@@ -310,7 +347,7 @@ export class SourcemapToolHandlersParseBase {
           clearTimeout(t);
         }
       },
-      resolvedUrl
+      resolvedUrl,
     );
 
     if (typeof fetched !== 'string') {

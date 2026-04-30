@@ -32,7 +32,7 @@ const asCallable = (value: unknown): ((...args: unknown[]) => unknown) | null =>
 
 const resolveCallableExport = (
   moduleValue: unknown,
-  namedExport: 'traverse' | 'generate'
+  namedExport: 'traverse' | 'generate',
 ): ((...args: unknown[]) => unknown) | null => {
   const moduleRecord = asRecord(moduleValue);
   const defaultExport = moduleRecord?.default;
@@ -70,12 +70,12 @@ export async function extractFunctionTreeCore(
     maxDepth?: number;
     maxSize?: number;
     includeComments?: boolean;
-  } = {}
+  } = {},
 ): Promise<ExtractFunctionTreeResult> {
   const { maxDepth = 3, maxSize = 500, includeComments = true } = options;
 
   const script = await ctx.getScriptSource(scriptId);
-  if (!script || !script.source) {
+  if (!script?.source) {
     throw new Error(`Script not found: ${scriptId}`);
   }
 
@@ -101,7 +101,8 @@ export async function extractFunctionTreeCore(
     t = await import('@babel/types');
   } catch (error: unknown) {
     throw new Error(
-      `Failed to load Babel dependencies. Please install: npm install @babel/parser @babel/traverse @babel/generator @babel/types\nError: ${getErrorMessage(error)}`
+      `Failed to load Babel dependencies. Please install: npm install @babel/parser @babel/traverse @babel/generator @babel/types\nError: ${getErrorMessage(error)}`,
+      { cause: error },
     );
   }
 
@@ -113,7 +114,9 @@ export async function extractFunctionTreeCore(
       plugins: ['jsx', 'typescript'],
     });
   } catch (error: unknown) {
-    throw new Error(`Failed to parse script ${scriptId}: ${getErrorMessage(error)}`);
+    throw new Error(`Failed to parse script ${scriptId}: ${getErrorMessage(error)}`, {
+      cause: error,
+    });
   }
 
   const allFunctions = new Map<
@@ -130,7 +133,7 @@ export async function extractFunctionTreeCore(
   const callGraph: Record<string, string[]> = {};
 
   const extractDependencies = (
-    path: NodePath<BabelFunctionDeclaration | BabelVariableDeclarator>
+    path: NodePath<BabelFunctionDeclaration | BabelVariableDeclarator>,
   ): string[] => {
     const deps = new Set<string>();
     path.traverse({
@@ -217,12 +220,12 @@ export async function extractFunctionTreeCore(
 
   if (totalSize > maxSize * 1024) {
     logger.warn(
-      `Extracted code size (${(totalSize / 1024).toFixed(2)}KB) exceeds limit (${maxSize}KB)`
+      `Extracted code size (${(totalSize / 1024).toFixed(2)}KB) exceeds limit (${maxSize}KB)`,
     );
   }
 
   logger.info(
-    `extractFunctionTree: ${functionName} - extracted ${functions.length} functions (${(totalSize / 1024).toFixed(2)}KB)`
+    `extractFunctionTree: ${functionName} - extracted ${functions.length} functions (${(totalSize / 1024).toFixed(2)}KB)`,
   );
 
   return {

@@ -14,6 +14,7 @@ import {
   PROCESS_LIST_MAX_BUFFER_BYTES,
   PROCESS_LAUNCH_WAIT_MS,
 } from '@src/constants';
+import { ProcessRegistry } from '@utils/ProcessRegistry';
 import type { ProcessInfo, WindowInfo } from '@modules/process/ProcessManager';
 
 const execAsync = promisify(exec);
@@ -50,7 +51,7 @@ export class LinuxProcessManager {
   private isWayland: boolean = false;
 
   constructor() {
-    this.detectDisplayServer();
+    void this.detectDisplayServer();
     logger.info('LinuxProcessManager initialized', {
       displayServer: this.isWayland ? 'Wayland' : 'X11',
     });
@@ -73,7 +74,7 @@ export class LinuxProcessManager {
       const safePattern = sanitizePattern(pattern);
       const { stdout } = await execAsync(
         `ps aux | grep -i "${safePattern}" | grep -v grep || true`,
-        { maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES }
+        { maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES },
       );
 
       const processes: ProcessInfo[] = [];
@@ -86,6 +87,7 @@ export class LinuxProcessManager {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 11) {
           const pid = parseInt(parts[1] || '0', 10);
+          if (isNaN(pid)) continue; // skip header line
           const cpu = parseFloat(parts[2] || '0');
           const mem = parseFloat(parts[3] || '0');
           const command = parts.slice(10).join(' ');
@@ -116,7 +118,7 @@ export class LinuxProcessManager {
       pid = safePid(pid);
       const { stdout } = await execAsync(`cat /proc/${pid}/status 2>/dev/null || echo ""`);
       const { stdout: cmdline } = await execAsync(
-        `cat /proc/${pid}/cmdline 2>/dev/null | tr '\0' ' ' || echo ""`
+        `cat /proc/${pid}/cmdline 2>/dev/null | tr '\0' ' ' || echo ""`,
       );
       const { stdout: stat } = await execAsync(`cat /proc/${pid}/stat 2>/dev/null || echo ""`);
 
@@ -170,24 +172,68 @@ export class LinuxProcessManager {
    * Get all windows for a process (X11 only)
    */
   async getProcessWindows(pid: number): Promise<WindowInfo[]> {
-    if (this.isWayland) {
-      logger.warn('Window enumeration on Wayland is limited. Consider using X11 or xdotool.');
-      return [];
-    }
+    const windows: WindowInfo[] = [];
 
     try {
       pid = safePid(pid);
+
+      if (this.isWayland) {
+        logger.debug('Attempting Wayland window enumeration via compositor-specific APIs');
+
+        // 1. Try Hyprland
+        try {
+          const { stdout: hyprctlOut } = await execAsync('hyprctl clients -j 2>/dev/null');
+          if (hyprctlOut.trim()) {
+            const clients = JSON.parse(hyprctlOut);
+            for (const client of clients) {
+              if (client.pid === pid) {
+                windows.push({
+                  handle: client.address || client.window || '0',
+                  title: client.title || '',
+                  className: client.class || '',
+                  processId: pid,
+                  threadId: 0,
+                });
+              }
+            }
+            if (windows.length > 0) return windows;
+          }
+        } catch {
+          // Ignore hyprctl failures
+        }
+
+        // 2. GNOME Wayland: org.gnome.Shell.Eval is disabled by default since GNOME 42.
+        // Keeping as best-effort; no window data is parsed from this path.
+        try {
+          const { stdout: gnomeOut } = await execAsync(
+            `gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell --method org.gnome.Shell.Eval "global.get_window_actors().filter(w => w.meta_window.get_pid() === ${pid}).map(w => w.meta_window.get_title() + '|' + w.meta_window.get_wm_class())" 2>/dev/null`,
+          );
+          if (gnomeOut.includes(String(pid)) || gnomeOut.includes(',')) {
+            logger.debug(
+              'GNOME Wayland window query returned data, but reliable parsing is not yet implemented',
+            );
+          }
+        } catch {
+          // Expected: gdbus Eval is restricted on most GNOME ≥42 installs
+        }
+      }
+
+      // Fallback to X11 / XWayland
       const { stdout: xdotoolCheck } = await execAsync('which xdotool 2>/dev/null || echo ""');
       if (!xdotoolCheck.trim()) {
-        logger.warn(
-          'xdotool not found. Install it for window management: sudo apt-get install xdotool'
-        );
-        return [];
+        if (this.isWayland && windows.length === 0) {
+          logger.warn(
+            'Wayland native enumeration failed and xdotool is missing. Install xdotool for XWayland fallback.',
+          );
+        } else if (!this.isWayland) {
+          logger.warn(
+            'xdotool not found. Install it for window management: sudo apt-get install xdotool',
+          );
+        }
+        return windows;
       }
 
       const { stdout } = await execAsync(`xdotool search --all --pid ${pid} 2>/dev/null || true`);
-
-      const windows: WindowInfo[] = [];
       const windowIds = stdout
         .trim()
         .split('\n')
@@ -196,10 +242,10 @@ export class LinuxProcessManager {
       for (const windowId of windowIds) {
         try {
           const { stdout: title } = await execAsync(
-            `xdotool getwindowname ${windowId} 2>/dev/null || echo ""`
+            `xdotool getwindowname ${windowId} 2>/dev/null || echo ""`,
           );
           const { stdout: className } = await execAsync(
-            `xdotool getwindowclassname ${windowId} 2>/dev/null || echo ""`
+            `xdotool getwindowclassname ${windowId} 2>/dev/null || echo ""`,
           );
 
           windows.push({
@@ -217,7 +263,7 @@ export class LinuxProcessManager {
       return windows;
     } catch (error) {
       logger.error(`Failed to get windows for PID ${pid}:`, error);
-      return [];
+      return windows;
     }
   }
 
@@ -235,7 +281,7 @@ export class LinuxProcessManager {
 
       // Batch-fetch detailed info to avoid N+1 sequential exec calls
       const detailedInfos = await Promise.all(
-        processes.map((proc) => this.getProcessByPid(proc.pid))
+        processes.map((proc) => this.getProcessByPid(proc.pid)),
       );
 
       for (let i = 0; i < processes.length; i++) {
@@ -273,7 +319,7 @@ export class LinuxProcessManager {
           (w) =>
             w.title.includes('Chrome') ||
             w.className.includes('Chrome') ||
-            w.title.includes('Chromium')
+            w.title.includes('Chromium'),
         );
 
         if (targetWindow) {
@@ -302,17 +348,17 @@ export class LinuxProcessManager {
     try {
       pid = safePid(pid);
       const { stdout: cmdline } = await execAsync(
-        `cat /proc/${pid}/cmdline 2>/dev/null | tr '\0' ' ' || echo ""`
+        `cat /proc/${pid}/cmdline 2>/dev/null | tr '\0' ' ' || echo ""`,
       );
       const { stdout: status } = await execAsync(
-        `cat /proc/${pid}/status 2>/dev/null | grep PPid || echo ""`
+        `cat /proc/${pid}/status 2>/dev/null | grep PPid || echo ""`,
       );
 
       const ppidMatch = status.match(/PPid:\s*(\d+)/);
 
       return {
         commandLine: cmdline.trim() || undefined,
-        parentPid: ppidMatch && ppidMatch[1] ? parseInt(ppidMatch[1], 10) : undefined,
+        parentPid: ppidMatch?.[1] ? parseInt(ppidMatch[1], 10) : undefined,
       };
     } catch (error) {
       logger.error(`Failed to get command line for PID ${pid}:`, error);
@@ -331,7 +377,7 @@ export class LinuxProcessManager {
 
       if (commandLine) {
         const match = commandLine.match(/--remote-debugging-port=(\d+)/);
-        if (match && match[1]) {
+        if (match?.[1]) {
           return parseInt(match[1], 10);
         }
       }
@@ -339,7 +385,7 @@ export class LinuxProcessManager {
       // Check listening ports for the process
       const { stdout } = await execAsync(
         `ss -tlnp 2>/dev/null | grep "pid=${pid}" || netstat -tlnp 2>/dev/null | grep "${pid}" || true`,
-        { maxBuffer: 1024 * 1024 }
+        { maxBuffer: 1024 * 1024 },
       );
 
       // Common debug ports
@@ -362,7 +408,7 @@ export class LinuxProcessManager {
   async launchWithDebug(
     executablePath: string,
     debugPort: number = DEFAULT_DEBUG_PORT,
-    args: string[] = []
+    args: string[] = [],
   ): Promise<ProcessInfo | null> {
     try {
       const debugArgs = [`--remote-debugging-port=${debugPort}`, ...args];
@@ -373,6 +419,7 @@ export class LinuxProcessManager {
       });
 
       child.unref();
+      ProcessRegistry.register(child);
 
       await new Promise((resolve) => setTimeout(resolve, PROCESS_LAUNCH_WAIT_MS));
 

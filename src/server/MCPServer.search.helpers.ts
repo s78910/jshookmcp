@@ -4,10 +4,16 @@
  * Provides tool name resolution, search engine construction with caching,
  * and domain description generation.
  */
-import { allTools } from '@server/ToolCatalog';
+import {
+  allTools,
+  getProfileDomains,
+  getToolDomain,
+  getToolsForProfile,
+} from '@server/ToolCatalog';
+import type { ToolProfile } from '@server/ToolCatalog';
 import type { MCPServerContext } from '@server/MCPServer.context';
 import { ToolSearchEngine } from '@server/ToolSearch';
-import { getAllRegistrations } from '@server/registry/index';
+import { getAllRegistrations, ensureAllDomainsLoaded } from '@server/registry/index';
 import { SEARCH_WORKFLOW_DOMAIN_BOOST_MULTIPLIER } from '@src/constants';
 
 // ── active-tool helpers ──
@@ -18,6 +24,46 @@ export function getActiveToolNames(ctx: MCPServerContext): Set<string> {
   return names;
 }
 
+/**
+ * Resolve the set of domains visible to the caller under their current profile
+ * tier (`baseTier`), unioned with any domains already activated via TTL-backed
+ * activation. Drives the tier-aware ranking penalty inside `ToolSearchEngine`.
+ *
+ * Returns an empty set only when both the base profile and activation state
+ * are empty, which disables the penalty (search behaves tier-agnostic).
+ */
+export function getVisibleDomainsForTier(ctx: MCPServerContext): ReadonlySet<string> {
+  const visible = new Set<string>(getProfileDomains(ctx.baseTier));
+  for (const domain of ctx.enabledDomains) visible.add(domain);
+  for (const record of ctx.extensionToolsByName.values()) {
+    visible.add(record.domain);
+  }
+  for (const toolName of getActiveToolNames(ctx)) {
+    const extensionDomain = ctx.extensionToolsByName.get(toolName)?.domain;
+    if (extensionDomain) {
+      visible.add(extensionDomain);
+      continue;
+    }
+    const toolDomain = getToolDomain(toolName);
+    if (toolDomain) visible.add(toolDomain);
+  }
+  return visible;
+}
+
+export function getVisibleToolNamesForTier(ctx: MCPServerContext): ReadonlySet<string> {
+  const visible = new Set(getToolsForProfile(ctx.baseTier).map((tool) => tool.name));
+  for (const name of ctx.activatedToolNames) visible.add(name);
+  for (const tool of ctx.selectedTools) visible.add(tool.name);
+  for (const record of ctx.extensionToolsByName.values()) {
+    visible.add(record.name);
+  }
+  return visible;
+}
+
+export function getBaseTier(ctx: MCPServerContext): ToolProfile {
+  return ctx.baseTier;
+}
+
 export function getExtensionDomainMap(ctx: MCPServerContext): Map<string, string> {
   const map = new Map<string, string>();
   for (const record of ctx.extensionToolsByName.values()) {
@@ -26,7 +72,8 @@ export function getExtensionDomainMap(ctx: MCPServerContext): Map<string, string
   return map;
 }
 
-export function getCombinedTools(ctx: MCPServerContext): typeof allTools {
+export async function getCombinedTools(ctx: MCPServerContext): Promise<typeof allTools> {
+  await ensureAllDomainsLoaded();
   const tools = new Map(allTools.map((tool) => [tool.name, tool]));
   for (const record of ctx.extensionToolsByName.values()) {
     tools.set(record.name, record.tool);
@@ -34,8 +81,10 @@ export function getCombinedTools(ctx: MCPServerContext): typeof allTools {
   return [...tools.values()];
 }
 
-export function getToolByName(ctx: MCPServerContext): Map<string, (typeof allTools)[number]> {
-  return new Map(getCombinedTools(ctx).map((tool) => [tool.name, tool]));
+export async function getToolByName(
+  ctx: MCPServerContext,
+): Promise<Map<string, (typeof allTools)[number]>> {
+  return new Map((await getCombinedTools(ctx)).map((tool) => [tool.name, tool]));
 }
 
 // ── ToolSearchEngine build cache ──
@@ -62,12 +111,15 @@ export function buildSearchSignature(ctx: MCPServerContext): string {
   return [ctx.extensionWorkflowRuntimeById.size, extParts.join('|')].join('::');
 }
 
-export function getSearchEngine(ctx: MCPServerContext): ToolSearchEngine {
+export async function getSearchEngine(ctx: MCPServerContext): Promise<ToolSearchEngine> {
+  // Ensure all domains are loaded for full search coverage
+  await ensureAllDomainsLoaded();
+
   const signature = buildSearchSignature(ctx);
   const cached = searchEngineCache.get(ctx);
-  if (cached && cached.signature === signature) return cached.engine;
+  if (cached?.signature === signature) return cached.engine;
 
-  const tools = getCombinedTools(ctx);
+  const tools = await getCombinedTools(ctx);
   const extensionDomains = getExtensionDomainMap(ctx);
   const domainScoreMultipliers = new Map<string, number>();
   const toolScoreMultipliers = new Map<string, number>();
@@ -86,7 +138,7 @@ export function getSearchEngine(ctx: MCPServerContext): ToolSearchEngine {
     extensionDomains,
     domainScoreMultipliers,
     toolScoreMultipliers,
-    ctx.config.search
+    ctx.config.search,
   );
   searchEngineCache.set(ctx, { signature, engine });
   return engine;
@@ -94,25 +146,32 @@ export function getSearchEngine(ctx: MCPServerContext): ToolSearchEngine {
 
 // ── domain description ──
 
-/** Generate domain summary description from discovered manifests. */
+/** Generate domain summary description. Uses metadata when not all domains are loaded. */
 export function buildDomainDescription(ctx: MCPServerContext): string {
   const groups: Record<string, number> = {};
   for (const r of getAllRegistrations()) {
-    groups[r.domain] = (groups[r.domain] ?? 0) + 1;
+    groups[r.domain!] = (groups[r.domain!] ?? 0) + 1;
   }
   for (const record of ctx.extensionToolsByName.values()) {
     groups[record.domain] = (groups[record.domain] ?? 0) + 1;
   }
-  const totalTools = getAllRegistrations().length + ctx.extensionToolsByName.size;
+  const loadedCount = getAllRegistrations().length;
+  const extensionCount = ctx.extensionToolsByName.size;
+  const totalTools = loadedCount + extensionCount;
+  const domainCount = Object.keys(groups).length;
+
   const parts = Object.entries(groups)
-    .sort((a, b) => b[1] - a[1])
+    .toSorted((a, b) => b[1] - a[1])
     .map(([domain, count]) => `${domain} (${count})`)
     .join(' | ');
+
   return (
-    `Search ${totalTools} tools across ${Object.keys(groups).length} capability domains. ` +
-    `This includes built-in tools plus any loaded plugin/workflow tools (${ctx.extensionToolsByName.size} currently loaded). ` +
+    `Search ${totalTools} tools across ${domainCount} capability domains. ` +
+    `This includes built-in tools plus any loaded plugin/workflow tools (${extensionCount} currently loaded). ` +
     `In search-tier sessions, call this before assuming a capability is unavailable. ` +
     `Use activate_tools for exact matches, activate_domain for an entire domain. ` +
-    `Domains: ${parts}.`
+    `Domains: ${parts}. ` +
+    `Query tip: before searching, distill your intent into key concepts (action verb + target + domain). ` +
+    `Pass distilled keywords, not full sentences — the search engine works on token matching, not semantic understanding.`
   );
 }

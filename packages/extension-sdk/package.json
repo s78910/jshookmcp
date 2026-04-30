@@ -1,51 +1,7 @@
 {
   "name": "@jshookmcp/extension-sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "SDK for developing jshookmcp plugins and workflows",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./plugin": {
-      "types": "./dist/plugin.d.ts",
-      "default": "./dist/plugin.js"
-    },
-    "./workflow": {
-      "types": "./dist/workflow.d.ts",
-      "default": "./dist/workflow.js"
-    },
-    "./bridges": {
-      "types": "./dist/bridges/index.d.ts",
-      "default": "./dist/bridges/index.js"
-    }
-  },
-  "scripts": {
-    "clean": "node ../../scripts/clean-dist.mjs",
-    "build": "pnpm run clean && tsc -p tsconfig.json && tsc-alias -p tsconfig.json --resolve-full-paths",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "dotenv": "^17.3.1"
-  },
-  "devDependencies": {
-    "@types/node": "^25.3.0",
-    "typescript": "^5.9.3"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org",
-    "access": "public"
-  },
   "license": "AGPL-3.0-only",
   "author": {
     "name": "vmoranv",
@@ -55,5 +11,49 @@
     "type": "git",
     "url": "https://github.com/vmoranv/jshookmcp.git",
     "directory": "packages/extension-sdk"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    "./workflow": {
+      "types": "./dist/workflow.d.mts",
+      "default": "./dist/workflow.mjs"
+    },
+    "./bridges": {
+      "types": "./dist/bridges/index.d.mts",
+      "default": "./dist/bridges/index.mjs"
+    },
+    "./plugin": {
+      "types": "./dist/plugin.d.mts",
+      "default": "./dist/plugin.mjs"
+    },
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "clean": "node ../../scripts/clean-dist.mjs",
+    "build": "pnpm run clean && tsdown",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "dotenv": "^17.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "typescript": "^6.0.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

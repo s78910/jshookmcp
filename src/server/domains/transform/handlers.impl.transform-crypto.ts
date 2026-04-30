@@ -20,27 +20,6 @@ export class TransformToolHandlersCrypto extends TransformToolHandlersOps {
           const lowerKeywords = keywordList.map((item) => String(item).toLowerCase());
           const globalObj: Record<string, unknown> = window as unknown as Record<string, unknown>;
 
-          const resolvePath = (path: string): unknown => {
-            const normalized = path.startsWith('window.') ? path.slice(7) : path;
-            const parts = normalized.split('.').filter(Boolean);
-            let cursor: unknown = window;
-            for (const part of parts) {
-              if (
-                cursor === null ||
-                cursor === undefined ||
-                (typeof cursor !== 'object' && typeof cursor !== 'function')
-              ) {
-                return undefined;
-              }
-              const carrier = cursor as Record<string, unknown>;
-              if (!(part in carrier)) {
-                return undefined;
-              }
-              cursor = carrier[part];
-            }
-            return cursor;
-          };
-
           const scoreFunction = (path: string, source: string): number => {
             const text = (path + '\\n' + source).toLowerCase();
             let score = 0;
@@ -69,7 +48,26 @@ export class TransformToolHandlersCrypto extends TransformToolHandlersOps {
           };
 
           if (target.length > 0) {
-            const resolved = resolvePath(target);
+            const resolved = (() => {
+              const normalized = target.startsWith('window.') ? target.slice(7) : target;
+              const parts = normalized.split('.').filter(Boolean);
+              let cursor: unknown = window;
+              for (const part of parts) {
+                if (
+                  cursor === null ||
+                  cursor === undefined ||
+                  (typeof cursor !== 'object' && typeof cursor !== 'function')
+                ) {
+                  return undefined;
+                }
+                const carrier = cursor as Record<string, unknown>;
+                if (!(part in carrier)) {
+                  return undefined;
+                }
+                cursor = carrier[part];
+              }
+              return cursor;
+            })();
             pushCandidate(target, resolved, 100);
           }
 
@@ -140,8 +138,8 @@ export class TransformToolHandlersCrypto extends TransformToolHandlersOps {
 
           const dependencyNames = Array.from(
             new Set(
-              (selected.source.match(identifierRegex) ?? []).filter((name) => !reserved.has(name))
-            )
+              (selected.source.match(identifierRegex) ?? []).filter((name) => !reserved.has(name)),
+            ),
           ).slice(0, 30);
 
           const dependencySnippets: string[] = [];
@@ -188,7 +186,7 @@ export class TransformToolHandlersCrypto extends TransformToolHandlersOps {
           };
         },
         targetFunction,
-        CRYPTO_KEYWORDS
+        CRYPTO_KEYWORDS,
       )) as CryptoExtractPayload;
 
       if (!extracted || extracted.targetSource.trim().length === 0) {
@@ -198,28 +196,32 @@ export class TransformToolHandlersCrypto extends TransformToolHandlersOps {
       const functionName = this.resolveFunctionName(
         targetFunction,
         extracted.targetPath ?? '',
-        extracted.targetSource
+        extracted.targetSource,
       );
+      const dependencySnippets = extracted.dependencySnippets.filter(
+        (snippet) => !snippet.startsWith(`const ${functionName} = `),
+      );
+      const dependencies = extracted.dependencies.filter((name) => name !== functionName);
       const sections: string[] = [`'use strict';`];
 
       if (includePolyfills) {
         sections.push(this.buildCryptoPolyfills());
       }
 
-      if (extracted.dependencySnippets.length > 0) {
-        sections.push(extracted.dependencySnippets.join('\n'));
+      if (dependencySnippets.length > 0) {
+        sections.push(dependencySnippets.join('\n'));
       }
 
       sections.push(`const ${functionName} = ${extracted.targetSource.trim()};`);
       sections.push(
-        `if (typeof globalThis !== 'undefined') { globalThis.${functionName} = ${functionName}; }`
+        `if (typeof globalThis !== 'undefined') { globalThis.${functionName} = ${functionName}; }`,
       );
 
       const extractedCode = sections.filter((part) => part.trim().length > 0).join('\n\n');
 
       return this.toTextResponse({
         extractedCode,
-        dependencies: extracted.dependencies,
+        dependencies,
         size: extractedCode.length,
       });
     } catch (error) {

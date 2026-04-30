@@ -9,14 +9,18 @@ const state = vi.hoisted(() => {
   return { execAsync, execFileAsync, promisify, spawn };
 });
 
-vi.mock('child_process', () => ({
-  exec: vi.fn(),
-  execFile: vi.fn(),
-  spawn: state.spawn,
-}));
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    exec: vi.fn(),
+    execFile: vi.fn(),
+    spawn: state.spawn,
+  };
+});
 
 vi.mock('util', () => ({
-  promisify: vi.fn((fn: unknown) => {
+  promisify: vi.fn((fn: any) => {
     if (fn === (require('child_process') as { execFile: unknown }).execFile) {
       return state.execFileAsync;
     }
@@ -134,7 +138,7 @@ describe('MacProcessManager', () => {
     });
 
     const pending = manager.launchWithDebug(
-      '/Applications/Primary Browser.app/Contents/MacOS/primary-browser'
+      '/Applications/Primary Browser.app/Contents/MacOS/primary-browser',
     );
     await vi.runAllTimersAsync();
     const result = await pending;
@@ -162,7 +166,7 @@ describe('MacProcessManager', () => {
     const manager = new MacProcessManager();
 
     const pending = manager.launchWithDebug(
-      '/Applications/Primary Browser.app/Contents/MacOS/primary-browser'
+      '/Applications/Primary Browser.app/Contents/MacOS/primary-browser',
     );
     await vi.runAllTimersAsync();
     const result = await pending;

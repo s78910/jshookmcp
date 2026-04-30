@@ -1,14 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DebuggerManager } from '@server/domains/shared/modules';
 import { WatchExpressionsHandlers } from '@server/domains/debugger/handlers/watch-expressions';
-
-function parseJson(response: { content: Array<{ text: string }> }) {
-  const firstContent = response.content[0];
-  if (!firstContent) {
-    throw new Error('Missing response content');
-  }
-  return JSON.parse(firstContent.text);
-}
 
 describe('WatchExpressionsHandlers', () => {
   type WatchManager = ReturnType<DebuggerManager['getWatchManager']>;
@@ -18,7 +11,9 @@ describe('WatchExpressionsHandlers', () => {
     removeWatch: vi.fn((_watchId: string): boolean => false),
     getAllWatches: vi.fn((): ReturnType<WatchManager['getAllWatches']> => []),
     evaluateAll: vi.fn(
-      async (_callFrameId?: string): Promise<Awaited<ReturnType<WatchManager['evaluateAll']>>> => []
+      async (
+        _callFrameId?: string,
+      ): Promise<Awaited<ReturnType<WatchManager['evaluateAll']>>> => [],
     ),
     clearAll: vi.fn((): void => undefined),
   };
@@ -34,7 +29,7 @@ describe('WatchExpressionsHandlers', () => {
     watchManager.addWatch.mockReturnValueOnce('watch-1');
     const handlers = new WatchExpressionsHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleWatchAdd({ expression: 'window.token' }));
+    const body = parseJson<any>(await handlers.handleWatchAdd({ expression: 'window.token' }));
 
     expect(watchManager.addWatch).toHaveBeenCalledWith('window.token', undefined);
     expect(body).toEqual({
@@ -52,7 +47,7 @@ describe('WatchExpressionsHandlers', () => {
     });
     const handlers = new WatchExpressionsHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleWatchAdd({ expression: 'boom()' }));
+    const body = parseJson<any>(await handlers.handleWatchAdd({ expression: 'boom()' }));
 
     expect(body).toEqual({
       success: false,
@@ -65,7 +60,7 @@ describe('WatchExpressionsHandlers', () => {
     watchManager.removeWatch.mockReturnValueOnce(false);
     const handlers = new WatchExpressionsHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleWatchRemove({ watchId: 'missing' }));
+    const body = parseJson<any>(await handlers.handleWatchRemove({ watchId: 'missing' }));
 
     expect(body).toEqual({
       success: false,
@@ -89,7 +84,7 @@ describe('WatchExpressionsHandlers', () => {
     ]);
     const handlers = new WatchExpressionsHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleWatchList({}));
+    const body = parseJson<any>(await handlers.handleWatchList({}));
 
     expect(body).toEqual({
       success: true,
@@ -123,7 +118,7 @@ describe('WatchExpressionsHandlers', () => {
     ]);
     const handlers = new WatchExpressionsHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleWatchEvaluateAll({ callFrameId: 'frame-1' }));
+    const body = parseJson<any>(await handlers.handleWatchEvaluateAll({ callFrameId: 'frame-1' }));
 
     expect(watchManager.evaluateAll).toHaveBeenCalledWith('frame-1');
     expect(body).toEqual({
@@ -149,7 +144,7 @@ describe('WatchExpressionsHandlers', () => {
     });
     const handlers = new WatchExpressionsHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleWatchClearAll({}));
+    const body = parseJson<any>(await handlers.handleWatchClearAll({}));
 
     expect(body).toEqual({
       success: false,

@@ -36,7 +36,7 @@ describe('ExtensionManager.lifecycle', () => {
     expect(extractConfigValue(ctx as never, 'plugins.sample.enabled', false)).toBe(true);
     expect(extractConfigValue(ctx as never, 'plugins.sample.missing', 'fallback')).toBe('fallback');
     expect(extractConfigValue({ config: null } as never, 'plugins.sample.enabled', false)).toBe(
-      false
+      false,
     );
   });
 
@@ -49,7 +49,7 @@ describe('ExtensionManager.lifecycle', () => {
     expect(result).toContain('file:///D:/plugin/manifest.ts');
     expect(result).toContain('reloadTs=12345');
     expect(state.logger.debug).toHaveBeenCalledWith(
-      '[extensions] Loading fresh plugin module: D:\\plugin\\manifest.ts'
+      '[extensions] Loading fresh plugin module: D:\\plugin\\manifest.ts',
     );
   });
 
@@ -81,6 +81,16 @@ describe('ExtensionManager.lifecycle', () => {
             lifecycleContext: { pluginId: 'fail-plugin' },
             state: 'activated',
           },
+        ],
+        [
+          'unload-fail-plugin',
+          {
+            get plugin() {
+              throw new Error('unload plugin fetch failed');
+            },
+            lifecycleContext: { pluginId: 'unload-fail-plugin' },
+            state: 'deactivated',
+          } as never,
         ],
       ]),
       extensionToolsByName: new Map([

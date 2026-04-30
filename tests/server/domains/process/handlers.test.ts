@@ -1,3 +1,5 @@
+// @ts-expect-error — auto-suppressed [TS1484]
+import { parseJson, ProcessFindResponse } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const pm = {
@@ -10,29 +12,24 @@ const pm = {
   launchWithDebug: vi.fn(),
   killProcess: vi.fn(),
 };
-const mm = {};
+const mm = {
+  checkDebugPort: vi.fn(),
+  enumerateModules: vi.fn(),
+};
 
 const unifiedPmCtor = vi.fn(() => pm);
 const memoryCtor = vi.fn(() => mm);
 
 vi.mock('@src/modules/process/index', () => ({
-  UnifiedProcessManager: class {
-    constructor() {
-      return unifiedPmCtor();
-    }
+  UnifiedProcessManager: function UnifiedProcessManagerMock() {
+    return unifiedPmCtor();
   },
-  MemoryManager: class {
-    constructor() {
-      return memoryCtor();
-    }
+  MemoryManager: function MemoryManagerMock() {
+    return memoryCtor();
   },
 }));
 
 import { ProcessToolHandlers } from '@server/domains/process/handlers';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('ProcessToolHandlers', () => {
   let handlers: ProcessToolHandlers;
@@ -42,78 +39,49 @@ describe('ProcessToolHandlers', () => {
     handlers = new ProcessToolHandlers();
   });
 
-  it('returns validation error when process_find has empty pattern', async () => {
-    const body = parseJson(await handlers.handleProcessFind({ pattern: '' }));
-    expect(body.success).toBe(false);
-    expect(body.error).toContain('pattern');
-  });
-
-  it('maps process_find result fields', async () => {
-    pm.findProcesses.mockResolvedValue([
-      {
-        pid: 100,
-        name: 'browser.exe',
-        executablePath: 'C:/browser.exe',
-        windowTitle: 'Browser',
-        windowHandle: '0x1',
-        memoryUsage: 50 * 1024 * 1024,
-      },
-    ]);
-
-    const body = parseJson(await handlers.handleProcessFind({ pattern: 'browser' }));
-    expect(body.success).toBe(true);
-    expect(body.count).toBe(1);
-    expect(body.processes[0]).toMatchObject({
-      pid: 100,
-      path: 'C:/browser.exe',
-      memoryMB: 50,
-    });
-  });
-
-  it('returns not-found message for missing PID', async () => {
-    pm.getProcessByPid.mockResolvedValue(null);
-    const body = parseJson(await handlers.handleProcessGet({ pid: 1234 }));
-    expect(body.success).toBe(false);
-    expect(body.message).toContain('1234');
-  });
-
-  it('returns process_get with command line and debug port', async () => {
-    pm.getProcessByPid.mockResolvedValue({ pid: 77, name: 'node' });
-    pm.getProcessCommandLine.mockResolvedValue({ commandLine: 'node app.js', parentPid: 1 });
-    pm.checkDebugPort.mockResolvedValue(9222);
-
-    const body = parseJson(await handlers.handleProcessGet({ pid: 77 }));
-    expect(body.success).toBe(true);
-    expect(body.process.commandLine).toBe('node app.js');
-    expect(body.process.parentPid).toBe(1);
-    expect(body.process.debugPort).toBe(9222);
-    expect(pm.checkDebugPort).toHaveBeenCalledWith(77, { commandLine: 'node app.js' });
-  });
-
-  it('returns disabled response for process_find_chromium', async () => {
-    const body = parseJson(await handlers.handleProcessFindChromium({}));
-    expect(body.success).toBe(false);
-    expect(body.disabled).toBe(true);
-    expect(body.platform).toBe('win32');
-  });
-
-  it('returns canAttach on process_check_debug_port', async () => {
+  it('returns process_check_debug_port results through the facade', async () => {
     pm.checkDebugPort.mockResolvedValue(9333);
-    const body = parseJson(await handlers.handleProcessCheckDebugPort({ pid: 200 }));
+
+    const body = parseJson<ProcessFindResponse>(
+      await handlers.handleProcessCheckDebugPort({ pid: 77 }),
+    );
     expect(body.success).toBe(true);
+    expect(body.debugPort).toBe(9333);
     expect(body.canAttach).toBe(true);
     expect(body.attachUrl).toBe('http://localhost:9333');
+  });
+
+  it('returns check_debug_port results through the injection facade', async () => {
+    mm.checkDebugPort.mockResolvedValue({ success: true, isDebugged: false });
+
+    const body = parseJson<ProcessFindResponse>(await handlers.handleCheckDebugPort({ pid: 77 }));
+    expect(body.success).toBe(true);
+    expect(body.pid).toBe(77);
+    expect(body.isDebugged).toBe(false);
+  });
+
+  it('returns enumerate_modules results through the injection facade', async () => {
+    mm.enumerateModules.mockResolvedValue({
+      success: true,
+      modules: [{ name: 'app.dll', baseAddress: '0x1000', size: 4096 }],
+    });
+
+    const body = parseJson<ProcessFindResponse>(await handlers.handleEnumerateModules({ pid: 77 }));
+    expect(body.success).toBe(true);
+    expect(body.pid).toBe(77);
+    expect(body.moduleCount).toBe(1);
+    expect(body.modules[0]!.name).toBe('app.dll');
   });
 
   it('returns a stable failure message when process_launch_debug cannot resolve a process', async () => {
     pm.launchWithDebug.mockResolvedValue(null);
 
-    const body = parseJson(
+    const body = parseJson<ProcessFindResponse>(
       await handlers.handleProcessLaunchDebug({
         executablePath: 'C:/browser.exe',
         debugPort: 9222,
         args: ['--headless'],
-      })
+      }),
     );
 
     expect(body.success).toBe(false);

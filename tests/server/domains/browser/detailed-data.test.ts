@@ -1,10 +1,8 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DetailedDataHandlers } from '@server/domains/browser/handlers/detailed-data';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('DetailedDataHandlers', () => {
   const detailedDataManager = {
@@ -23,7 +21,9 @@ describe('DetailedDataHandlers', () => {
       nested: { value: 42 },
     });
 
-    const body = parseJson(await handlers.handleGetDetailedData({ detailId: 'detail-1' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleGetDetailedData({ detailId: 'detail-1' }),
+    );
 
     expect(detailedDataManager.retrieve).toHaveBeenCalledWith('detail-1', undefined);
     expect(body).toEqual({
@@ -39,11 +39,11 @@ describe('DetailedDataHandlers', () => {
   it('passes through the requested path', async () => {
     detailedDataManager.retrieve.mockReturnValue(['line 1', 'line 2']);
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleGetDetailedData({
         detailId: 'detail-2',
         path: 'scripts[0].source',
-      })
+      }),
     );
 
     expect(detailedDataManager.retrieve).toHaveBeenCalledWith('detail-2', 'scripts[0].source');
@@ -56,7 +56,9 @@ describe('DetailedDataHandlers', () => {
       throw new Error('detail expired');
     });
 
-    const body = parseJson(await handlers.handleGetDetailedData({ detailId: 'expired-detail' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleGetDetailedData({ detailId: 'expired-detail' }),
+    );
 
     expect(body.success).toBe(false);
     expect(body.error).toBe('detail expired');

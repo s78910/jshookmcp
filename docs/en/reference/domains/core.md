@@ -22,32 +22,35 @@ Core static and semi-static analysis domain for script collection, deobfuscation
 
 ## Representative tools
 
-- `collect_code` — Collect JavaScript code from a target website. Supports summary, priority, incremental, and full collection modes.
-- `search_in_scripts` — Search collected scripts by keyword or regex pattern.
-- `extract_function_tree` — Extract a function and its dependency tree from collected scripts.
-- `deobfuscate` — Run webcrack-powered JavaScript deobfuscation with bundle unpacking support.
-- `understand_code` — Run semantic code analysis for structure, behavior, and risks.
-- `detect_crypto` — Detect cryptographic algorithms and usage patterns in source code.
-- `manage_hooks` — Create, inspect, and clear JavaScript runtime hooks.
-- `detect_obfuscation` — Detect obfuscation techniques in JavaScript source.
-- `advanced_deobfuscate` — Run advanced deobfuscation with webcrack backend (deprecated legacy flags ignored).
-- `webcrack_unpack` — Run webcrack bundle unpacking directly and return extracted module graph details.
+- `collect_code` — Collect JavaScript from a target website in summary, priority, incremental, o...
+- `search_in_scripts` — Search collected scripts by keyword or regex pattern
+- `extract_function_tree` — Extract a function and its dependency tree from collected scripts
+- `deobfuscate` — Run webcrack-powered JavaScript deobfuscation with bundle unpacking. Use engine="webcrack" for aggressive VM/advanced options.
+- `understand_code` — Run semantic code analysis for structure, behavior, and risks
+- `detect_crypto` — Detect cryptographic algorithms and usage patterns in source code
+- `manage_hooks` — Create, inspect, and clear JavaScript runtime hooks
+- `detect_obfuscation` — Detect obfuscation techniques in JavaScript source
+- `webcrack_unpack` — Run webcrack bundle unpacking and return extracted module graph
+- `clear_collected_data` — Clear collected script data, caches, and in-memory indexes
 
-## Full tool list (14)
+## Full tool list (17)
 
-| Tool                    | Description                                                                                                                                                             |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `collect_code`          | Collect JavaScript code from a target website. Supports summary, priority, incremental, and full collection modes.                                                      |
-| `search_in_scripts`     | Search collected scripts by keyword or regex pattern.                                                                                                                   |
-| `extract_function_tree` | Extract a function and its dependency tree from collected scripts.                                                                                                      |
-| `deobfuscate`           | Run webcrack-powered JavaScript deobfuscation with bundle unpacking support.                                                                                            |
-| `understand_code`       | Run semantic code analysis for structure, behavior, and risks.                                                                                                          |
-| `detect_crypto`         | Detect cryptographic algorithms and usage patterns in source code.                                                                                                      |
-| `manage_hooks`          | Create, inspect, and clear JavaScript runtime hooks.                                                                                                                    |
-| `detect_obfuscation`    | Detect obfuscation techniques in JavaScript source.                                                                                                                     |
-| `advanced_deobfuscate`  | Run advanced deobfuscation with webcrack backend (deprecated legacy flags ignored).                                                                                     |
-| `webcrack_unpack`       | Run webcrack bundle unpacking directly and return extracted module graph details.                                                                                       |
-| `clear_collected_data`  | Clear collected script data, caches, and in-memory indexes.                                                                                                             |
-| `get_collection_stats`  | Get collection, cache, and compression statistics.                                                                                                                      |
-| `webpack_enumerate`     | Enumerate all webpack modules in the current page and optionally search for keywords. Useful for finding hidden APIs, flags, or internal logic in bundled applications. |
-| `source_map_extract`    | Find and parse JavaScript source maps to recover original source code. Useful for analyzing minified or bundled applications.                                           |
+| Tool | Description |
+| --- | --- |
+| `collect_code` | Collect JavaScript from a target website in summary, priority, incremental, o... |
+| `search_in_scripts` | Search collected scripts by keyword or regex pattern |
+| `extract_function_tree` | Extract a function and its dependency tree from collected scripts |
+| `deobfuscate` | Run webcrack-powered JavaScript deobfuscation with bundle unpacking. Use engine="webcrack" for aggressive VM/advanced options. |
+| `understand_code` | Run semantic code analysis for structure, behavior, and risks |
+| `detect_crypto` | Detect cryptographic algorithms and usage patterns in source code |
+| `manage_hooks` | Create, inspect, and clear JavaScript runtime hooks |
+| `detect_obfuscation` | Detect obfuscation techniques in JavaScript source |
+| `webcrack_unpack` | Run webcrack bundle unpacking and return extracted module graph |
+| `clear_collected_data` | Clear collected script data, caches, and in-memory indexes |
+| `get_collection_stats` | Get collection, cache, and compression statistics |
+| `webpack_enumerate` | Enumerate webpack modules in current page and search for keywords |
+| `llm_suggest_names` | Use client LLM (via MCP sampling) to suggest meaningful names for obfuscated ... |
+| `js_deobfuscate_jsvmp` | Deobfuscate JSVMP/VM-protected JavaScript: extract VM bytecode and restore original logic. |
+| `js_deobfuscate_pipeline` | Three-stage deobfuscation pipeline: preprocess → deobfuscate → humanize. |
+| `js_analyze_vm` | Analyze JSVMP/VM interpreter structure: dispatch type, handler table, opcode map. |
+| `js_solve_constraints` | Solve opaque predicates and constant expressions in obfuscated code. |

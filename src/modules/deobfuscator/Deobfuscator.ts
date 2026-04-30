@@ -1,9 +1,7 @@
 import crypto from 'crypto';
 import type { DeobfuscateOptions, DeobfuscateResult, ObfuscationType } from '@internal-types/index';
 import { logger } from '@utils/logger';
-import { DEOBF_LLM_MAX_TOKENS } from '@src/constants';
-import { LLMService } from '@services/LLMService';
-import { generateDeobfuscationPrompt } from '@services/prompts/deobfuscation';
+
 import {
   calculateReadabilityScore as calculateReadabilityScoreUtil,
   detectObfuscationType as detectObfuscationTypeUtil,
@@ -11,25 +9,27 @@ import {
 import { runWebcrack } from '@modules/deobfuscator/webcrack';
 
 export class Deobfuscator {
-  private llm?: LLMService;
   private resultCache = new Map<string, DeobfuscateResult>();
   private maxCacheSize = 100;
 
-  constructor(llm?: LLMService) {
-    this.llm = llm;
+  constructor(legacyDependency?: unknown) {
+    void legacyDependency;
   }
 
   private generateCacheKey(options: DeobfuscateOptions): string {
     const key = JSON.stringify({
+      aggressive: options.aggressive,
       code: options.code.substring(0, 2000),
       forceOutput: options.forceOutput,
       includeModuleCode: options.includeModuleCode,
+      inlineFunctions: options.inlineFunctions,
       jsx: options.jsx,
-      llm: options.llm,
+      llm: false /* llm removed */,
       mangle: options.mangle ?? options.renameVariables,
       mappings: options.mappings,
       maxBundleModules: options.maxBundleModules,
       outputDir: options.outputDir,
+      preserveLogic: options.preserveLogic,
       unpack: options.unpack,
       unminify: options.unminify,
     });
@@ -41,6 +41,7 @@ export class Deobfuscator {
     const cached = this.resultCache.get(cacheKey);
     if (cached) {
       logger.debug('Deobfuscation result from cache');
+      cached.cached = true;
       return cached;
     }
 
@@ -52,7 +53,7 @@ export class Deobfuscator {
 
     if (options.aggressive !== undefined) {
       warnings.push(
-        'aggressive is deprecated and ignored; webcrack is now the only deobfuscation engine.'
+        'aggressive is deprecated and ignored; webcrack is now the only deobfuscation engine.',
       );
     }
     if (options.preserveLogic !== undefined) {
@@ -80,13 +81,7 @@ export class Deobfuscator {
       throw new Error(reason);
     }
 
-    let analysis = this.buildAnalysis(webcrackResult, obfuscationType);
-    if (this.llm && options.llm) {
-      const llmResult = await this.llmAnalysis(webcrackResult.code);
-      if (llmResult) {
-        analysis = llmResult;
-      }
-    }
+    const analysis = this.buildAnalysis(webcrackResult, obfuscationType);
 
     const transformations = [
       {
@@ -112,15 +107,6 @@ export class Deobfuscator {
             },
           ]
         : []),
-      ...(this.llm && options.llm
-        ? [
-            {
-              type: 'llm-analysis',
-              description: 'AI-assisted analysis completed after webcrack deobfuscation',
-              success: true,
-            },
-          ]
-        : []),
     ];
 
     const readabilityScore = this.calculateReadabilityScore(webcrackResult.code);
@@ -128,7 +114,7 @@ export class Deobfuscator {
     const duration = Date.now() - startTime;
 
     logger.success(
-      `webcrack deobfuscation completed in ${duration}ms (confidence: ${(confidence * 100).toFixed(1)}%)`
+      `webcrack deobfuscation completed in ${duration}ms (confidence: ${(confidence * 100).toFixed(1)}%)`,
     );
 
     const result: DeobfuscateResult = {
@@ -152,6 +138,7 @@ export class Deobfuscator {
         this.resultCache.delete(firstKey);
       }
     }
+    result.cached = false;
     this.resultCache.set(cacheKey, result);
 
     return result;
@@ -167,7 +154,7 @@ export class Deobfuscator {
 
   private calculateConfidence(
     webcrackResult: Awaited<ReturnType<typeof runWebcrack>>,
-    readabilityScore: number
+    readabilityScore: number,
   ): number {
     let confidence = 0.7;
     confidence += readabilityScore / 500;
@@ -184,7 +171,7 @@ export class Deobfuscator {
 
   private buildAnalysis(
     webcrackResult: Awaited<ReturnType<typeof runWebcrack>>,
-    obfuscationType: ObfuscationType[]
+    obfuscationType: ObfuscationType[],
   ): string {
     const parts = [
       `webcrack completed deobfuscation for detected types: ${obfuscationType.join(', ')}.`,
@@ -192,7 +179,7 @@ export class Deobfuscator {
 
     if (webcrackResult.bundle) {
       parts.push(
-        `Recovered a ${webcrackResult.bundle.type} bundle with ${webcrackResult.bundle.moduleCount} modules.`
+        `Recovered a ${webcrackResult.bundle.type} bundle with ${webcrackResult.bundle.moduleCount} modules.`,
       );
     }
 
@@ -201,22 +188,5 @@ export class Deobfuscator {
     }
 
     return parts.join(' ');
-  }
-
-  private async llmAnalysis(code: string): Promise<string | null> {
-    if (!this.llm) return null;
-
-    try {
-      const messages = generateDeobfuscationPrompt(code);
-      const response = await this.llm.chat(messages, {
-        temperature: 0.3,
-        maxTokens: DEOBF_LLM_MAX_TOKENS,
-      });
-
-      return response.content;
-    } catch (error) {
-      logger.warn('LLM analysis failed after webcrack deobfuscation', error);
-      return null;
-    }
   }
 }

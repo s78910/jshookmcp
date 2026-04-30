@@ -9,6 +9,12 @@ import {
   TRANSFORM_CRYPTO_POOL_MAX_YOUNG_GEN_MB,
 } from '@src/constants';
 
+function extractLastSegment(value: string): string {
+  const normalized = value.startsWith('window.') ? value.slice(7) : value;
+  const parts = normalized.split('.').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1]! : '';
+}
+
 export type TransformKind =
   | 'constant_fold'
   | 'string_decrypt'
@@ -119,26 +125,34 @@ const __bootstrap = async () => {
     const { jobId, payload } = msg;
     try {
       const { code, functionName, testInputs } = payload;
-      const sandbox = {
-        console: { log() {}, warn() {}, error() {} },
-        Buffer,
-        TextEncoder,
-        TextDecoder,
-        atob: (v) => Buffer.from(String(v), 'base64').toString('binary'),
-        btoa: (v) => Buffer.from(String(v), 'binary').toString('base64'),
+      const sandbox = Object.create(null);
+      // SECURITY: Only expose safe, frozen copies. Do NOT expose host constructors
+      // that allow prototype chain escapes (e.g. this.constructor.constructor('return process')()).
+      sandbox.console = Object.freeze({ log() {}, warn() {}, error() {} });
+      sandbox.Buffer = {
+        from: (...args) => Buffer.from(...args),
+        alloc: (size) => Buffer.alloc(Math.min(size, 1048576)),
+        concat: (...args) => Buffer.concat(...args),
       };
+      Object.freeze(sandbox.Buffer);
+      sandbox.TextEncoder = TextEncoder;
+      sandbox.TextDecoder = TextDecoder;
+      sandbox.atob = (v) => Buffer.from(String(v), 'base64').toString('binary');
+      sandbox.btoa = (v) => Buffer.from(String(v), 'binary').toString('base64');
       sandbox.globalThis = sandbox;
+      Object.freeze(sandbox);
       const context = vm.createContext(sandbox);
 
       const isValidIdentifier = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(functionName);
-      const bindCode = isValidIdentifier
-        ? "\\n;globalThis.__targetFn = (typeof " + functionName + " !== 'undefined' ? " + functionName + " : globalThis[" + JSON.stringify(functionName) + "]);"
-        : "\\n;globalThis.__targetFn = globalThis[" + JSON.stringify(functionName) + "];";
+      const targetExpression = isValidIdentifier
+        ? "(typeof " + functionName + " !== 'undefined' ? " + functionName + " : globalThis[" + JSON.stringify(functionName) + "])"
+        : "globalThis[" + JSON.stringify(functionName) + "]";
 
-      const script = new vm.Script(code + bindCode, { timeout: 5000 });
-      script.runInContext(context, { timeout: 5000 });
-
-      const targetFn = context.__targetFn;
+      const script = new vm.Script(
+        "(() => {\\n" + code + "\\n;return " + targetExpression + ";\\n})()",
+        { timeout: 5000 },
+      );
+      const targetFn = script.runInContext(context, { timeout: 5000 });
       if (typeof targetFn !== 'function') {
         throw new Error("Function not found or not callable: " + functionName);
       }
@@ -291,13 +305,13 @@ export class TransformToolHandlersBase {
   protected decodeEscapedString(value: string): string {
     return value
       .replace(/\\x([0-9a-fA-F]{2})/g, (_full, hex: string) =>
-        String.fromCharCode(parseInt(hex, 16))
+        String.fromCharCode(parseInt(hex, 16)),
       )
       .replace(/\\u\{([0-9a-fA-F]{1,6})\}/g, (_full, hex: string) =>
-        String.fromCodePoint(parseInt(hex, 16))
+        String.fromCodePoint(parseInt(hex, 16)),
       )
       .replace(/\\u([0-9a-fA-F]{4})/g, (_full, hex: string) =>
-        String.fromCharCode(parseInt(hex, 16))
+        String.fromCharCode(parseInt(hex, 16)),
       )
       .replace(/\\n/g, '\n')
       .replace(/\\r/g, '\r')
@@ -362,7 +376,7 @@ export class TransformToolHandlersBase {
       }
 
       for (const script of scripts as HTMLScriptElement[]) {
-        if (script.id === id || (script.dataset && script.dataset.scriptId === id)) {
+        if (script.id === id || script.dataset?.scriptId === id) {
           if (script.textContent && script.textContent.trim().length > 0) {
             return script.textContent;
           }
@@ -403,14 +417,8 @@ export class TransformToolHandlersBase {
   protected resolveFunctionName(
     targetFunction: string,
     targetPath: string,
-    source: string
+    source: string,
   ): string {
-    const extractLastSegment = (value: string): string => {
-      const normalized = value.startsWith('window.') ? value.slice(7) : value;
-      const parts = normalized.split('.').filter(Boolean);
-      return parts.length > 0 ? parts[parts.length - 1]! : '';
-    };
-
     const candidateFromTarget = extractLastSegment(targetFunction);
     if (this.isValidIdentifier(candidateFromTarget)) {
       return candidateFromTarget;
@@ -450,12 +458,12 @@ if (typeof globalThis.btoa === 'undefined') {
   protected async runCryptoHarness(
     code: string,
     functionName: string,
-    testInputs: string[]
+    testInputs: string[],
   ): Promise<{ results: CryptoHarnessRow[]; allPassed: boolean }> {
     try {
       const msg = await this.cryptoHarnessPool.submit(
         { code, functionName, testInputs } as unknown as Record<string, unknown>,
-        WORKER_TIMEOUT_MS
+        WORKER_TIMEOUT_MS,
       );
 
       if (!msg.ok) {

@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { promises as fsAsync } from 'fs';
 import { logger } from '@utils/logger';
 import {
   execAsync,
@@ -6,9 +6,13 @@ import {
   type MemoryProtectionInfo,
   type Platform,
 } from '@modules/process/memory/types';
+import { nativeMemoryManager } from '@native/NativeMemoryManager';
+import { isKoffiAvailable } from '@native/NativeMemoryManager.utils';
+import {
+  MEMORY_PROTECTION_QUERY_TIMEOUT_MS,
+  MEMORY_PROTECTION_PWSH_TIMEOUT_MS,
+} from '@src/constants';
 import { parseProcMaps, formatLinuxProtection } from './linux/mapsParser';
-import { nativeMemoryManager } from '../../../native/NativeMemoryManager';
-import { isKoffiAvailable } from '../../../native/NativeMemoryManager.utils';
 
 function buildProtectionCheckScript(pid: number, address: number): string {
   return `
@@ -123,7 +127,7 @@ try {
 export async function checkMemoryProtection(
   platform: Platform,
   pid: number,
-  address: string
+  address: string,
 ): Promise<MemoryProtectionInfo> {
   // Parse address once for all platforms
   const addrNum = BigInt(address.startsWith('0x') ? address : `0x${address}`);
@@ -131,7 +135,7 @@ export async function checkMemoryProtection(
   // Linux: synchronous /proc/pid/maps read
   if (platform === 'linux') {
     try {
-      const mapsContent = readFileSync(`/proc/${pid}/maps`, 'utf-8');
+      const mapsContent = await fsAsync.readFile(`/proc/${pid}/maps`, 'utf-8');
       const regions = parseProcMaps(mapsContent);
       const region = regions.find((r) => addrNum >= r.start && addrNum < r.end);
       if (!region) {
@@ -152,11 +156,46 @@ export async function checkMemoryProtection(
   }
 
   if (platform === 'darwin') {
+    // ── Native fast-path: mach_vm_region (no subprocess) ──
     try {
-      const addrNum = parseInt(address, 16);
-      if (isNaN(addrNum)) return { success: false, error: 'Invalid address format' };
+      const { createPlatformProvider } = await import('@native/platform/factory.js');
+      const provider = createPlatformProvider();
+      const avail = await provider.checkAvailability();
+      if (avail.available) {
+        const handle = provider.openProcess(pid, false);
+        try {
+          const region = provider.queryRegion(handle, addrNum);
+          if (region) {
+            const protStr = [
+              region.isReadable ? 'r' : '-',
+              region.isWritable ? 'w' : '-',
+              region.isExecutable ? 'x' : '-',
+            ].join('');
+            return {
+              success: true,
+              protection: protStr,
+              isReadable: region.isReadable,
+              isWritable: region.isWritable,
+              isExecutable: region.isExecutable,
+              regionStart: `0x${region.baseAddress.toString(16)}`,
+              regionSize: region.size,
+            };
+          }
+          return { success: false, error: `Address ${address} not found in any memory region` };
+        } finally {
+          provider.closeProcess(handle);
+        }
+      }
+    } catch {
+      // Fall through to vmmap fallback
+    }
+
+    // ── Fallback: vmmap subprocess ──
+    try {
+      const darwinAddr = parseInt(address, 16);
+      if (isNaN(darwinAddr)) return { success: false, error: 'Invalid address format' };
       const { stdout } = await execAsync(`vmmap -v ${pid}`, {
-        timeout: 15000,
+        timeout: MEMORY_PROTECTION_QUERY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024 * 5,
       });
       const regionRe = /^(\S[^\t]*?)\s{2,}([0-9a-f]+)-([0-9a-f]+)\s+\[.*?\]\s+([a-z-]+)\/([a-z-]+)/;
@@ -165,7 +204,7 @@ export async function checkMemoryProtection(
         if (!m) continue;
         const start = parseInt(m[2]!, 16);
         const end = parseInt(m[3]!, 16);
-        if (addrNum >= start && addrNum < end) {
+        if (darwinAddr >= start && darwinAddr < end) {
           const prot = m[4]!;
           return {
             success: true,
@@ -209,15 +248,15 @@ export async function checkMemoryProtection(
   }
 
   try {
-    const addrNum = parseInt(address, 16);
-    if (isNaN(addrNum)) {
+    const winAddr = parseInt(address, 16);
+    if (isNaN(winAddr)) {
       return { success: false, error: 'Invalid address format' };
     }
 
-    const psScript = buildProtectionCheckScript(pid, addrNum);
+    const psScript = buildProtectionCheckScript(pid, winAddr);
     const { stdout } = await executePowerShellScript(psScript, {
       maxBuffer: 1024 * 1024,
-      timeout: 30000,
+      timeout: MEMORY_PROTECTION_PWSH_TIMEOUT_MS,
     });
 
     const _trimmed = stdout.trim();

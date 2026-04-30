@@ -10,7 +10,7 @@ import type { MCPServerContext } from '@server/MCPServer.context';
 
 // ── Profile IDs ──
 
-export type ToolProfileId = 'search' | 'workflow' | 'full' | 'restricted';
+export type ToolProfileId = 'search' | 'workflow' | 'full';
 
 // ── Dynamic dependency container ──
 
@@ -25,7 +25,11 @@ export interface ToolHandlerDeps {
 
 export interface ToolRegistration {
   readonly tool: Tool;
-  readonly domain: string;
+  /**
+   * Domain this tool belongs to. Optional — when omitted, inherited from
+   * the parent DomainManifest.domain during registry initialization.
+   */
+  readonly domain?: string;
   readonly bind: (deps: ToolHandlerDeps) => (args: ToolArgs) => Promise<unknown>;
   /**
    * Optional per-registration profile override.
@@ -63,5 +67,46 @@ export interface DomainManifest<
 
   // Lazy factory - called once (via Proxy) to create the domain handler.
   // The returned object is cached by the domain proxy in MCPServer.
-  readonly ensure: (ctx: MCPServerContext) => THandler;
+  // Supports async factories for dynamic imports (e.g., native koffi modules).
+  readonly ensure: (ctx: MCPServerContext) => THandler | Promise<THandler>;
+
+  // ── Optional routing metadata (used by ToolRouter) ──
+
+  /** Workflow rule for ToolRouter — when matched, this domain's tools are recommended. */
+  readonly workflowRule?: {
+    /** Regex patterns to match against the user's task description. */
+    readonly patterns: readonly RegExp[];
+    /** Priority for ordering when multiple rules match (higher = first). */
+    readonly priority: number;
+    /** Specific tools to recommend in order. */
+    readonly tools: readonly string[];
+    /** Human-readable hint about the workflow steps. */
+    readonly hint: string;
+  };
+
+  /** Per-tool prerequisites — tools that require specific state before use. */
+  readonly prerequisites?: Readonly<
+    Record<
+      string,
+      ReadonlyArray<{
+        readonly condition: string;
+        readonly fix: string;
+      }>
+    >
+  >;
+
+  /**
+   * Cross-domain tool dependency declarations.
+   * Used by AffinityGraph to add explicit edges beyond prefix-group affinity.
+   */
+  readonly toolDependencies?: ReadonlyArray<{
+    /** Source tool in this domain. */
+    readonly from: string;
+    /** Target tool (may be in another domain). */
+    readonly to: string;
+    /** Relationship type. */
+    readonly relation: 'requires' | 'precedes' | 'suggests' | 'uses' | 'extends';
+    /** Edge weight for affinity boosting (default 0.3). */
+    readonly weight?: number;
+  }>;
 }

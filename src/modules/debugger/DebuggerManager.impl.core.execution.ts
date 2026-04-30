@@ -1,5 +1,6 @@
 import { logger } from '@utils/logger';
 import { PrerequisiteError } from '@errors/PrerequisiteError';
+import { DEBUGGER_WAIT_FOR_PAUSED_TIMEOUT_MS } from '@src/constants';
 import type { PausedState } from '@modules/debugger/DebuggerManager.impl.core.class';
 
 type PauseOnExceptionsState = 'none' | 'uncaught' | 'all';
@@ -34,7 +35,7 @@ function asExecutionCoreContext(ctx: unknown): ExecutionCoreContext {
 
 export async function setPauseOnExceptionsCore(
   ctx: unknown,
-  state: PauseOnExceptionsState
+  state: PauseOnExceptionsState,
 ): Promise<void> {
   const coreCtx = asExecutionCoreContext(ctx);
 
@@ -157,7 +158,10 @@ export function isPausedCore(ctx: unknown): boolean {
   return coreCtx.pausedState !== null;
 }
 
-export async function waitForPausedCore(ctx: unknown, timeout = 30000): Promise<PausedState> {
+export async function waitForPausedCore(
+  ctx: unknown,
+  timeout = DEBUGGER_WAIT_FOR_PAUSED_TIMEOUT_MS,
+): Promise<PausedState> {
   const coreCtx = asExecutionCoreContext(ctx);
 
   if (!coreCtx.enabled || !coreCtx.cdpSession) {
@@ -190,7 +194,7 @@ export async function evaluateOnCallFrameCore(
     callFrameId: string;
     expression: string;
     returnByValue?: boolean;
-  }
+  },
 ): Promise<EvaluateOnCallFrameValue> {
   const coreCtx = asExecutionCoreContext(ctx);
 

@@ -1,683 +1,257 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { tool, type ToolBuilder } from '@server/registry/tool-builder';
+
+// Shared schema for webcrack mappings
+const webcrackMappingsSchema = {
+  type: 'array' as const,
+  description: 'Remapping rules for unpacked bundle module paths',
+  items: {
+    type: 'object' as const,
+    properties: {
+      path: { type: 'string' as const, description: 'New module path when matched' },
+      pattern: { type: 'string' as const, description: 'Match text or regex' },
+      matchType: {
+        type: 'string' as const,
+        enum: ['includes', 'regex', 'exact'],
+        description: 'How to interpret pattern',
+        default: 'includes',
+      },
+      target: {
+        type: 'string' as const,
+        enum: ['code', 'path'],
+        description: 'Match against source code or module path',
+        default: 'code',
+      },
+    },
+    required: ['path', 'pattern'],
+  },
+};
+
+/** Shared webcrack options added to a builder */
+function withWebcrackOpts(b: ToolBuilder) {
+  return b
+    .boolean('unpack', 'Unpack webpack/browserify bundles', { default: true })
+    .boolean('unminify', 'Reformat and unminify code', { default: true })
+    .boolean('jsx', 'Decompile React.createElement to JSX', { default: true })
+    .boolean('mangle', 'Rename obfuscated identifiers', { default: false })
+    .string('outputDir', 'Directory to save deobfuscated artifacts')
+    .boolean('forceOutput', 'Remove outputDir before saving', { default: false })
+    .boolean('includeModuleCode', 'Include module source in bundle output', { default: false })
+    .number('maxBundleModules', 'Maximum bundle modules to return', {
+      default: 100,
+      minimum: 1,
+      maximum: 10000,
+    })
+    .prop('mappings', webcrackMappingsSchema);
+}
 
 export const coreTools: Tool[] = [
-  {
-    name: 'collect_code',
-    description:
-      'Collect JavaScript code from a target website. Supports summary, priority, incremental, and full collection modes.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: 'Target website URL',
-        },
-        includeInline: {
-          type: 'boolean',
-          description: 'Include inline scripts',
-          default: true,
-        },
-        includeExternal: {
-          type: 'boolean',
-          description: 'Include external scripts',
-          default: true,
-        },
-        includeDynamic: {
-          type: 'boolean',
-          description: 'Include dynamically loaded scripts',
+  tool('collect_code', (t) =>
+    t
+      .desc('Collect JavaScript from a target website in summary, priority, incremental, o...')
+      .boolean('includeInline', 'Include inline scripts', { default: true })
+      .boolean('includeExternal', 'Include external scripts', { default: true })
+      .boolean('includeDynamic', 'Include dynamically loaded scripts', { default: false })
+      .enum('smartMode', ['summary', 'priority', 'incremental', 'full'], 'Collection mode', {
+        default: 'full',
+      })
+      .boolean('compress', 'Enable compression', { default: false })
+      .number('maxTotalSize', 'Maximum total size in bytes', {
+        default: 2097152,
+        minimum: 1024,
+        maximum: 10485760,
+      })
+      .number('maxFileSize', 'Maximum single file size in KB', {
+        default: 500,
+        minimum: 1,
+        maximum: 102400,
+      })
+      .array('priorities', { type: 'string' }, 'Preferred URL patterns for priority mode')
+      .boolean('returnSummaryOnly', 'Return summary only', { default: false })
+      .string('url', 'Target URL to collect scripts from')
+      .requiredOpenWorld('url'),
+  ),
+  tool('search_in_scripts', (t) =>
+    t
+      .desc('Search collected scripts by keyword or regex pattern')
+      .string('keyword', 'Search keyword or regex pattern')
+      .boolean('isRegex', 'Treat keyword as regex', { default: false })
+      .boolean('caseSensitive', 'Case-sensitive search', { default: false })
+      .number('contextLines', 'Context lines around each match', {
+        default: 3,
+        minimum: 0,
+        maximum: 50,
+      })
+      .number('maxMatches', 'Maximum matches', { default: 100, minimum: 1, maximum: 10000 })
+      .boolean('returnSummary', 'Return summary instead of full payload', { default: false })
+      .number('maxContextSize', 'Max response size before summary fallback', {
+        default: 50000,
+        minimum: 1000,
+        maximum: 1000000,
+      })
+      .required('keyword')
+      .query(),
+  ),
+  tool('extract_function_tree', (t) =>
+    t
+      .desc('Extract a function and its dependency tree from collected scripts')
+      .string('scriptId', 'Script identifier')
+      .string('functionName', 'Function name to extract')
+      .number('maxDepth', 'Maximum dependency traversal depth', {
+        default: 3,
+        minimum: 1,
+        maximum: 20,
+      })
+      .number('maxSize', 'Maximum output size in KB', { default: 500, minimum: 1, maximum: 10240 })
+      .boolean('includeComments', 'Include comments in extracted source', { default: true })
+      .required('scriptId', 'functionName'),
+  ),
+  tool('deobfuscate', (t) =>
+    withWebcrackOpts(
+      t
+        .desc(
+          'Run webcrack-powered JavaScript deobfuscation with bundle unpacking. Use engine="webcrack" for aggressive VM/advanced options.',
+        )
+        .string('code', 'Obfuscated JavaScript source')
+        .enum('engine', ['auto', 'webcrack'], 'Deobfuscation engine', { default: 'auto' })
+        .enum('llm', ['gpt-4', 'claude'], 'Preferred LLM for analysis', { default: 'gpt-4' })
+        .boolean('aggressive', 'Aggressive deobfuscation strategy', { default: false })
+        .boolean('detectOnly', 'Detect only without transformation (webcrack engine)', {
           default: false,
-        },
-        smartMode: {
-          type: 'string',
-          description: 'Collection mode',
-          enum: ['summary', 'priority', 'incremental', 'full'],
-          default: 'full',
-        },
-        compress: {
-          type: 'boolean',
-          description: 'Enable compression for collected content',
+        })
+        .boolean('aggressiveVM', 'Aggressive VM deobfuscation (webcrack engine)', {
           default: false,
-        },
-        maxTotalSize: {
-          type: 'number',
-          description: 'Maximum total collection size in bytes',
-          default: 2097152,
-        },
-        maxFileSize: {
-          type: 'number',
-          description: 'Maximum single file size in KB',
-          default: 500,
-        },
-        priorities: {
-          type: 'array',
-          description: 'Preferred URL patterns for priority mode',
-          items: { type: 'string' },
-        },
-        returnSummaryOnly: {
-          type: 'boolean',
-          description: 'Return summary only (legacy compatibility)',
-          default: false,
-        },
-      },
-      required: ['url'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: 'search_in_scripts',
-    description: 'Search collected scripts by keyword or regex pattern.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        keyword: {
-          type: 'string',
-          description: 'Search keyword or regex pattern',
-        },
-        isRegex: {
-          type: 'boolean',
-          description: 'Treat keyword as a regex pattern',
-          default: false,
-        },
-        caseSensitive: {
-          type: 'boolean',
-          description: 'Enable case-sensitive search',
-          default: false,
-        },
-        contextLines: {
-          type: 'number',
-          description: 'Context lines before and after each match',
-          default: 3,
-        },
-        maxMatches: {
-          type: 'number',
-          description: 'Maximum matches to return',
-          default: 100,
-        },
-        returnSummary: {
-          type: 'boolean',
-          description: 'Return summary data instead of full match payload',
-          default: false,
-        },
-        maxContextSize: {
-          type: 'number',
-          description: 'Maximum response size in bytes before summary fallback',
-          default: 50000,
-        },
-      },
-      required: ['keyword'],
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'extract_function_tree',
-    description: 'Extract a function and its dependency tree from collected scripts.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        scriptId: {
-          type: 'string',
-          description: 'Script identifier',
-        },
-        functionName: {
-          type: 'string',
-          description: 'Function name to extract',
-        },
-        maxDepth: {
-          type: 'number',
-          description: 'Maximum dependency traversal depth',
-          default: 3,
-        },
-        maxSize: {
-          type: 'number',
-          description: 'Maximum output size in KB',
-          default: 500,
-        },
-        includeComments: {
-          type: 'boolean',
-          description: 'Include comments in extracted source',
-          default: true,
-        },
-      },
-      required: ['scriptId', 'functionName'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'deobfuscate',
-    description: 'Run webcrack-powered JavaScript deobfuscation with bundle unpacking support.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'Obfuscated JavaScript source',
-        },
-        llm: {
-          type: 'string',
-          enum: ['gpt-4', 'claude'],
-          description: 'Preferred LLM for analysis',
-          default: 'gpt-4',
-        },
-        aggressive: {
-          type: 'boolean',
-          description: 'Enable aggressive deobfuscation strategy',
-          default: false,
-        },
-        unpack: {
-          type: 'boolean',
-          description: 'Use webcrack to unpack webpack/browserify bundles when possible',
-          default: true,
-        },
-        unminify: {
-          type: 'boolean',
-          description: 'Use webcrack to reformat and unminify code before post-processing',
-          default: true,
-        },
-        jsx: {
-          type: 'boolean',
-          description:
-            'Ask webcrack to decompile React.createElement trees back to JSX when supported',
-          default: true,
-        },
-        mangle: {
-          type: 'boolean',
-          description: 'Rename obfuscated identifiers using webcrack mangle pass',
-          default: false,
-        },
-        outputDir: {
-          type: 'string',
-          description:
-            'Optional directory where webcrack should save the deobfuscated code and extracted bundle',
-        },
-        forceOutput: {
-          type: 'boolean',
-          description: 'Remove outputDir before saving webcrack artifacts',
-          default: false,
-        },
-        includeModuleCode: {
-          type: 'boolean',
-          description:
-            'Include unpacked module source in bundle output when returning bundle details',
-          default: false,
-        },
-        maxBundleModules: {
-          type: 'number',
-          description: 'Maximum number of bundle modules to return in the response',
-          default: 100,
-        },
-        mappings: {
-          type: 'array',
-          description:
-            'Optional remapping rules applied to unpacked bundle module paths. Each rule can match against module code or current path.',
-          items: {
-            type: 'object',
-            properties: {
-              path: {
-                type: 'string',
-                description: 'New module path to assign when the rule matches',
-              },
-              pattern: {
-                type: 'string',
-                description: 'Text or regex used to match module code/path',
-              },
-              matchType: {
-                type: 'string',
-                enum: ['includes', 'regex', 'exact'],
-                description: 'How to interpret pattern',
-                default: 'includes',
-              },
-              target: {
-                type: 'string',
-                enum: ['code', 'path'],
-                description:
-                  'Whether to match against module source code or the current module path',
-                default: 'code',
-              },
-            },
-            required: ['path', 'pattern'],
+        })
+        .boolean(
+          'useASTOptimization',
+          'Apply AST optimization after transformation (webcrack engine)',
+          {
+            default: true,
           },
-        },
-      },
-      required: ['code'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'understand_code',
-    description: 'Run semantic code analysis for structure, behavior, and risks.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'Source code to analyze',
-        },
-        context: {
-          type: 'object',
-          description: 'Additional contextual data',
-        },
-        focus: {
-          type: 'string',
-          enum: ['structure', 'business', 'security', 'all'],
-          description: 'Analysis focus',
-          default: 'all',
-        },
-      },
-      required: ['code'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'detect_crypto',
-    description: 'Detect cryptographic algorithms and usage patterns in source code.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'Source code for crypto analysis',
-        },
-      },
-      required: ['code'],
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'manage_hooks',
-    description: 'Create, inspect, and clear JavaScript runtime hooks.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['create', 'list', 'records', 'clear'],
-          description: 'Hook management operation',
-        },
-        target: {
-          type: 'string',
-          description: 'Hook target identifier',
-        },
-        type: {
-          type: 'string',
-          enum: ['function', 'xhr', 'fetch', 'websocket', 'localstorage', 'cookie'],
-          description: 'Hook target type',
-        },
-        hookAction: {
-          type: 'string',
-          enum: ['log', 'block', 'modify'],
-          description: 'Hook behavior',
-          default: 'log',
-        },
-        customCode: {
-          type: 'string',
-          description: 'Custom JavaScript hook payload',
-        },
-        hookId: {
-          type: 'string',
-          description: 'Hook identifier',
-        },
-      },
-      required: ['action'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: 'detect_obfuscation',
-    description: 'Detect obfuscation techniques in JavaScript source.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'Source code to inspect',
-        },
-        generateReport: {
-          type: 'boolean',
-          description: 'Include human-readable report output',
-          default: true,
-        },
-      },
-      required: ['code'],
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'advanced_deobfuscate',
-    description:
-      'Run advanced deobfuscation with webcrack backend (deprecated legacy flags ignored).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'Obfuscated JavaScript source',
-        },
-        detectOnly: {
-          type: 'boolean',
-          description: 'Only detect techniques without transformation',
-          default: false,
-        },
-        aggressiveVM: {
-          type: 'boolean',
-          description: 'Enable aggressive VM deobfuscation mode',
-          default: false,
-        },
-        useASTOptimization: {
-          type: 'boolean',
-          description: 'Apply AST-based optimization after transformation',
-          default: true,
-        },
-        timeout: {
-          type: 'number',
-          description: 'Operation timeout in milliseconds',
+        )
+        .number('timeout', 'Operation timeout in ms (webcrack engine)', {
           default: 60000,
-        },
-        unpack: {
-          type: 'boolean',
-          description: 'Use webcrack to unpack webpack/browserify bundles before advanced cleanup',
-          default: true,
-        },
-        unminify: {
-          type: 'boolean',
-          description: 'Use webcrack unminify pass before VM and AST-oriented cleanup',
-          default: true,
-        },
-        jsx: {
-          type: 'boolean',
-          description: 'Allow webcrack to decompile React.createElement back to JSX when supported',
-          default: true,
-        },
-        mangle: {
-          type: 'boolean',
-          description: 'Rename obfuscated identifiers during the webcrack phase',
-          default: false,
-        },
-        outputDir: {
-          type: 'string',
-          description:
-            'Optional directory where webcrack should save the deobfuscated code and extracted bundle',
-        },
-        forceOutput: {
-          type: 'boolean',
-          description: 'Remove outputDir before saving webcrack artifacts',
-          default: false,
-        },
-        includeModuleCode: {
-          type: 'boolean',
-          description:
-            'Include unpacked module source in bundle output when returning bundle details',
-          default: false,
-        },
-        maxBundleModules: {
-          type: 'number',
-          description: 'Maximum number of bundle modules to return in the response',
-          default: 100,
-        },
-        mappings: {
-          type: 'array',
-          description:
-            'Optional remapping rules applied to unpacked bundle module paths. Each rule can match against module code or current path.',
-          items: {
-            type: 'object',
-            properties: {
-              path: {
-                type: 'string',
-                description: 'New module path to assign when the rule matches',
-              },
-              pattern: {
-                type: 'string',
-                description: 'Text or regex used to match module code/path',
-              },
-              matchType: {
-                type: 'string',
-                enum: ['includes', 'regex', 'exact'],
-                description: 'How to interpret pattern',
-                default: 'includes',
-              },
-              target: {
-                type: 'string',
-                enum: ['code', 'path'],
-                description:
-                  'Whether to match against module source code or the current module path',
-                default: 'code',
-              },
-            },
-            required: ['path', 'pattern'],
-          },
-        },
-      },
-      required: ['code'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'webcrack_unpack',
-    description:
-      'Run webcrack bundle unpacking directly and return extracted module graph details.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: {
-          type: 'string',
-          description: 'Bundled or obfuscated JavaScript source',
-        },
-        unpack: {
-          type: 'boolean',
-          description: 'Extract modules from the bundle when supported',
-          default: true,
-        },
-        unminify: {
-          type: 'boolean',
-          description: 'Unminify the code before extracting bundle modules',
-          default: true,
-        },
-        jsx: {
-          type: 'boolean',
-          description: 'Decompile React.createElement trees back to JSX when supported',
-          default: true,
-        },
-        mangle: {
-          type: 'boolean',
-          description: 'Rename obfuscated identifiers during the webcrack pass',
-          default: false,
-        },
-        outputDir: {
-          type: 'string',
-          description: 'Optional directory where webcrack should save the extracted bundle files',
-        },
-        forceOutput: {
-          type: 'boolean',
-          description: 'Remove outputDir before saving webcrack artifacts',
-          default: false,
-        },
-        includeModuleCode: {
-          type: 'boolean',
-          description: 'Include unpacked module source in bundle output',
-          default: false,
-        },
-        maxBundleModules: {
-          type: 'number',
-          description: 'Maximum number of bundle modules to return in the response',
-          default: 100,
-        },
-        mappings: {
-          type: 'array',
-          description:
-            'Optional remapping rules applied to unpacked bundle module paths. Each rule can match against module code or current path.',
-          items: {
-            type: 'object',
-            properties: {
-              path: {
-                type: 'string',
-                description: 'New module path to assign when the rule matches',
-              },
-              pattern: {
-                type: 'string',
-                description: 'Text or regex used to match module code/path',
-              },
-              matchType: {
-                type: 'string',
-                enum: ['includes', 'regex', 'exact'],
-                description: 'How to interpret pattern',
-                default: 'includes',
-              },
-              target: {
-                type: 'string',
-                enum: ['code', 'path'],
-                description:
-                  'Whether to match against module source code or the current module path',
-                default: 'code',
-              },
-            },
-            required: ['path', 'pattern'],
-          },
-        },
-      },
-      required: ['code'],
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'clear_collected_data',
-    description: 'Clear collected script data, caches, and in-memory indexes.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
-      openWorldHint: false,
-    },
-  },
-  {
-    name: 'get_collection_stats',
-    description: 'Get collection, cache, and compression statistics.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
-  // Reclassified analysis helpers
-  {
-    name: 'webpack_enumerate',
-    description:
-      'Enumerate all webpack modules in the current page and optionally search for keywords. Useful for finding hidden APIs, flags, or internal logic in bundled applications.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        searchKeyword: {
-          type: 'string',
-          description:
-            'Keyword to search across all module exports (case-insensitive). Leave empty to just list all module IDs.',
-        },
-        forceRequireAll: {
-          type: 'boolean',
-          description:
-            'Force-require every module (slower, but finds lazily-loaded modules). Default: true when searchKeyword provided.',
-          default: false,
-        },
-        maxResults: {
-          type: 'number',
-          description: 'Maximum number of matching modules to return',
-          default: 20,
-        },
-      },
-    },
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-  },
-  {
-    name: 'source_map_extract',
-    description:
-      'Find and parse JavaScript source maps to recover original source code. Useful for analyzing minified or bundled applications.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        includeContent: {
-          type: 'boolean',
-          description:
-            'Include full source file content (can be large). Default: false (only lists recovered file names).',
-          default: false,
-        },
-        filterPath: {
-          type: 'string',
-          description:
-            'Only return source files whose path contains this string (e.g., "src/", ".tsx")',
-        },
-        maxFiles: {
-          type: 'number',
-          description: 'Maximum number of source files to return',
-          default: 50,
-        },
-      },
-    },
-    annotations: {
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-  },
+          minimum: 1000,
+          maximum: 120000,
+        }),
+    ).required('code'),
+  ),
+  tool('understand_code', (t) =>
+    t
+      .desc('Run semantic code analysis for structure, behavior, and risks')
+      .string('code', 'Source code to analyze')
+      .prop('context', { type: 'object', description: 'Additional contextual data' })
+      .enum('focus', ['structure', 'business', 'security', 'all'], 'Analysis focus', {
+        default: 'all',
+      })
+      .required('code'),
+  ),
+  tool('detect_crypto', (t) =>
+    t
+      .desc('Detect cryptographic algorithms and usage patterns in source code')
+      .string('code', 'Source code for crypto analysis')
+      .required('code')
+      .query(),
+  ),
+  tool('manage_hooks', (t) =>
+    t
+      .desc('Create, inspect, and clear JavaScript runtime hooks')
+      .enum('action', ['create', 'list', 'records', 'clear'], 'Hook management operation')
+      .string('target', 'Hook target identifier')
+      .enum(
+        'type',
+        ['function', 'xhr', 'fetch', 'websocket', 'localstorage', 'cookie'],
+        'Hook target type',
+      )
+      .enum('hookAction', ['log', 'block', 'modify'], 'Hook behavior', { default: 'log' })
+      .string('customCode', 'Custom JavaScript hook payload')
+      .string('hookId', 'Hook identifier')
+      .requiredOpenWorld('action'),
+  ),
+  tool('detect_obfuscation', (t) =>
+    t
+      .desc('Detect obfuscation techniques in JavaScript source')
+      .string('code', 'Source code to inspect')
+      .boolean('generateReport', 'Include human-readable report', { default: true })
+      .required('code')
+      .query(),
+  ),
+  tool('webcrack_unpack', (t) =>
+    withWebcrackOpts(
+      t
+        .desc('Run webcrack bundle unpacking and return extracted module graph')
+        .string('code', 'Bundled or obfuscated JavaScript source'),
+    ).required('code'),
+  ),
+  tool('clear_collected_data', (t) =>
+    t.desc('Clear collected script data, caches, and in-memory indexes').destructive(),
+  ),
+  tool('get_collection_stats', (t) =>
+    t.desc('Get collection, cache, and compression statistics').query(),
+  ),
+  tool('webpack_enumerate', (t) =>
+    t
+      .desc('Enumerate webpack modules in current page and search for keywords')
+      .string('searchKeyword', 'Keyword to search across module exports')
+      .boolean('forceRequireAll', 'Force-require every module', { default: false })
+      .number('maxResults', 'Maximum matching modules', { default: 20, minimum: 1, maximum: 10000 })
+      .openWorld(),
+  ),
+  tool('llm_suggest_names', (t) =>
+    t
+      .desc('Use client LLM (via MCP sampling) to suggest meaningful names for obfuscated ...')
+      .array('identifiers', { type: 'string' }, 'Array of obfuscated identifier names to rename')
+      .required('code', 'identifiers')
+      .readOnly(),
+  ),
+  tool('js_deobfuscate_jsvmp', (t) =>
+    t
+      .desc(
+        'Deobfuscate JSVMP/VM-protected JavaScript: extract VM bytecode and restore original logic.',
+      )
+      .string('code', 'Obfuscated JavaScript source containing VM/JSVMP patterns')
+      .boolean('aggressive', 'Use aggressive deobfuscation strategy', { default: false })
+      .boolean('extractInstructions', 'Extract and list VM instructions', { default: true })
+      .number('timeout', 'Deobfuscation timeout in ms', {
+        default: 30000,
+        minimum: 5000,
+        maximum: 120000,
+      })
+      .boolean('detectOnly', 'Only detect JSVMP without deobfuscating', { default: false })
+      .required('code'),
+  ),
+  tool('js_deobfuscate_pipeline', (t) =>
+    t
+      .desc('Three-stage deobfuscation pipeline: preprocess → deobfuscate → humanize.')
+      .string('code', 'Obfuscated JavaScript source')
+      .boolean('useWebcrack', 'Apply webcrack after preprocessor stage', { default: true })
+      .boolean('aggressive', 'Enable aggressive transforms in deobfuscator stage', {
+        default: false,
+      })
+      .boolean('humanize', 'Run humanizer stage (variable renaming)', { default: true })
+      .boolean('returnStageDetails', 'Include per-stage results in output', { default: false })
+      .required('code'),
+  ),
+  tool('js_analyze_vm', (t) =>
+    t
+      .desc('Analyze JSVMP/VM interpreter structure: dispatch type, handler table, opcode map.')
+      .string('code', 'JavaScript source containing VM interpreter')
+      .boolean('extractBytecode', 'Attempt to extract VM bytecode', { default: true })
+      .boolean('mapOpcodes', 'Map opcodes to inferred operations', { default: true })
+      .required('code'),
+  ),
+  tool('js_solve_constraints', (t) =>
+    t
+      .desc('Solve opaque predicates and constant expressions in obfuscated code.')
+      .string('code', 'JavaScript source with opaque predicates or constant conditions')
+      .boolean('replaceInPlace', 'Replace solved conditions with their constant values', {
+        default: true,
+      })
+      .number('maxIterations', 'Maximum solving iterations', {
+        default: 100,
+        minimum: 1,
+        maximum: 10000,
+      })
+      .required('code'),
+  ),
 ];

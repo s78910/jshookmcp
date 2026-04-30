@@ -1,10 +1,15 @@
 import { readFile, mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parse } from '@babel/parser';
 
-const currentDir = dirname(fileURLToPath(import.meta.url));
-const projectRoot = resolve(currentDir, '..');
-const distDomainsRoot = join(projectRoot, 'dist', 'src', 'server', 'domains');
+const scriptDirUrl = new URL('.', import.meta.url);
+const projectRootUrl = new URL('../', scriptDirUrl);
+const projectRoot = fileURLToPath(projectRootUrl);
+const require = createRequire(import.meta.url);
+const workflowPresetsRoot = join(projectRoot, 'workflows');
 const zhReferenceRoot = join(projectRoot, 'docs', 'reference');
 const zhDomainsRoot = join(zhReferenceRoot, 'domains');
 const enReferenceRoot = join(projectRoot, 'docs', 'en', 'reference');
@@ -15,13 +20,16 @@ const zhTranslationsPath = join(
   '.vitepress',
   'i18n',
   'zh',
-  'reference-tool-descriptions.json'
+  'reference-tool-descriptions.json',
 );
+const zhPlaceholderPrefix = '待补充中文：';
+const referenceRegistryPlatform = 'win32';
 
 const META = {
   core: {
     zhTitle: 'Core',
-    zhSummary: '核心静态/半静态分析域，覆盖脚本采集、反混淆、语义理解、webpack/source map 与加密识别。',
+    zhSummary:
+      '核心静态/半静态分析域，覆盖脚本采集、反混淆、语义理解、webpack/source map 与加密识别。',
     zhScenarios: ['脚本采集与静态检索', '混淆代码理解', '从 bundle/source map 恢复源码'],
     zhCombos: ['browser + network + core', 'core + sourcemap + transform'],
     enTitle: 'Core',
@@ -49,6 +57,25 @@ const META = {
     ],
     enCombos: ['browser + antidebug + debugger'],
   },
+  evidence: {
+    zhTitle: 'Evidence',
+    zhSummary: '逆向证据图域，用图结构串联 URL、脚本、函数、Hook 与捕获产物之间的溯源关系。',
+    zhScenarios: [
+      '按 URL / 函数 / scriptId 反查关联节点',
+      '查看前向或反向 provenance chain',
+      '导出 JSON / Markdown 证据报告',
+    ],
+    zhCombos: ['instrumentation + evidence', 'network + hooks + evidence'],
+    enTitle: 'Evidence',
+    enSummary:
+      'Evidence-graph domain that models provenance between URLs, scripts, functions, hooks, and captured artifacts.',
+    enScenarios: [
+      'Query nodes by URL, function, or script ID',
+      'Traverse forward or backward provenance chains',
+      'Export JSON or Markdown evidence reports',
+    ],
+    enCombos: ['instrumentation + evidence', 'network + hooks + evidence'],
+  },
   browser: {
     zhTitle: 'Browser',
     zhSummary: '浏览器控制与 DOM 交互主域，也是大多数工作流的入口。',
@@ -70,9 +97,25 @@ const META = {
     zhScenarios: ['Task Handoff 任务交接', '记录会话深度分析结论'],
     zhCombos: ['coordination + workflow', 'coordination + browser'],
     enTitle: 'Coordination',
-    enSummary: 'Coordination domain for session insights and MCP Task Handoff, bridging the planning and execution boundaries of LLMs.',
+    enSummary:
+      'Coordination domain for session insights and MCP Task Handoff, bridging the planning and execution boundaries of LLMs.',
     enScenarios: ['MCP Task Handoff', 'Recording deep session insights'],
     enCombos: ['coordination + workflow', 'coordination + browser'],
+  },
+  'shared-state-board': {
+    zhTitle: 'Shared State Board',
+    zhSummary: '跨 Agent 状态同步域，提供全局共享的状态板用于多 Agent 协作。',
+    zhScenarios: ['跨 Agent 数据共享', '多 Agent 工作流协调', '实时状态广播'],
+    zhCombos: ['shared-state-board + coordination', 'shared-state-board + workflow'],
+    enTitle: 'Shared State Board',
+    enSummary:
+      'Cross-agent state synchronization domain providing a global shared state board for multi-agent collaboration.',
+    enScenarios: [
+      'Cross-agent data sharing',
+      'Multi-agent workflow coordination',
+      'Real-time state broadcasting',
+    ],
+    enCombos: ['shared-state-board + coordination', 'shared-state-board + workflow'],
   },
   debugger: {
     zhTitle: 'Debugger',
@@ -124,14 +167,32 @@ const META = {
     zhScenarios: ['函数调用采集', '运行时证据留存', '团队专用 inline preset'],
     zhCombos: ['browser + hooks + debugger'],
     enTitle: 'Hooks',
-    enSummary:
-      'AI hook generation, injection, export, and built-in/custom preset management.',
+    enSummary: 'AI hook generation, injection, export, and built-in/custom preset management.',
     enScenarios: [
       'Capture function calls',
       'Persist runtime evidence',
       'Install team-specific inline presets',
     ],
     enCombos: ['browser + hooks + debugger'],
+  },
+  instrumentation: {
+    zhTitle: 'Instrumentation',
+    zhSummary: '统一仪器化会话域，将 Hook、拦截、Trace 与产物记录收束到可查询的 session 中。',
+    zhScenarios: [
+      '创建/销毁 instrumentation 会话',
+      '登记 Hook / 拦截 / Trace 操作',
+      '记录并查询运行时产物',
+    ],
+    zhCombos: ['instrumentation + hooks + network', 'instrumentation + evidence'],
+    enTitle: 'Instrumentation',
+    enSummary:
+      'Unified instrumentation-session domain that groups hooks, intercepts, traces, and artifacts into a queryable session.',
+    enScenarios: [
+      'Create and destroy instrumentation sessions',
+      'Register hook, intercept, and trace operations',
+      'Record and query runtime artifacts',
+    ],
+    enCombos: ['instrumentation + hooks + network', 'instrumentation + evidence'],
   },
   maintenance: {
     zhTitle: 'Maintenance',
@@ -141,8 +202,27 @@ const META = {
     enTitle: 'Maintenance',
     enSummary:
       'Operations and maintenance domain covering cache hygiene, token budget, environment diagnostics, artifact cleanup, and extension management.',
-    enScenarios: ['Diagnose dependencies', 'Clean retained artifacts', 'Reload plugins and workflows'],
+    enScenarios: [
+      'Diagnose dependencies',
+      'Clean retained artifacts',
+      'Reload plugins and workflows',
+    ],
     enCombos: ['maintenance + workflow', 'maintenance + extensions'],
+  },
+  memory: {
+    zhTitle: 'Memory',
+    zhSummary: '面向原生内存扫描、指针链分析、结构体推断与断点观测的内存分析域。',
+    zhScenarios: ['首扫/缩扫定位目标值', '指针链与结构体分析', '内存断点与扫描会话管理'],
+    zhCombos: ['memory + process', 'memory + debugger', 'memory + workflow'],
+    enTitle: 'Memory',
+    enSummary:
+      'Memory analysis domain for native scans, pointer-chain discovery, structure inference, and breakpoint-based observation.',
+    enScenarios: [
+      'Run first/next scans to narrow target values',
+      'Analyze pointer chains and in-memory structures',
+      'Manage scan sessions and memory breakpoints',
+    ],
+    enCombos: ['memory + process', 'memory + debugger', 'memory + workflow'],
   },
   network: {
     zhTitle: 'Network',
@@ -173,8 +253,13 @@ const META = {
   },
   process: {
     zhTitle: 'Process',
-    zhSummary: '进程、模块、内存诊断与受控注入域，适合宿主级分析、故障排查与 Windows 进程实验场景。',
-    zhScenarios: ['进程枚举与模块检查', '内存失败诊断与审计导出', '受控环境中的 DLL/Shellcode 注入'],
+    zhSummary:
+      '进程、模块、内存诊断与受控注入域，适合宿主级分析、故障排查与 Windows 进程实验场景。',
+    zhScenarios: [
+      '进程枚举与模块检查',
+      '内存失败诊断与审计导出',
+      '受控环境中的 DLL/Shellcode 注入',
+    ],
     zhCombos: ['process + debugger', 'process + platform'],
     enTitle: 'Process',
     enSummary:
@@ -214,7 +299,11 @@ const META = {
     enTitle: 'Transform',
     enSummary:
       'AST/string transform domain plus crypto extraction, harnessing, and comparison tooling.',
-    enScenarios: ['Preview transforms', 'Extract standalone crypto code', 'Compare implementations'],
+    enScenarios: [
+      'Preview transforms',
+      'Extract standalone crypto code',
+      'Compare implementations',
+    ],
     enCombos: ['core + transform'],
   },
   wasm: {
@@ -236,49 +325,272 @@ const META = {
     enTitle: 'Workflow',
     enSummary:
       'Composite workflow and script-library domain; the main built-in orchestration layer.',
-    enScenarios: ['Capture APIs end-to-end', 'Register and verify accounts', 'Probe endpoints and inspect bundles'],
+    enScenarios: [
+      'Capture APIs end-to-end',
+      'Register and verify accounts',
+      'Probe endpoints and inspect bundles',
+    ],
     enCombos: ['workflow + browser + network'],
+  },
+  trace: {
+    zhTitle: 'Trace',
+    zhSummary: '时间旅行调试域，录制 CDP 事件并写入 SQLite，支持 SQL 查询与堆快照对比。',
+    zhScenarios: ['录制浏览器事件', 'SQL 查询跟踪数据', '堆快照差异对比'],
+    zhCombos: ['trace + debugger + browser'],
+    enTitle: 'Trace',
+    enSummary:
+      'Time-travel debugging domain that records CDP events into SQLite for SQL-based querying and heap snapshot comparison.',
+    enScenarios: ['Record browser events', 'Query trace data with SQL', 'Diff heap snapshots'],
+    enCombos: ['trace + debugger + browser'],
+  },
+  macro: {
+    zhTitle: 'Macro',
+    zhSummary: '子代理宏编排域，将多步工具调用组合为可复用的宏流程。',
+    zhScenarios: ['多步反混淆流程', '自动化分析管线', '用户自定义宏'],
+    zhCombos: ['macro + core + transform'],
+    enTitle: 'Macro',
+    enSummary:
+      'Sub-agent macro orchestration domain that chains multiple tool calls into reusable macro workflows.',
+    enScenarios: [
+      'Multi-step deobfuscation',
+      'Automated analysis pipelines',
+      'User-defined macros',
+    ],
+    enCombos: ['macro + core + transform'],
+  },
+  sandbox: {
+    zhTitle: 'Sandbox',
+    zhSummary: '基于 QuickJS WASM 的安全沙箱域，支持执行自定义脚本并调用 MCP 工具。',
+    zhScenarios: ['安全脚本执行', '自定义分析逻辑', '隔离环境中的代码测试'],
+    zhCombos: ['sandbox + core + transform'],
+    enTitle: 'Sandbox',
+    enSummary:
+      'WASM-isolated QuickJS sandbox domain for secure custom script execution with MCP tool access.',
+    enScenarios: ['Secure script execution', 'Custom analysis logic', 'Isolated code testing'],
+    enCombos: ['sandbox + core + transform'],
+  },
+  canvas: {
+    zhTitle: 'Canvas',
+    zhSummary:
+      '游戏引擎 Canvas 逆向分析域，支持 Laya/Pixi/Phaser/Cocos/Unity 等主流游戏引擎的指纹识别、场景树导出和对象拾取。',
+    zhScenarios: [
+      '游戏引擎识别与版本检测',
+      '场景节点树导出',
+      '坐标拾取游戏对象',
+      '点击事件链路追踪',
+    ],
+    zhCombos: ['browser + canvas + debugger', 'canvas + evidence + trace'],
+    enTitle: 'Canvas',
+    enSummary:
+      'Canvas game engine reverse analysis domain supporting Laya, Pixi, Phaser, Cocos, and Unity engines for fingerprinting, scene tree dumping, and object picking.',
+    enScenarios: [
+      'Game engine fingerprinting and version detection',
+      'Scene node tree export',
+      'Coordinate-based object picking',
+      'Click event handler tracing',
+    ],
+    enCombos: ['browser + canvas + debugger', 'canvas + evidence + trace'],
+  },
+  'protocol-analysis': {
+    zhTitle: 'Protocol Analysis',
+    zhSummary: '自定义协议分析域，支持协议模式定义、自动字段检测、状态机推断和可视化。',
+    zhScenarios: [
+      '自定义协议模式定义',
+      '从十六进制载荷自动检测字段边界',
+      '从捕获消息推断协议状态机',
+      '生成 Mermaid 状态图',
+    ],
+    zhCombos: ['network + protocol-analysis', 'encoding + protocol-analysis'],
+    enTitle: 'Protocol Analysis',
+    enSummary:
+      'Custom protocol analysis domain supporting protocol pattern definition, automatic field detection from hex payloads, state machine inference from captured messages, and Mermaid diagram visualization.',
+    enScenarios: [
+      'Custom protocol pattern definition',
+      'Automatic field boundary detection from hex payloads',
+      'State machine inference from captured message sequences',
+      'Mermaid state diagram generation',
+    ],
+    enCombos: ['network + protocol-analysis', 'encoding + protocol-analysis'],
+  },
+  'adb-bridge': {
+    zhTitle: 'ADB Bridge',
+    zhSummary: 'Android Debug Bridge 集成域，用于设备管理、应用分析和远程调试。',
+    zhScenarios: ['Android 设备管理', 'APK 分析', '远程调试'],
+    zhCombos: ['adb-bridge + process', 'adb-bridge + network'],
+    enTitle: 'ADB Bridge',
+    enSummary:
+      'Android Debug Bridge integration domain for device management, application analysis, and remote debugging.',
+    enScenarios: ['Android device management', 'APK analysis', 'Remote debugging'],
+    enCombos: ['adb-bridge + process', 'adb-bridge + network'],
+  },
+  'binary-instrument': {
+    zhTitle: 'Binary Instrument',
+    zhSummary: '二进制插桩域，提供二进制分析和运行时插桩能力。',
+    zhScenarios: ['二进制分析', '运行时插桩', '内存模式检测'],
+    zhCombos: ['binary-instrument + memory', 'binary-instrument + process'],
+    enTitle: 'Binary Instrument',
+    enSummary:
+      'Binary instrumentation domain providing binary analysis and runtime instrumentation capabilities.',
+    enScenarios: ['Binary analysis', 'Runtime instrumentation', 'Memory pattern detection'],
+    enCombos: ['binary-instrument + memory', 'binary-instrument + process'],
+  },
+  'boringssl-inspector': {
+    zhTitle: 'BoringSSL Inspector',
+    zhSummary: 'BoringSSL/TLS 检查域，支持 TLS 流量分析和证书检查。',
+    zhScenarios: ['TLS 流量分析', '证书解析', '密钥日志捕获'],
+    zhCombos: ['boringssl-inspector + network', 'boringssl-inspector + browser'],
+    enTitle: 'BoringSSL Inspector',
+    enSummary:
+      'BoringSSL/TLS inspection domain supporting TLS traffic analysis and certificate inspection.',
+    enScenarios: ['TLS traffic analysis', 'Certificate parsing', 'Key log capture'],
+    enCombos: ['boringssl-inspector + network', 'boringssl-inspector + browser'],
+  },
+  'extension-registry': {
+    zhTitle: 'Extension Registry',
+    zhSummary: '扩展注册域，管理和发现社区扩展。',
+    zhScenarios: ['扩展浏览', '扩展安装', '扩展版本管理'],
+    zhCombos: ['extension-registry + workflow', 'extension-registry + maintenance'],
+    enTitle: 'Extension Registry',
+    enSummary: 'Extension registry domain for managing and discovering community extensions.',
+    enScenarios: ['Extension browsing', 'Extension installation', 'Extension version management'],
+    enCombos: ['extension-registry + workflow', 'extension-registry + maintenance'],
+  },
+  'mojo-ipc': {
+    zhTitle: 'Mojo IPC',
+    zhSummary: 'Mojo IPC 监控域，用于 Chromium 内部进程间通信分析。',
+    zhScenarios: ['Mojo 消息监控', 'IPC 模式分析', 'Chromium 内部协议逆向'],
+    zhCombos: ['mojo-ipc + browser', 'mojo-ipc + network'],
+    enTitle: 'Mojo IPC',
+    enSummary: 'Mojo IPC monitoring domain for Chromium inter-process communication analysis.',
+    enScenarios: [
+      'Mojo message monitoring',
+      'IPC pattern analysis',
+      'Chromium internal protocol reversing',
+    ],
+    enCombos: ['mojo-ipc + browser', 'mojo-ipc + network'],
+  },
+  netproto: {
+    zhTitle: 'NetProto',
+    zhSummary: '网络协议分析域，专注于网络层协议逆向和模式识别。',
+    zhScenarios: ['自定义协议分析', '网络模式识别', '协议指纹'],
+    zhCombos: ['netproto + network', 'netproto + protocol-analysis'],
+    enTitle: 'NetProto',
+    enSummary:
+      'Network protocol analysis domain focused on network-layer protocol reversing and pattern recognition.',
+    enScenarios: [
+      'Custom protocol analysis',
+      'Network pattern recognition',
+      'Protocol fingerprinting',
+    ],
+    enCombos: ['netproto + network', 'netproto + protocol-analysis'],
+  },
+  'skia-capture': {
+    zhTitle: 'Skia Capture',
+    zhSummary: 'Skia 渲染引擎捕获域，用于 UI 渲染分析和可视化。',
+    zhScenarios: ['Skia 场景提取', '渲染管道分析', 'UI 组件识别'],
+    zhCombos: ['skia-capture + browser', 'skia-capture + canvas'],
+    enTitle: 'Skia Capture',
+    enSummary: 'Skia rendering engine capture domain for UI rendering analysis and visualization.',
+    enScenarios: [
+      'Skia scene extraction',
+      'Rendering pipeline analysis',
+      'UI component identification',
+    ],
+    enCombos: ['skia-capture + browser', 'skia-capture + canvas'],
+  },
+  'syscall-hook': {
+    zhTitle: 'Syscall Hook',
+    zhSummary: '系统调用挂钩域，提供系统调用监控和映射能力。',
+    zhScenarios: ['系统调用监控', 'API 挂钩', '行为分析'],
+    zhCombos: ['syscall-hook + process', 'syscall-hook + hooks'],
+    enTitle: 'Syscall Hook',
+    enSummary:
+      'System call hooking domain providing system call monitoring and mapping capabilities.',
+    enScenarios: ['System call monitoring', 'API hooking', 'Behavioral analysis'],
+    enCombos: ['syscall-hook + process', 'syscall-hook + hooks'],
+  },
+  'v8-inspector': {
+    zhTitle: 'V8 Inspector',
+    zhSummary: 'V8 检查器域，提供堆快照分析、CPU 分析和内存检查。',
+    zhScenarios: ['堆快照分析', 'CPU 性能分析', '内存泄漏检测'],
+    zhCombos: ['v8-inspector + browser', 'v8-inspector + debugger'],
+    enTitle: 'V8 Inspector',
+    enSummary:
+      'V8 inspector domain providing heap snapshot analysis, CPU profiling, and memory inspection.',
+    enScenarios: ['Heap snapshot analysis', 'CPU profiling', 'Memory leak detection'],
+    enCombos: ['v8-inspector + browser', 'v8-inspector + debugger'],
+  },
+  'cross-domain': {
+    zhTitle: 'Cross-Domain',
+    zhSummary: '跨域关联域，将多个域的分析结果进行交叉关联，支持自动化工作流编排与证据图桥接。',
+    zhScenarios: ['跨域证据关联', '自动化逆向工作流', '多信号源聚合分析'],
+    zhCombos: ['cross-domain + evidence', 'cross-domain + v8-inspector + skia-capture'],
+    enTitle: 'Cross-Domain',
+    enSummary:
+      'Cross-domain correlation domain that bridges analysis results across multiple domains, supporting workflow orchestration and evidence graph integration.',
+    enScenarios: [
+      'Cross-domain evidence correlation',
+      'Automated reverse engineering workflows',
+      'Multi-signal aggregation analysis',
+    ],
+    enCombos: ['cross-domain + evidence', 'cross-domain + v8-inspector + skia-capture'],
+  },
+  proxy: {
+    zhTitle: 'Proxy',
+    zhSummary: '全栈 HTTP/HTTPS 中间人代理域，提供系统级的流量拦截、篡改与应用级挂载配置。',
+    zhScenarios: ['全局 HTTP/HTTPS 抓包', '接口 Mock 与转发', 'Android 辅助挂载'],
+    zhCombos: ['proxy + network', 'proxy + adb-bridge'],
+    enTitle: 'Proxy',
+    enSummary:
+      'Full-stack HTTP/HTTPS MITM proxy domain for system-level traffic interception, modification, and application configuration.',
+    enScenarios: [
+      'Global HTTP/HTTPS capture',
+      'API Mocking and forwarding',
+      'Android assisted mounting',
+    ],
+    enCombos: ['proxy + network', 'proxy + adb-bridge'],
   },
 };
 
 async function main() {
-  await ensureDistExists();
   await mkdir(zhDomainsRoot, { recursive: true });
   await mkdir(enDomainsRoot, { recursive: true });
   await clearGeneratedPages(zhDomainsRoot);
   await clearGeneratedPages(enDomainsRoot);
 
-  const zhToolDescriptions = await loadZhToolDescriptions();
   const manifests = await loadManifests();
-  const sorted = manifests.sort((a, b) => a.domain.localeCompare(b.domain));
+  const workflowPresets = await loadWorkflowPresets();
+  const sorted = manifests.toSorted((a, b) => a.domain.localeCompare(b.domain));
+  assertDomainMetadataCoverage(sorted);
+  const zhToolDescriptions = await syncZhCoverage(sorted, await loadZhToolDescriptions());
 
   assertZhCoverage(sorted, zhToolDescriptions);
 
   for (const manifest of sorted) {
     await writeFile(
       join(zhDomainsRoot, `${manifest.domain}.md`),
-      renderDomainPage(manifest, 'zh', zhToolDescriptions),
-      'utf8'
+      renderDomainPage(manifest, 'zh', zhToolDescriptions, workflowPresets),
+      'utf8',
     );
     await writeFile(
       join(enDomainsRoot, `${manifest.domain}.md`),
-      renderDomainPage(manifest, 'en', zhToolDescriptions),
-      'utf8'
+      renderDomainPage(manifest, 'en', zhToolDescriptions, workflowPresets),
+      'utf8',
     );
   }
 
-  await writeFile(join(zhReferenceRoot, 'index.md'), renderOverview(sorted, 'zh'), 'utf8');
-  await writeFile(join(enReferenceRoot, 'index.md'), renderOverview(sorted, 'en'), 'utf8');
+  await writeFile(
+    join(zhReferenceRoot, 'index.md'),
+    renderOverview(sorted, 'zh', workflowPresets),
+    'utf8',
+  );
+  await writeFile(
+    join(enReferenceRoot, 'index.md'),
+    renderOverview(sorted, 'en', workflowPresets),
+    'utf8',
+  );
 
   console.log(`[docs] Generated bilingual reference pages for ${sorted.length} domains`);
-}
-
-async function ensureDistExists() {
-  try {
-    await stat(distDomainsRoot);
-  } catch {
-    throw new Error('Reference generation requires built manifests. Run `pnpm run build` first.');
-  }
 }
 
 async function clearGeneratedPages(directory) {
@@ -287,7 +599,7 @@ async function clearGeneratedPages(directory) {
     await Promise.all(
       files
         .filter((file) => file.endsWith('.md'))
-        .map((file) => rm(join(directory, file), { force: true }))
+        .map((file) => rm(join(directory, file), { force: true })),
     );
   } catch {
     // ignore missing directories
@@ -295,37 +607,302 @@ async function clearGeneratedPages(directory) {
 }
 
 async function loadManifests() {
-  const entries = await readdir(distDomainsRoot, { withFileTypes: true });
-  const manifests = [];
+  const registryProbe = `
+import { initRegistry, getAllManifests } from './src/server/registry/index.ts';
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = join(distDomainsRoot, entry.name, 'manifest.js');
+(async () => {
+  await initRegistry();
 
-    try {
-      await stat(manifestPath);
-    } catch {
-      continue;
-    }
-
-    const mod = await import(pathToFileURL(manifestPath).href);
-    const manifest = mod.default;
-    manifests.push({
+  const manifests = [...getAllManifests()]
+    .map((manifest) => ({
       domain: manifest.domain,
-      profiles: manifest.profiles,
+      profiles: [...manifest.profiles],
       tools: manifest.registrations.map((registration) => ({
         name: registration.tool.name,
-        description: firstLine(registration.tool.description),
+        description: String(registration.tool.description ?? '').split(/\\r?\\n/, 1)[0] ?? '',
       })),
+    }))
+    .sort((left, right) => left.domain.localeCompare(right.domain));
+
+  console.log(JSON.stringify(manifests));
+})();
+`;
+
+  const tsxPackagePath = require.resolve('tsx/package.json');
+  const tsxCliPath = join(dirname(tsxPackagePath), 'dist', 'cli.mjs');
+  const result = spawnSync(process.execPath, [tsxCliPath, '--eval', registryProbe], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      JSHOOK_REGISTRY_PLATFORM: referenceRegistryPlatform,
+      LOG_LEVEL: 'error',
+    },
+  });
+
+  if (result.status !== 0) {
+    const details = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
+    throw new Error(`Failed to load domain manifests via tsx.${details ? `\n${details}` : ''}`);
+  }
+
+  const stdout = result.stdout.trim();
+  if (!stdout) {
+    throw new Error('Domain manifest probe returned empty stdout.');
+  }
+
+  return JSON.parse(stdout);
+}
+
+async function loadWorkflowPresets() {
+  const presets = [];
+
+  try {
+    const entries = await readdir(workflowPresetsRoot, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+
+      const workflowPath = join(workflowPresetsRoot, entry.name, 'workflow.js');
+      try {
+        await stat(workflowPath);
+      } catch {
+        continue;
+      }
+
+      const source = await readFile(workflowPath, 'utf8');
+      const workflow = extractWorkflowPresetMetadata(source, entry.name, workflowPath);
+      if (!workflow) {
+        continue;
+      }
+
+      presets.push({
+        ...workflow,
+        source: `workflows/${entry.name}/workflow.js`,
+      });
+    }
+  } catch {
+    return [];
+  }
+
+  return presets.toSorted((left, right) => left.id.localeCompare(right.id));
+}
+
+function extractWorkflowPresetMetadata(source, fallbackId, workflowPath) {
+  let ast;
+
+  try {
+    ast = parse(source, { sourceType: 'module' });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to parse workflow preset metadata from ${workflowPath}: ${message}`, {
+      cause: error,
     });
   }
 
-  return manifests;
+  const bindings = new Map();
+  let defaultExportNode = null;
+
+  for (const statement of ast.program.body) {
+    if (statement.type === 'VariableDeclaration') {
+      for (const declaration of statement.declarations) {
+        if (declaration.id.type === 'Identifier' && declaration.init) {
+          bindings.set(declaration.id.name, declaration.init);
+        }
+      }
+      continue;
+    }
+
+    if (statement.type === 'ExportDefaultDeclaration') {
+      defaultExportNode = statement.declaration;
+    }
+  }
+
+  if (!defaultExportNode) {
+    return null;
+  }
+
+  const workflow = resolveStaticNode(defaultExportNode, bindings, new Set());
+  if (!isPlainObject(workflow) || workflow.kind !== 'workflow-contract') {
+    return null;
+  }
+
+  const route = isPlainObject(workflow.route) ? workflow.route : null;
+  if (!route || route.kind !== 'preset') {
+    return null;
+  }
+
+  const requiredDomains = Array.isArray(route.requiredDomains)
+    ? route.requiredDomains.filter((domain) => typeof domain === 'string')
+    : [];
+  const steps = Array.isArray(route.steps) ? route.steps.filter((step) => isPlainObject(step)) : [];
+
+  return {
+    id: typeof workflow.id === 'string' ? workflow.id : fallbackId,
+    displayName: typeof workflow.displayName === 'string' ? workflow.displayName : fallbackId,
+    description: typeof workflow.description === 'string' ? workflow.description : '',
+    requiredDomains,
+    steps,
+  };
+}
+
+function resolveStaticNode(node, bindings, seen) {
+  if (!node) {
+    return undefined;
+  }
+
+  switch (node.type) {
+    case 'Identifier': {
+      if (seen.has(node.name)) {
+        return undefined;
+      }
+
+      const target = bindings.get(node.name);
+      if (!target) {
+        return undefined;
+      }
+
+      seen.add(node.name);
+      const resolved = resolveStaticNode(target, bindings, seen);
+      seen.delete(node.name);
+      return resolved;
+    }
+
+    case 'StringLiteral':
+    case 'NumericLiteral':
+    case 'BooleanLiteral':
+      return node.value;
+
+    case 'NullLiteral':
+      return null;
+
+    case 'TemplateLiteral':
+      if (node.expressions.length === 0) {
+        return node.quasis[0]?.value.cooked ?? '';
+      }
+      return undefined;
+
+    case 'RegExpLiteral':
+      return `/${node.pattern}/${node.flags}`;
+
+    case 'ArrayExpression':
+      return node.elements.map((element) => {
+        if (!element || element.type === 'SpreadElement') {
+          return undefined;
+        }
+        return resolveStaticNode(element, bindings, seen);
+      });
+
+    case 'ObjectExpression': {
+      const result = {};
+
+      for (const property of node.properties) {
+        if (property.type !== 'ObjectProperty' || property.computed) {
+          continue;
+        }
+
+        const key = getObjectPropertyKey(property.key);
+        if (!key) {
+          continue;
+        }
+
+        result[key] = resolveStaticNode(property.value, bindings, seen);
+      }
+
+      return result;
+    }
+
+    default:
+      return undefined;
+  }
+}
+
+function getObjectPropertyKey(node) {
+  if (node.type === 'Identifier') {
+    return node.name;
+  }
+
+  if (node.type === 'StringLiteral' || node.type === 'NumericLiteral') {
+    return String(node.value);
+  }
+
+  return null;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function assertDomainMetadataCoverage(manifests) {
+  const missing = manifests
+    .map((manifest) => manifest.domain)
+    .filter((domain, index, domains) => domains.indexOf(domain) === index && !META[domain]);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing reference metadata for ${missing.length} domains: ${missing.join(', ')}`,
+    );
+  }
+}
+
+function getDomainMeta(domain) {
+  const meta = META[domain];
+  if (!meta) {
+    throw new Error(`Missing reference metadata for domain "${domain}"`);
+  }
+  return meta;
 }
 
 async function loadZhToolDescriptions() {
   const raw = await readFile(zhTranslationsPath, 'utf8');
   return JSON.parse(raw);
+}
+
+async function syncZhCoverage(manifests, zhToolDescriptions) {
+  const merged = { ...zhToolDescriptions };
+  const added = [];
+
+  for (const manifest of manifests) {
+    for (const tool of manifest.tools) {
+      if (!merged[tool.name]) {
+        merged[tool.name] = `${zhPlaceholderPrefix}${tool.description}`;
+        added.push(`${manifest.domain}.${tool.name}`);
+      }
+    }
+  }
+
+  if (added.length > 0) {
+    await writeFile(zhTranslationsPath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    console.log(
+      `[docs] Added ${added.length} placeholder Chinese tool descriptions: ${added
+        .slice(0, 20)
+        .join(', ')}`,
+    );
+  }
+
+  const placeholders = [];
+
+  for (const manifest of manifests) {
+    for (const tool of manifest.tools) {
+      const localized = merged[tool.name];
+      if (typeof localized === 'string' && localized.startsWith(zhPlaceholderPrefix)) {
+        placeholders.push(`${manifest.domain}.${tool.name}`);
+      }
+    }
+  }
+
+  if (placeholders.length > 0 && isCiEnvironment()) {
+    throw new Error(
+      `Placeholder Chinese tool descriptions remain for ${placeholders.length} tools: ${placeholders
+        .slice(0, 20)
+        .join(', ')}`,
+    );
+  }
+
+  return merged;
+}
+
+function isCiEnvironment() {
+  return process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
 }
 
 function assertZhCoverage(manifests, zhToolDescriptions) {
@@ -341,30 +918,46 @@ function assertZhCoverage(manifests, zhToolDescriptions) {
 
   if (missing.length > 0) {
     throw new Error(
-      `Missing Chinese tool descriptions for ${missing.length} tools: ${missing.slice(0, 20).join(', ')}`
+      `Missing Chinese tool descriptions for ${missing.length} tools: ${missing.slice(0, 20).join(', ')}`,
     );
   }
 }
-
-function firstLine(text = '') {
-  return text.split('\n')[0]?.trim() || '';
-}
-
-function renderOverview(manifests, locale) {
-  const totalTools = manifests.reduce((sum, manifest) => sum + manifest.tools.length, 0);
+function renderOverview(manifests, locale, workflowPresets) {
   const rows = manifests
     .map((manifest) => {
-      const meta = META[manifest.domain];
+      const meta = getDomainMeta(manifest.domain);
       const title = locale === 'zh' ? meta.zhTitle : meta.enTitle;
       const summary = locale === 'zh' ? meta.zhSummary : meta.enSummary;
-      return `| \`${manifest.domain}\` | ${title} | ${manifest.tools.length} | ${manifest.profiles.join(', ')} | ${summary} |`;
+      return `| \`${manifest.domain}\` | ${title} | ${manifest.profiles.join(', ')} | ${summary} |`;
     })
     .join('\n');
+  const externalPresetIds = workflowPresets
+    .slice(0, 5)
+    .map((preset) => `\`${preset.id}\``)
+    .join(', ');
+  const externalPresetSection =
+    workflowPresets.length === 0
+      ? ''
+      : locale === 'zh'
+        ? `
+## 外置 Workflow Preset
+
+仓库根目录的 \`workflows/*/workflow.js\` 额外提供 **${workflowPresets.length}** 个 preset，已在工作流域页面单独列出。
+
+- 示例：${externalPresetIds}${workflowPresets.length > 5 ? ' ...' : ''}
+`
+        : `
+## External Workflow Presets
+
+The repository-level \`workflows/*/workflow.js\` tree contributes **${workflowPresets.length}** additional presets, documented separately on the workflow domain page.
+
+- Examples: ${externalPresetIds}${workflowPresets.length > 5 ? ' ...' : ''}
+`;
 
   if (locale === 'zh') {
     return `# Reference Overview
 
-当前内置域共 **${manifests.length}** 个，域工具总数 **${totalTools}**。
+当前包含以下工具域：
 
 ## 推荐阅读路径
 
@@ -374,8 +967,8 @@ function renderOverview(manifests, locale) {
 
 ## 域矩阵
 
-| 域 | 标题 | 工具数 | 适用 profile | 典型场景 |
-| --- | --- | ---: | --- | --- |
+| 域 | 标题 | 适用 profile | 典型场景 |
+| --- | --- | --- | --- |
 ${rows}
 
 ## 重点高层入口
@@ -386,12 +979,12 @@ ${rows}
 - \`js_bundle_search\`：远程抓取 bundle 并做多模式匹配
 - \`doctor_environment\`：环境依赖与 bridge 健康检查
 - \`cleanup_artifacts\`：按 retention / size 规则清理产物
-`;
+${externalPresetSection}`;
   }
 
   return `# Reference Overview
 
-There are **${manifests.length}** built-in domains and **${totalTools}** domain tools in the current build.
+The following tool domains are available:
 
 ## Recommended reading order
 
@@ -401,8 +994,8 @@ There are **${manifests.length}** built-in domains and **${totalTools}** domain 
 
 ## Domain matrix
 
-| Domain | Title | Tool count | Profiles | Typical use |
-| --- | --- | ---: | --- | --- |
+| Domain | Title | Profiles | Typical use |
+| --- | --- | --- | --- |
 ${rows}
 
 ## Key high-level entry points
@@ -413,11 +1006,36 @@ ${rows}
 - \`js_bundle_search\` — fetch a bundle remotely and search it with multiple patterns
 - \`doctor_environment\` — diagnose dependencies and local bridge health
 - \`cleanup_artifacts\` — clean retained artifacts by age or size
-`;
+${externalPresetSection}`;
 }
 
-function renderDomainPage(manifest, locale, zhToolDescriptions) {
-  const meta = META[manifest.domain];
+function renderWorkflowPresetSection(presets, locale) {
+  if (presets.length === 0) {
+    return '';
+  }
+
+  const rows = presets
+    .map(
+      (preset) =>
+        `| \`${preset.id}\` | ${escapeMd(preset.displayName)} | ${escapeMd(
+          preset.description || (locale === 'zh' ? '无描述' : 'No description'),
+        )} | ${escapeMd(preset.source)} | ${
+          preset.requiredDomains.length > 0
+            ? preset.requiredDomains.map((domain) => `\`${domain}\``).join(', ')
+            : '-'
+        } | ${preset.steps.length} |`,
+    )
+    .join('\n');
+
+  if (locale === 'zh') {
+    return `\n## 外置 Preset（${presets.length}）\n\n以下 preset 来自仓库根目录的 \`workflows/*/workflow.js\`，用于路由匹配与步骤编排提示，不属于内置 manifest 注册列表。\n\n| ID | 名称 | 说明 | 来源 | 依赖域 | 步骤数 |\n| --- | --- | --- | --- | --- | --- |\n${rows}\n`;
+  }
+
+  return `\n## External presets (${presets.length})\n\nThese presets are loaded from repository-level \`workflows/*/workflow.js\` files for routing and guided step orchestration. They are intentionally separate from built-in manifest registrations.\n\n| ID | Name | Description | Source | Required domains | Steps |\n| --- | --- | --- | --- | --- | --- |\n${rows}\n`;
+}
+
+function renderDomainPage(manifest, locale, zhToolDescriptions, workflowPresets) {
+  const meta = getDomainMeta(manifest.domain);
   const title = locale === 'zh' ? meta.zhTitle : meta.enTitle;
   const summary = locale === 'zh' ? meta.zhSummary : meta.enSummary;
   const scenarios = locale === 'zh' ? meta.zhScenarios : meta.enScenarios;
@@ -426,13 +1044,15 @@ function renderDomainPage(manifest, locale, zhToolDescriptions) {
     ...tool,
     localizedDescription:
       locale === 'zh'
-        ? zhToolDescriptions[tool.name] ?? `[缺少中文翻译] ${tool.description}`
+        ? (zhToolDescriptions[tool.name] ?? `[缺少中文翻译] ${tool.description}`)
         : tool.description,
   }));
   const representative = localizedTools.slice(0, Math.min(10, localizedTools.length));
   const allRows = localizedTools
     .map((tool) => `| \`${tool.name}\` | ${escapeMd(tool.localizedDescription)} |`)
     .join('\n');
+  const presetSection =
+    manifest.domain === 'workflow' ? renderWorkflowPresetSection(workflowPresets, locale) : '';
 
   if (locale === 'zh') {
     return `# ${title}
@@ -461,7 +1081,7 @@ ${representative.map((tool) => `- \`${tool.name}\` — ${tool.localizedDescripti
 
 | 工具 | 说明 |
 | --- | --- |
-${allRows}
+${allRows}${presetSection}
 `;
   }
 
@@ -491,7 +1111,7 @@ ${representative.map((tool) => `- \`${tool.name}\` — ${tool.localizedDescripti
 
 | Tool | Description |
 | --- | --- |
-${allRows}
+${allRows}${presetSection}
 `;
 }
 

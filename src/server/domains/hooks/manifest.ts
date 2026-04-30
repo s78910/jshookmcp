@@ -18,7 +18,7 @@ import {
   toolLookup,
 } from '@server/domains/shared/registry';
 import { aiHookTools, hookPresetTools } from '@server/domains/hooks/definitions';
-import { AIHookToolHandlers, HookPresetToolHandlers } from '@server/domains/hooks/index';
+import type { AIHookToolHandlers, HookPresetToolHandlers } from '@server/domains/hooks/index';
 import type { ToolArgs } from '@server/types';
 
 const DOMAIN = 'hooks' as const;
@@ -30,14 +30,18 @@ const t = toolLookup([...aiHookTools, ...hookPresetTools]);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
-  ensureBrowserCore(ctx);
-  if (!ctx.aiHookHandlers) {
-    ctx.aiHookHandlers = new AIHookToolHandlers(ctx.pageController!);
-  }
-  // Also ensure the preset handlers are available
-  if (!ctx.hookPresetHandlers) {
-    ctx.hookPresetHandlers = new HookPresetToolHandlers(ctx.pageController!);
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { AIHookToolHandlers, HookPresetToolHandlers } =
+    await import('@server/domains/hooks/index');
+  await ensureBrowserCore(ctx);
+  if (!ctx.aiHookHandlers || !ctx.hookPresetHandlers) {
+    if (!ctx.aiHookHandlers) {
+      ctx.aiHookHandlers = new AIHookToolHandlers(ctx.pageController!);
+    }
+    // Also ensure the preset handlers are available
+    if (!ctx.hookPresetHandlers) {
+      ctx.hookPresetHandlers = new HookPresetToolHandlers(ctx.pageController!);
+    }
   }
   return ctx.aiHookHandlers;
 }
@@ -51,13 +55,7 @@ const manifest = {
   profiles: ['full'],
   ensure,
   registrations: [
-    { tool: t('ai_hook_generate'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookGenerate(a)) },
-    { tool: t('ai_hook_inject'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookInject(a)) },
-    { tool: t('ai_hook_get_data'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookGetData(a)) },
-    { tool: t('ai_hook_list'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookList(a)) },
-    { tool: t('ai_hook_clear'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookClear(a)) },
-    { tool: t('ai_hook_toggle'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookToggle(a)) },
-    { tool: t('ai_hook_export'), domain: DOMAIN, bind: b((h, a) => h.handleAIHookExport(a)) },
+    { tool: t('ai_hook'), domain: DOMAIN, bind: b((h, a) => h.handleAIHook(a)) },
     // hook_preset uses the secondary handler
     {
       tool: t('hook_preset'),

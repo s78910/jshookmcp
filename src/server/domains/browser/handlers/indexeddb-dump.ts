@@ -1,3 +1,7 @@
+import { argString, argNumber } from '@server/domains/shared/parse-args';
+import { R } from '@server/domains/shared/ResponseBuilder';
+import type { ToolResponse } from '@server/domains/shared/ResponseBuilder';
+
 interface EvaluatablePage {
   evaluate(pageFunction: unknown, ...args: unknown[]): Promise<unknown>;
 }
@@ -6,12 +10,10 @@ interface IndexedDBDumpHandlersDeps {
   getActivePage: () => Promise<unknown>;
 }
 
-import { argString, argNumber } from '@server/domains/shared/parse-args';
-
 export class IndexedDBDumpHandlers {
   constructor(private deps: IndexedDBDumpHandlersDeps) {}
 
-  async handleIndexedDBDump(args: Record<string, unknown>) {
+  async handleIndexedDBDump(args: Record<string, unknown>): Promise<ToolResponse> {
     const database = argString(args, 'database', '');
     const store = argString(args, 'store', '');
     const maxRecords = argNumber(args, 'maxRecords', 100);
@@ -23,38 +25,22 @@ export class IndexedDBDumpHandlers {
           const dbList = await indexedDB.databases();
           const output: Record<string, Record<string, unknown[]>> = {};
 
-          const openDb = (name: string, version?: number): Promise<IDBDatabase> =>
-            new Promise((resolve, reject) => {
-              const req = version ? indexedDB.open(name, version) : indexedDB.open(name);
-              req.onsuccess = () => resolve(req.result);
-              req.onerror = () => reject(req.error);
-            });
-
-          const getAllFromStore = (
-            db: IDBDatabase,
-            storeName: string,
-            max: number
-          ): Promise<unknown[]> =>
-            new Promise((resolve, reject) => {
-              try {
-                const tx = db.transaction(storeName, 'readonly');
-                const req = tx.objectStore(storeName).getAll();
-                req.onsuccess = () => resolve((req.result as unknown[]).slice(0, max));
-                req.onerror = () => reject(req.error);
-              } catch (e) {
-                reject(e);
-              }
-            });
-
           for (const dbInfo of dbList) {
             if (!dbInfo.name) continue;
             if (opts.database && dbInfo.name !== opts.database) continue;
+            const dbName = dbInfo.name;
 
             let db: IDBDatabase;
             try {
-              db = await openDb(dbInfo.name, dbInfo.version);
+              db = await new Promise((resolve, reject) => {
+                const req = dbInfo.version
+                  ? indexedDB.open(dbName, dbInfo.version)
+                  : indexedDB.open(dbName);
+                req.addEventListener('success', () => resolve(req.result), { once: true });
+                req.addEventListener('error', () => reject(req.error), { once: true });
+              });
             } catch {
-              output[dbInfo.name] = { __error__: ['failed to open'] };
+              output[dbName] = { __error__: ['failed to open'] };
               continue;
             }
 
@@ -64,45 +50,37 @@ export class IndexedDBDumpHandlers {
             for (const storeName of storeNames) {
               if (opts.store && storeName !== opts.store) continue;
               try {
-                dbData[storeName] = await getAllFromStore(db, storeName, opts.maxRecords);
+                dbData[storeName] = await new Promise((resolve, reject) => {
+                  try {
+                    const tx = db.transaction(storeName, 'readonly');
+                    const req = tx.objectStore(storeName).getAll();
+                    req.addEventListener(
+                      'success',
+                      () => resolve((req.result as unknown[]).slice(0, opts.maxRecords)),
+                      { once: true },
+                    );
+                    req.addEventListener('error', () => reject(req.error), { once: true });
+                  } catch (e) {
+                    reject(e);
+                  }
+                });
               } catch {
                 dbData[storeName] = ['__error reading store__'];
               }
             }
 
             db.close();
-            output[dbInfo.name] = dbData;
+            output[dbName] = dbData;
           }
 
           return output;
         },
-        { database, store, maxRecords }
+        { database, store, maxRecords },
       );
 
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+      return R.ok().build(result as Record<string, unknown>);
     } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      return R.fail(error).build();
     }
   }
 }

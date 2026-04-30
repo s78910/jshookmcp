@@ -1,3 +1,4 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const isSsrfTargetMock = vi.fn(async () => false);
@@ -7,10 +8,6 @@ vi.mock('@src/server/domains/network/replay', () => ({
 }));
 
 import { GraphQLToolHandlers } from '@server/domains/graphql/handlers';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0]!.text);
-}
 
 describe('GraphQLToolHandlers', () => {
   const page = {
@@ -32,14 +29,14 @@ describe('GraphQLToolHandlers', () => {
 
   it('returns error for invalid call-graph regex', async () => {
     const response = await handlers.handleCallGraphAnalyze({ filterPattern: '[' });
-    const body = parseJson(response);
+    const body = parseJson<any>(response);
     expect((response as any).isError).toBe(true);
     expect(body.error).toContain('Invalid filterPattern regex');
   });
 
   it('validates required arguments for script_replace_persist', async () => {
     const response = await handlers.handleScriptReplacePersist({ replacement: 'x' });
-    const body = parseJson(response);
+    const body = parseJson<any>(response);
     expect((response as any).isError).toBe(true);
     expect(body.error).toContain('Missing required argument: url');
   });
@@ -50,18 +47,18 @@ describe('GraphQLToolHandlers', () => {
       replacement: 'x',
       matchType: 'regex',
     });
-    const body = parseJson(response);
+    const body = parseJson<any>(response);
     expect((response as any).isError).toBe(true);
     expect(body.error).toContain('Invalid regex');
   });
 
   it('registers script replacement rule and installs interception', async () => {
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleScriptReplacePersist({
         url: '/main.js',
         replacement: 'console.log(1)',
         matchType: 'contains',
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
@@ -76,9 +73,32 @@ describe('GraphQLToolHandlers', () => {
     const response = await handlers.handleGraphqlIntrospect({
       endpoint: 'http://127.0.0.1/graphql',
     });
-    const body = parseJson(response);
+    const body = parseJson<any>(response);
     expect((response as any).isError).toBe(true);
     expect(body.error).toContain('Blocked');
+  });
+
+  it('runs introspection through the active browser session by default', async () => {
+    page.evaluate.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      responseHeaders: { 'content-type': 'application/json' },
+      totalLength: 32,
+      preview: '',
+      truncated: false,
+      json: { data: { __schema: { queryType: { name: 'Query' } } } },
+    });
+
+    const body = parseJson<any>(
+      await handlers.handleGraphqlIntrospect({
+        endpoint: 'https://vmoranv.github.io/jshookmcp/api/graphql',
+      }),
+    );
+
+    expect(body.success).toBe(true);
+    expect(body.status).toBe(200);
+    expect(body.schema).toEqual({ __schema: { queryType: { name: 'Query' } } });
   });
 
   it('replays graphql query and returns response metadata', async () => {
@@ -91,12 +111,12 @@ describe('GraphQLToolHandlers', () => {
       responseHeaders: { 'content-type': 'application/json' },
     });
 
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleGraphqlReplay({
         endpoint: 'https://vmoranv.github.io/jshookmcp/api/graphql',
         query: 'query Test { ok }',
         variables: { id: 1 },
-      })
+      }),
     );
     expect(body.success).toBe(true);
     expect(body.status).toBe(200);

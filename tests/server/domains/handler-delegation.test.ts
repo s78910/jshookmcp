@@ -6,6 +6,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+function asExportMap(value: any): Record<string, unknown> {
+  return value as Record<string, unknown>;
+}
+
+function asMethodMap(value: object): Record<string, unknown> {
+  return value as unknown as Record<string, unknown>;
+}
+
 // ── Mock heavy dependencies so that handler module imports succeed ──
 
 // Shared modules: explicit mock for every named export used by handler files
@@ -36,7 +44,6 @@ vi.mock('@server/domains/shared/modules', () => ({
   BlackboxManager: mockClass(),
   ExternalToolRunner: mockClass(),
   ToolRegistry: mockClass(),
-  AIHookGenerator: mockClass(),
   HookManager: mockClass(),
   ConsoleMonitor: mockClass(),
   PerformanceMonitor: mockClass(),
@@ -46,9 +53,9 @@ vi.mock('@server/domains/shared/modules', () => ({
 }));
 
 vi.mock('@server/domains/shared/response', () => ({
-  asJsonResponse: vi.fn((_: unknown) => ({ content: [{ type: 'text', text: '{}' }] })),
+  asJsonResponse: vi.fn((_: any) => ({ content: [{ type: 'text', text: '{}' }] })),
   asTextResponse: vi.fn((_: string) => ({ content: [{ type: 'text', text: '' }] })),
-  serializeError: vi.fn((e: unknown) => String(e)),
+  serializeError: vi.fn((e: any) => String(e)),
 }));
 
 // Logger
@@ -93,8 +100,8 @@ const mockDebuggerSubHandler = () =>
             if (prop === 'constructor') return vi.fn();
             return vi.fn().mockResolvedValue({ content: [] });
           },
-        }
-      )
+        },
+      ),
   );
 
 vi.mock('@server/domains/debugger/handlers/debugger-control', () => ({
@@ -149,10 +156,7 @@ vi.mock('@server/domains/platform/handlers/electron-handlers', () => ({
   })),
 }));
 vi.mock('@server/domains/platform/handlers/bridge-handlers', () => ({
-  BridgeHandlers: vi.fn().mockImplementation(() => ({
-    handleFridaBridge: vi.fn(),
-    handleJadxBridge: vi.fn(),
-  })),
+  BridgeHandlers: vi.fn().mockImplementation(() => ({})),
 }));
 
 // Hooks dependencies
@@ -195,10 +199,14 @@ vi.mock('@utils/artifacts', () => ({
 }));
 
 // Extension handlers deps
-vi.mock('@src/constants', () => ({
-  EXTENSION_GIT_CLONE_TIMEOUT_MS: 30000,
-  EXTENSION_GIT_CHECKOUT_TIMEOUT_MS: 10000,
-}));
+vi.mock(import('@src/constants'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    EXTENSION_GIT_CLONE_TIMEOUT_MS: 30000,
+    EXTENSION_GIT_CHECKOUT_TIMEOUT_MS: 10000,
+  };
+});
 
 // Analysis web-tools
 vi.mock('@server/domains/analysis/handlers.web-tools', () => ({
@@ -317,14 +325,6 @@ describe('Domain handler delegation (handlers.ts)', () => {
     vi.clearAllMocks();
   });
 
-  function asExportMap(value: unknown): Record<string, unknown> {
-    return value as Record<string, unknown>;
-  }
-
-  function asMethodMap(value: object): Record<string, unknown> {
-    return value as unknown as Record<string, unknown>;
-  }
-
   // Pure re-export handlers.ts files: they just re-export from handlers.impl
   const pureReExportDomains = [
     { domain: 'analysis', exportName: 'CoreAnalysisHandlers' },
@@ -338,21 +338,40 @@ describe('Domain handler delegation (handlers.ts)', () => {
     { domain: 'workflow', exportName: 'WorkflowHandlers' },
   ] as const;
 
+  // Lazy loader map — avoids Vite dynamic-import-vars warning
+  type PureDomain = (typeof pureReExportDomains)[number]['domain'];
+
+  const pureHandlerModuleLoaders = {
+    analysis: () => import('@server/domains/analysis/handlers'),
+    encoding: () => import('@server/domains/encoding/handlers'),
+    graphql: () => import('@server/domains/graphql/handlers'),
+    network: () => import('@server/domains/network/handlers'),
+    process: () => import('@server/domains/process/handlers'),
+    sourcemap: () => import('@server/domains/sourcemap/handlers'),
+    streaming: () => import('@server/domains/streaming/handlers'),
+    transform: () => import('@server/domains/transform/handlers'),
+    workflow: () => import('@server/domains/workflow/handlers'),
+  } satisfies Record<PureDomain, () => Promise<Record<string, unknown>>>;
+
+  async function loadHandlerModule(domain: PureDomain) {
+    return asExportMap(await pureHandlerModuleLoaders[domain]());
+  }
+
   describe.each(pureReExportDomains)(
     '$domain/handlers.ts re-exports $exportName',
     ({ domain, exportName }) => {
       it(`exports ${exportName} as a constructor function`, async () => {
-        const mod = asExportMap(await import(`@server/domains/${domain}/handlers`));
+        const mod = await loadHandlerModule(domain);
         expect(mod[exportName]).toBeDefined();
         expect(typeof mod[exportName]).toBe('function');
       });
 
       it(`has no unexpected exports besides ${exportName}`, async () => {
-        const mod = await import(`@server/domains/${domain}/handlers`);
+        const mod = await loadHandlerModule(domain);
         const exportedNames = Object.keys(mod).filter((k) => k !== '__esModule');
         expect(exportedNames).toContain(exportName);
       });
-    }
+    },
   );
 
   // Browser handlers.ts re-exports many classes
@@ -365,9 +384,7 @@ describe('Domain handler delegation (handlers.ts)', () => {
       'PageInteractionHandlers',
       'PageEvaluationHandlers',
       'PageDataHandlers',
-      'DOMQueryHandlers',
-      'DOMStyleHandlers',
-      'DOMSearchHandlers',
+
       'ConsoleHandlers',
       'ScriptManagementHandlers',
       'CaptchaHandlers',
@@ -421,8 +438,8 @@ describe('Domain handler delegation (handlers.ts)', () => {
 
       // Verify a sample of delegation methods exist
       const delegationMethods = [
-        'handleDebuggerEnable',
-        'handleDebuggerDisable',
+        'handleDebuggerLifecycle',
+        'handleDebuggerLifecycle',
         'handleDebuggerPause',
         'handleDebuggerResume',
         'handleDebuggerStepInto',
@@ -495,8 +512,6 @@ describe('Domain handler delegation (handlers.ts)', () => {
         'handleMiniappPkgAnalyze',
         'handleAsarExtract',
         'handleElectronInspectApp',
-        'handleFridaBridge',
-        'handleJadxBridge',
       ];
 
       for (const method of expectedMethods) {

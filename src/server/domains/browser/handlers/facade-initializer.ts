@@ -1,20 +1,19 @@
 import type { CodeCollector } from '@server/domains/shared/modules';
 import type { PageController } from '@server/domains/shared/modules';
-import type { DOMInspector } from '@server/domains/shared/modules';
+
 import type { ScriptManager } from '@server/domains/shared/modules';
 import type { ConsoleMonitor } from '@server/domains/shared/modules';
-import { AICaptchaDetector } from '@server/domains/shared/modules';
-import { DetailedDataManager } from '@utils/DetailedDataManager';
-import { CamoufoxBrowserManager } from '@server/domains/shared/modules';
+import type { EventBus, ServerEventMap } from '@server/EventBus';
+import { type AICaptchaDetector } from '@server/domains/shared/modules';
+import { type DetailedDataManager } from '@utils/DetailedDataManager';
+import { type CamoufoxBrowserManager } from '@server/domains/shared/modules';
 import { BrowserControlHandlers } from '@server/domains/browser/handlers/browser-control';
 import { CamoufoxBrowserHandlers } from '@server/domains/browser/handlers/camoufox-browser';
 import { PageNavigationHandlers } from '@server/domains/browser/handlers/page-navigation';
 import { PageInteractionHandlers } from '@server/domains/browser/handlers/page-interaction';
 import { PageEvaluationHandlers } from '@server/domains/browser/handlers/page-evaluation';
 import { PageDataHandlers } from '@server/domains/browser/handlers/page-data';
-import { DOMQueryHandlers } from '@server/domains/browser/handlers/dom-query';
-import { DOMStyleHandlers } from '@server/domains/browser/handlers/dom-style';
-import { DOMSearchHandlers } from '@server/domains/browser/handlers/dom-search';
+
 import { ConsoleHandlers } from '@server/domains/browser/handlers/console-handlers';
 import { ScriptManagementHandlers } from '@server/domains/browser/handlers/script-management';
 import { CaptchaHandlers } from '@server/domains/browser/handlers/captcha-handlers';
@@ -24,12 +23,15 @@ import { IndexedDBDumpHandlers } from '@server/domains/browser/handlers/indexedd
 import { JSHeapSearchHandlers } from '@server/domains/browser/handlers/js-heap';
 import { TabWorkflowHandlers } from '@server/domains/browser/handlers/tab-workflow';
 import { DetailedDataHandlers } from '@server/domains/browser/handlers/detailed-data';
+import { TargetEvaluationHandlers } from '@server/domains/browser/handlers/target-evaluation';
+import { TargetControlHandlers } from '@server/domains/browser/handlers/target-control';
+import { JsdomHandlers } from '@server/domains/browser/handlers/jsdom-tools';
 import { TabRegistry } from '@modules/browser/TabRegistry';
 
 export interface BrowserHandlerModuleInitDeps {
   collector: CodeCollector;
   pageController: PageController;
-  domInspector: DOMInspector;
+
   scriptManager: ScriptManager;
   consoleMonitor: ConsoleMonitor;
   captchaDetector: AICaptchaDetector;
@@ -45,19 +47,20 @@ export interface BrowserHandlerModuleInitDeps {
   setAutoDetectCaptcha: (value: boolean) => void;
   setAutoSwitchHeadless: (value: boolean) => void;
   setCaptchaTimeout: (value: number) => void;
+  eventBus?: EventBus<ServerEventMap>;
 }
 
 export interface BrowserHandlerModules {
   tabRegistry: TabRegistry;
   browserControl: BrowserControlHandlers;
+  targetControl: TargetControlHandlers;
   camoufoxBrowser: CamoufoxBrowserHandlers;
   pageNavigation: PageNavigationHandlers;
   pageInteraction: PageInteractionHandlers;
   pageEvaluation: PageEvaluationHandlers;
+  targetEvaluation: TargetEvaluationHandlers;
   pageData: PageDataHandlers;
-  domQuery: DOMQueryHandlers;
-  domStyle: DOMStyleHandlers;
-  domSearch: DOMSearchHandlers;
+
   consoleHandlers: ConsoleHandlers;
   scriptManagement: ScriptManagementHandlers;
   captchaHandlers: CaptchaHandlers;
@@ -67,10 +70,11 @@ export interface BrowserHandlerModules {
   jsHeapSearch: JSHeapSearchHandlers;
   tabWorkflow: TabWorkflowHandlers;
   detailedData: DetailedDataHandlers;
+  jsdomHandlers: JsdomHandlers;
 }
 
 export function initializeBrowserHandlerModules(
-  deps: BrowserHandlerModuleInitDeps
+  deps: BrowserHandlerModuleInitDeps,
 ): BrowserHandlerModules {
   const commonDeps = {
     getActiveDriver: deps.getActiveDriver,
@@ -78,9 +82,15 @@ export function initializeBrowserHandlerModules(
   };
 
   const tabRegistry = new TabRegistry();
+  const targetControl = new TargetControlHandlers({
+    collector: deps.collector,
+    consoleMonitor: deps.consoleMonitor,
+    getTabRegistry: () => tabRegistry,
+  });
 
   return {
     tabRegistry,
+    targetControl,
 
     browserControl: new BrowserControlHandlers({
       collector: deps.collector,
@@ -90,6 +100,7 @@ export function initializeBrowserHandlerModules(
       getCamoufoxManager: deps.getCamoufoxManager,
       getCamoufoxPage: deps.getCamoufoxPage,
       getTabRegistry: () => tabRegistry,
+      clearAttachedTargetContext: (context) => targetControl.clearAttachedTargetContext(context),
     }),
 
     camoufoxBrowser: new CamoufoxBrowserHandlers({
@@ -101,6 +112,7 @@ export function initializeBrowserHandlerModules(
     pageNavigation: new PageNavigationHandlers({
       pageController: deps.pageController,
       consoleMonitor: deps.consoleMonitor,
+      eventBus: deps.eventBus,
       ...commonDeps,
     }),
 
@@ -115,21 +127,14 @@ export function initializeBrowserHandlerModules(
       ...commonDeps,
     }),
 
+    targetEvaluation: new TargetEvaluationHandlers({
+      pageController: deps.pageController,
+      detailedDataManager: deps.detailedDataManager,
+    }),
+
     pageData: new PageDataHandlers({
       pageController: deps.pageController,
       ...commonDeps,
-    }),
-
-    domQuery: new DOMQueryHandlers({
-      domInspector: deps.domInspector,
-    }),
-
-    domStyle: new DOMStyleHandlers({
-      domInspector: deps.domInspector,
-    }),
-
-    domSearch: new DOMSearchHandlers({
-      domInspector: deps.domInspector,
     }),
 
     consoleHandlers: new ConsoleHandlers({
@@ -181,5 +186,7 @@ export function initializeBrowserHandlerModules(
     detailedData: new DetailedDataHandlers({
       detailedDataManager: deps.detailedDataManager,
     }),
+
+    jsdomHandlers: new JsdomHandlers(),
   };
 }

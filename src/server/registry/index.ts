@@ -1,12 +1,14 @@
 /**
- * Central tool registry - single source of truth.
+ * Central tool registry — single source of truth with lazy domain loading.
  *
- * Uses runtime discovery: scans domains/STAR/manifest.js on startup,
- * dynamically imports each DomainManifest, and builds all derived data
- * structures (tool groups, domain map, handler map, profile domains).
- *
- * No more manual imports - add a new domain by creating its manifest.ts.
+ * Startup loads only manifests for the active profile tier.
+ * Additional domains are loaded on-demand via ensureDomainLoaded().
  */
+function isSubset(a: string[], b: string[]): boolean {
+  const bSet = new Set(b);
+  return a.every((x) => bSet.has(x));
+}
+
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type {
   DomainManifest,
@@ -15,7 +17,13 @@ import type {
   ToolProfileId,
 } from '@server/registry/contracts';
 import type { ToolHandler } from '@server/types';
-import { discoverDomainManifests } from '@server/registry/discovery';
+import {
+  discoverDomainManifests,
+  loadSingleManifest,
+  getDomainsForProfile,
+  getAllKnownDomainNames,
+} from '@server/registry/discovery';
+import { DOMAIN_PROFILE_MAP } from '@server/registry/generated-domains.js';
 import { logger } from '@utils/logger';
 
 // ── Lazy-init singleton ──
@@ -24,36 +32,38 @@ let _manifests: DomainManifest[] | null = null;
 let _registrations: ToolRegistration[] | null = null;
 let _initPromise: Promise<void> | null = null;
 
-// Cached views — materialized once after init, never rebuilt.
-let _domainsView: ReadonlySet<string> | null = null;
+// Cached views — materialized once after init, updated on lazy loads.
+let _domainsView: Set<string> | null = null;
 let _toolNamesView: ReadonlySet<string> | null = null;
+let _registrationsByName: Map<string, ToolRegistration> | null = null;
 
-async function init(): Promise<void> {
+async function init(profile?: ToolProfileId): Promise<void> {
   if (_manifests !== null) return;
   if (_initPromise) {
     await _initPromise;
     return;
   }
   _initPromise = (async () => {
-    const discovered = await discoverDomainManifests();
+    const domainsToLoad = profile ? getDomainsForProfile(profile) : undefined;
+    const discovered = await discoverDomainManifests(domainsToLoad);
     _manifests = discovered;
 
-    const uniqueByToolName = new Map<string, ToolRegistration>();
+    _registrationsByName = new Map();
     for (const m of discovered) {
       for (const r of m.registrations) {
-        const existing = uniqueByToolName.get(r.tool.name);
+        const registration: ToolRegistration = r.domain ? r : { ...r, domain: m.domain };
+        const existing = _registrationsByName.get(registration.tool.name);
         if (existing) {
           logger.warn(
-            `[registry] Duplicate tool name "${r.tool.name}": domain "${r.domain}" conflicts with "${existing.domain}" — keeping first`
+            `[registry] Duplicate tool name "${registration.tool.name}": domain "${registration.domain}" conflicts with "${existing.domain}" — keeping first`,
           );
         } else {
-          uniqueByToolName.set(r.tool.name, r);
+          _registrationsByName.set(registration.tool.name, registration);
         }
       }
     }
-    _registrations = [...uniqueByToolName.values()];
+    _registrations = [..._registrationsByName.values()];
 
-    // Materialize cached views once — avoids rebuilding on every access
     _domainsView = new Set(_manifests.map((m) => m.domain));
     _toolNamesView = new Set(_registrations.map((r) => r.tool.name));
   })();
@@ -62,8 +72,65 @@ async function init(): Promise<void> {
 
 // ── Public initialiser (call before first use) ──
 
-export async function initRegistry(): Promise<void> {
-  await init();
+export async function initRegistry(profile?: ToolProfileId): Promise<void> {
+  await init(profile);
+}
+
+// ── On-demand loading ──
+
+/**
+ * Ensure a single domain's manifest is loaded.
+ * Loads the manifest, adds its registrations, and updates cached views.
+ * Returns the manifest or null if loading failed.
+ */
+export async function ensureDomainLoaded(domainName: string): Promise<DomainManifest | null> {
+  if (!_manifests) throw new Error('[registry] Not initialised - call initRegistry() first.');
+
+  // Already loaded
+  if (_manifests.some((m) => m.domain === domainName)) {
+    return _manifests.find((m) => m.domain === domainName)!;
+  }
+
+  const manifest = await loadSingleManifest(domainName);
+  if (!manifest) return null;
+
+  // Add to manifests array
+  _manifests.push(manifest);
+  _domainsView!.add(manifest.domain);
+
+  // Add registrations
+  for (const r of manifest.registrations) {
+    const registration: ToolRegistration = r.domain ? r : { ...r, domain: manifest.domain };
+    if (!_registrationsByName!.has(registration.tool.name)) {
+      _registrationsByName!.set(registration.tool.name, registration);
+    }
+  }
+  _registrations = [..._registrationsByName!.values()];
+
+  // Update tool names view
+  for (const r of manifest.registrations) {
+    (_toolNamesView as Set<string>).add(r.tool.name);
+  }
+
+  return manifest;
+}
+
+/**
+ * Ensure ALL domain manifests are loaded.
+ * Useful for search_tools which needs to index all tools.
+ * No-op if all domains are already loaded.
+ */
+export async function ensureAllDomainsLoaded(): Promise<void> {
+  if (!_manifests) throw new Error('[registry] Not initialised - call initRegistry() first.');
+
+  const allDomains = getAllKnownDomainNames();
+  const loaded = new Set(_manifests.map((m) => m.domain));
+  const missing = [...allDomains].filter((d) => !loaded.has(d));
+
+  if (missing.length === 0) return;
+
+  logger.info(`[registry] Loading ${missing.length} remaining domains for full discovery`);
+  await Promise.all(missing.map((d) => ensureDomainLoaded(d)));
 }
 
 // ── Accessors ──
@@ -88,9 +155,15 @@ export function getAllRegistrations(): readonly ToolRegistration[] {
   return getRegistrations();
 }
 
+/** Returns domain names of LOADED manifests only. */
 export function getAllDomains(): ReadonlySet<string> {
   if (!_domainsView) throw new Error('[registry] Not initialised - call initRegistry() first.');
   return _domainsView;
+}
+
+/** Returns ALL known domain names from build-time metadata (no loading needed). */
+export function getAllKnownDomains(): ReadonlySet<string> {
+  return getAllKnownDomainNames();
 }
 
 export function getAllToolNames(): ReadonlySet<string> {
@@ -98,12 +171,20 @@ export function getAllToolNames(): ReadonlySet<string> {
   return _toolNamesView;
 }
 
+/** O(1) lookup of a single ToolRegistration by tool name. */
+export function getRegistrationByName(name: string): ToolRegistration | undefined {
+  if (!_registrationsByName) {
+    _registrationsByName = new Map(getRegistrations().map((r) => [r.tool.name, r]));
+  }
+  return _registrationsByName.get(name);
+}
+
 // ── Builders ──
 
 export function buildToolGroups(): Record<string, Tool[]> {
   const groups: Record<string, Tool[]> = {};
   for (const r of getRegistrations()) {
-    (groups[r.domain] ??= []).push(r.tool);
+    (groups[r.domain!] ??= []).push(r.tool);
   }
   return groups;
 }
@@ -111,7 +192,7 @@ export function buildToolGroups(): Record<string, Tool[]> {
 export function buildToolDomainMap(): ReadonlyMap<string, string> {
   const map = new Map<string, string>();
   for (const r of getRegistrations()) {
-    if (!map.has(r.tool.name)) map.set(r.tool.name, r.domain);
+    if (!map.has(r.tool.name)) map.set(r.tool.name, r.domain!);
   }
   return map;
 }
@@ -122,12 +203,20 @@ export function buildAllTools(): Tool[] {
 
 export function buildHandlerMapFromRegistry(
   deps: ToolHandlerDeps,
-  selectedToolNames?: ReadonlySet<string>
+  selectedToolNames?: ReadonlySet<string>,
 ): Record<string, ToolHandler> {
   const regs = selectedToolNames
     ? getRegistrations().filter((r) => selectedToolNames.has(r.tool.name))
     : [...getRegistrations()];
-  return Object.fromEntries(regs.map((r) => [r.tool.name, r.bind(deps) as ToolHandler]));
+  const entries: [string, ToolHandler][] = [];
+  for (const r of regs) {
+    try {
+      entries.push([r.tool.name, r.bind(deps) as ToolHandler]);
+    } catch {
+      // Tool's handler is unavailable (missing dependencies) — skip it
+    }
+  }
+  return Object.fromEntries(entries);
 }
 
 export function buildProfileDomains(): Record<ToolProfileId, string[]> {
@@ -137,9 +226,11 @@ export function buildProfileDomains(): Record<ToolProfileId, string[]> {
     full: new Set(),
   };
 
-  for (const m of getManifests()) {
-    for (const p of m.profiles) {
-      profiles[p]?.add(m.domain);
+  // Use build-time metadata as single source of truth — works even when
+  // manifests haven't been loaded yet (search profile starts with 0 loaded).
+  for (const [domain, domainProfiles] of Object.entries(DOMAIN_PROFILE_MAP)) {
+    for (const p of domainProfiles) {
+      profiles[p]?.add(domain);
     }
   }
 
@@ -149,10 +240,6 @@ export function buildProfileDomains(): Record<ToolProfileId, string[]> {
   }
 
   // Validate tier hierarchy
-  const isSubset = (a: string[], b: string[]) => {
-    const bSet = new Set(b);
-    return a.every((x) => bSet.has(x));
-  };
   if (!isSubset(result['search']!, result['workflow']!)) {
     logger.warn('[registry] Profile hierarchy: search not subset of workflow');
   }
@@ -162,5 +249,3 @@ export function buildProfileDomains(): Record<ToolProfileId, string[]> {
 
   return result as Record<ToolProfileId, string[]>;
 }
-
-

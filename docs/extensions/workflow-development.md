@@ -25,7 +25,7 @@ pnpm run build
 pnpm run check
 ```
 
-**TS-first 编译规约**：源代码硬性绑定于 `workflow.ts`，由编译链路产生的 `dist/workflow.js` 属于可丢弃运行时缓存。引擎将依据后缀层级默认挂载 JS 优化层。
+**TS-first 编译规约**：源码入口保持为 `workflow.ts`，仓库不提交 `dist/workflow.js`。但安装流程会在本地执行 `build`，并优先将已生成的 `dist/workflow.js` 记录为运行时入口，以避免在 `node_modules` 路径下直接加载 TypeScript。
 
 ### 3. Namespace 冲突剥离
 
@@ -35,7 +35,7 @@ pnpm run check
 - `displayName` 与 `description` (映射至 Schema 声明接口)
 - 提取统一的命名空间前缀映射：`workflows.*`
 
-## 节点执行逻辑构建 (Builder Factory)
+## 节点执行逻辑构建
 
 引擎剥夺了过程式编程能力，强制通过抽象层工厂进行拓扑重组。
 
@@ -87,7 +87,7 @@ import {
 
 ## 防重入拓扑规范
 
-- **安全并行读池**：`page_get_local_storage`, `page_get_cookies`, `network_get_requests`, `page_get_all_links`, `console_get_logs`。
+- **安全并行读池**：`page_local_storage(action=get)`, `page_cookies(action=get)`, `network_get_requests`, `page_get_all_links`, `console_get_logs`。
 - **并发锁屏黑名单**：页面导航请求、坐标重定向、表单投毒注入以及一切涉及 Shared State 的关联副作用。必须回归由 `sequenceNode` 挂接的同步等待闭包中。
 
 ## 重新加载机制

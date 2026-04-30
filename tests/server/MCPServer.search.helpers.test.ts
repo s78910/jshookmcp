@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
     tool('browser_launch', 'Launch browser'),
     tool('page_navigate', 'Navigate page'),
     tool('network_get_requests', 'Inspect requests'),
+    tool('hooks_probe', 'Probe hook state'),
   ],
   registrations: [
     { domain: 'browser', tool: tool('browser_launch') },
@@ -26,21 +27,31 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@server/ToolCatalog', () => ({
   allTools: mocks.allTools,
+  getProfileDomains: vi.fn((tier: string) => (tier === 'search' ? ['browser'] : [])),
+  getToolDomain: vi.fn((name: string) => {
+    if (name.startsWith('browser_') || name.startsWith('page_')) return 'browser';
+    if (name.startsWith('network_')) return 'network';
+    if (name.startsWith('hooks_')) return 'hooks';
+    return null;
+  }),
 }));
 
 vi.mock('@server/registry/index', () => ({
   getAllRegistrations: () => mocks.registrations,
+  ensureAllDomainsLoaded: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('@src/constants', () => ({
+vi.mock('@src/constants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/constants')>()),
   SEARCH_WORKFLOW_DOMAIN_BOOST_MULTIPLIER: 1.5,
+  SEARCH_VECTOR_ENABLED: false,
 }));
 
 vi.mock('@server/ToolSearch', () => ({
   ToolSearchEngine: class MockToolSearchEngine {
-    public args: unknown[];
+    public args: any[];
 
-    constructor(...args: unknown[]) {
+    constructor(...args: any[]) {
       this.args = args;
       mocks.engineInstances.push(this);
     }
@@ -55,6 +66,7 @@ import {
   getExtensionDomainMap,
   getSearchEngine,
   getToolByName,
+  getVisibleDomainsForTier,
 } from '@server/MCPServer.search.helpers';
 
 function createCtx(overrides: Record<string, unknown> = {}) {
@@ -63,6 +75,8 @@ function createCtx(overrides: Record<string, unknown> = {}) {
     activatedToolNames: new Set<string>(['network_get_requests']),
     extensionToolsByName: new Map(),
     extensionWorkflowRuntimeById: new Map(),
+    enabledDomains: new Set<string>(),
+    baseTier: 'search',
     config: { search: structuredClone(DEFAULT_SEARCH_CONFIG) },
     ...overrides,
   } as any;
@@ -82,7 +96,28 @@ describe('MCPServer.search.helpers', () => {
     expect(getActiveToolNames(ctx)).toEqual(new Set(['browser_launch', 'network_get_requests']));
   });
 
-  it('builds extension-domain and tool-name lookup maps', () => {
+  it('treats enabled, activated, and extension tool domains as visible', () => {
+    const ctx = createCtx({
+      enabledDomains: new Set(['network']),
+      activatedToolNames: new Set(['hooks_probe']),
+      extensionToolsByName: new Map([
+        [
+          'run_extension_workflow',
+          {
+            name: 'run_extension_workflow',
+            domain: 'workflow',
+            tool: tool('run_extension_workflow', 'Run extension workflow'),
+          },
+        ],
+      ]),
+    });
+
+    expect(getVisibleDomainsForTier(ctx)).toEqual(
+      new Set(['browser', 'network', 'hooks', 'workflow']),
+    );
+  });
+
+  it('builds extension-domain and tool-name lookup maps', async () => {
     const extensionTool = tool('custom_tool', 'Custom workflow tool');
     const ctx = createCtx({
       extensionToolsByName: new Map([
@@ -95,16 +130,16 @@ describe('MCPServer.search.helpers', () => {
       new Map([
         ['custom_tool', 'workflow'],
         ['page_navigate', 'workflow'],
-      ])
+      ]),
     );
 
-    const combined = getCombinedTools(ctx);
+    const combined = await getCombinedTools(ctx);
     expect(combined.find((candidate) => candidate.name === 'custom_tool')).toBe(extensionTool);
     // Extension overwrites the 'page_navigate' key in the internal Map, but the tool object
     // stored there has name 'custom_tool', so no entry with name 'page_navigate' survives.
     expect(combined.find((candidate) => candidate.name === 'page_navigate')).toBeUndefined();
 
-    const byName = getToolByName(ctx);
+    const byName = await getToolByName(ctx);
     expect(byName.get('custom_tool')).toBe(extensionTool);
     expect(byName.get('page_navigate')).toBeUndefined();
   });
@@ -124,7 +159,7 @@ describe('MCPServer.search.helpers', () => {
     expect(buildSearchSignature(ctx)).toBe('2::a_tool:browser|z_tool:workflow');
   });
 
-  it('caches the search engine by signature and applies workflow and extension boosts', () => {
+  it('caches the search engine by signature and applies workflow and extension boosts', async () => {
     const ctx = createCtx({
       extensionToolsByName: new Map([
         [
@@ -139,8 +174,8 @@ describe('MCPServer.search.helpers', () => {
       extensionWorkflowRuntimeById: new Map([['wf-1', {}]]),
     });
 
-    const first = getSearchEngine(ctx);
-    const second = getSearchEngine(ctx);
+    const first = await getSearchEngine(ctx);
+    const second = await getSearchEngine(ctx);
 
     expect(first).toBe(second);
     expect(mocks.engineInstances).toHaveLength(1);
@@ -148,7 +183,7 @@ describe('MCPServer.search.helpers', () => {
       expect.arrayContaining([
         expect.objectContaining({ name: 'browser_launch' }),
         expect.objectContaining({ name: 'custom_tool' }),
-      ])
+      ]),
     );
     expect(mocks.engineInstances[0].args[1]).toEqual(new Map([['custom_tool', 'workflow']]));
     expect(mocks.engineInstances[0].args[2]).toEqual(new Map([['workflow', 1.5]]));
@@ -157,11 +192,11 @@ describe('MCPServer.search.helpers', () => {
         ['custom_tool', 1.12],
         ['run_extension_workflow', 1.35],
         ['list_extension_workflows', 1.25],
-      ])
+      ]),
     );
 
     ctx.extensionWorkflowRuntimeById.set('wf-2', {});
-    const third = getSearchEngine(ctx);
+    const third = await getSearchEngine(ctx);
     expect(third).not.toBe(first);
     expect(mocks.engineInstances).toHaveLength(2);
   });

@@ -1,7 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
 import { bindByDepKey, ensureBrowserCore, toolLookup } from '@server/domains/shared/registry';
 import { workflowToolDefinitions } from '@server/domains/workflow/definitions';
-import { WorkflowHandlers } from '@server/domains/workflow/index';
+import type { WorkflowHandlers } from '@server/domains/workflow/index';
 
 const DOMAIN = 'workflow' as const;
 const DEP_KEY = 'workflowHandlers' as const;
@@ -10,8 +10,9 @@ const t = toolLookup(workflowToolDefinitions);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
-  ensureBrowserCore(ctx);
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { WorkflowHandlers } = await import('@server/domains/workflow/index');
+  await ensureBrowserCore(ctx);
 
   // Delegate via handlerDeps proxy, not direct imports
   const browserHandlers = ctx.handlerDeps.browserHandlers as typeof ctx.browserHandlers;
@@ -34,17 +35,15 @@ const manifest = {
   depKey: DEP_KEY,
   profiles: ['workflow', 'full'],
   ensure,
+
+  workflowRule: {
+    patterns: [/(workflow|extension|run)/i, /(工作流|扩展|运行)/i],
+    priority: 95,
+    tools: ['run_extension_workflow', 'list_extension_workflows'],
+    hint: 'Extension workflow: list available workflows -> run the best matching workflow',
+  },
+
   registrations: [
-    {
-      tool: t('web_api_capture_session'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleWebApiCaptureSession(a)),
-    },
-    {
-      tool: t('register_account_flow'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleRegisterAccountFlow(a)),
-    },
     {
       tool: t('page_script_register'),
       domain: DOMAIN,
@@ -53,7 +52,6 @@ const manifest = {
     { tool: t('page_script_run'), domain: DOMAIN, bind: b((h, a) => h.handlePageScriptRun(a)) },
     { tool: t('api_probe_batch'), domain: DOMAIN, bind: b((h, a) => h.handleApiProbeBatch(a)) },
     { tool: t('js_bundle_search'), domain: DOMAIN, bind: b((h, a) => h.handleJsBundleSearch(a)) },
-    { tool: t('batch_register'), domain: DOMAIN, bind: b((h, a) => h.handleBatchRegister(a)) },
     {
       tool: t('list_extension_workflows'),
       domain: DOMAIN,

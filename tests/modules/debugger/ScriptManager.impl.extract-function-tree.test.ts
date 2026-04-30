@@ -1,45 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const functionTreeMocks = vi.hoisted(() => {
-  const state = {
-    declarations: [] as Array<{
-      name: string;
-      code: string;
-      deps: string[];
-      startLine: number;
-      endLine: number;
-    }>,
-    variables: [] as Array<{
-      name: string;
-      code: string;
-      deps: string[];
-      startLine: number;
-      endLine: number;
-      initType: 'FunctionExpression' | 'ArrowFunctionExpression';
-    }>,
-    parse: vi.fn(),
-    traverse: vi.fn(),
-    generate: vi.fn(),
-    logger: {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      success: vi.fn(),
-    },
-  };
-
-  const createPath = (
-    node: {
-      name: string;
-      code: string;
-      deps: string[];
-      startLine: number;
-      endLine: number;
-      initType?: 'FunctionExpression' | 'ArrowFunctionExpression';
-    },
-    type: 'FunctionDeclaration' | 'VariableDeclarator'
-  ) => ({
+function createPath(
+  node: {
+    name: string;
+    code: string;
+    deps: string[];
+    startLine: number;
+    endLine: number;
+    initType?: 'FunctionExpression' | 'ArrowFunctionExpression';
+  },
+  type: 'FunctionDeclaration' | 'VariableDeclarator',
+) {
+  return {
     node:
       type === 'FunctionDeclaration'
         ? {
@@ -77,7 +49,37 @@ const functionTreeMocks = vi.hoisted(() => {
         });
       });
     },
-  });
+  };
+}
+
+const functionTreeMocks = vi.hoisted(() => {
+  const state = {
+    declarations: [] as Array<{
+      name: string;
+      code: string;
+      deps: string[];
+      startLine: number;
+      endLine: number;
+    }>,
+    variables: [] as Array<{
+      name: string;
+      code: string;
+      deps: string[];
+      startLine: number;
+      endLine: number;
+      initType: 'FunctionExpression' | 'ArrowFunctionExpression';
+    }>,
+    parse: vi.fn(),
+    traverse: vi.fn(),
+    generate: vi.fn(),
+    logger: {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      success: vi.fn(),
+    },
+  };
 
   return { ...state, createPath };
 });
@@ -118,25 +120,25 @@ describe('ScriptManager extract-function-tree internals', () => {
     functionTreeMocks.parse.mockReturnValue({ type: 'File' });
     functionTreeMocks.traverse.mockImplementation(
       (
-        _ast: unknown,
+        _ast: any,
         visitor: {
           FunctionDeclaration?: (path: ReturnType<typeof functionTreeMocks.createPath>) => void;
           VariableDeclarator?: (path: ReturnType<typeof functionTreeMocks.createPath>) => void;
-        }
+        },
       ) => {
         functionTreeMocks.declarations.forEach((item) =>
-          visitor.FunctionDeclaration?.(functionTreeMocks.createPath(item, 'FunctionDeclaration'))
+          visitor.FunctionDeclaration?.(functionTreeMocks.createPath(item, 'FunctionDeclaration')),
         );
         functionTreeMocks.variables.forEach((item) =>
-          visitor.VariableDeclarator?.(functionTreeMocks.createPath(item, 'VariableDeclarator'))
+          visitor.VariableDeclarator?.(functionTreeMocks.createPath(item, 'VariableDeclarator')),
         );
-      }
+      },
     );
     functionTreeMocks.generate.mockImplementation(
       (node: { mockCode?: string }, options?: { comments?: boolean }) => ({
         code: node.mockCode ?? '',
         comments: options?.comments,
-      })
+      }),
     );
   });
 
@@ -146,7 +148,7 @@ describe('ScriptManager extract-function-tree internals', () => {
     };
 
     await expect(extractFunctionTreeCore(ctx, 'script-1', 'main')).rejects.toThrow(
-      'Script not found: script-1'
+      'Script not found: script-1',
     );
   });
 
@@ -161,7 +163,7 @@ describe('ScriptManager extract-function-tree internals', () => {
     });
 
     await expect(extractFunctionTreeCore(ctx, 'script-1', 'main')).rejects.toThrow(
-      'Failed to parse script script-1: Unexpected token'
+      'Failed to parse script script-1: Unexpected token',
     );
   });
 
@@ -213,7 +215,7 @@ describe('ScriptManager extract-function-tree internals', () => {
     expect(result.mainFunction).toBe('main');
     expect(result.extractedCount).toBe(4);
     expect(result.functions.map((func) => func.name)).toEqual(
-      expect.arrayContaining(['main', 'helper', 'leaf', 'util'])
+      expect.arrayContaining(['main', 'helper', 'leaf', 'util']),
     );
     expect(result.callGraph).toEqual({
       main: ['helper', 'util'],
@@ -225,10 +227,10 @@ describe('ScriptManager extract-function-tree internals', () => {
     expect(result.code).toContain('const util = () => 1;');
     expect(functionTreeMocks.generate).toHaveBeenCalledWith(
       expect.any(Object),
-      expect.objectContaining({ comments: false })
+      expect.objectContaining({ comments: false }),
     );
     expect(functionTreeMocks.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining('extractFunctionTree: main - extracted 4 functions')
+      expect.stringContaining('extractFunctionTree: main - extracted 4 functions'),
     );
   });
 
@@ -269,7 +271,7 @@ describe('ScriptManager extract-function-tree internals', () => {
 
     expect(result.functions.map((func) => func.name)).toEqual(['main', 'helper']);
     expect(functionTreeMocks.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Extracted code size')
+      expect.stringContaining('Extracted code size'),
     );
   });
 });

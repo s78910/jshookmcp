@@ -1,23 +1,24 @@
+import type { BrowserStatusResponse } from '@tests/server/domains/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { IndexedDBDumpHandlers } from '@server/domains/browser/handlers/indexeddb-dump';
 
-type EvaluateFn = (pageFunction: unknown, ...args: unknown[]) => Promise<unknown>;
-type GetActivePageFn = () => Promise<unknown>;
+type EvaluateFn = (pageFunction: any, ...args: any[]) => Promise<any>;
+type GetActivePageFn = () => Promise<any>;
 type IndexedDBDumpResponse = Awaited<ReturnType<IndexedDBDumpHandlers['handleIndexedDBDump']>>;
 
 function getTextContent(response: IndexedDBDumpResponse): string {
   const first = response.content[0];
   expect(first).toBeDefined();
   expect(first?.type).toBe('text');
-  if (!first || first.type !== 'text') {
+  if (first?.type !== 'text') {
     throw new Error('Expected text tool response');
   }
   return first.text;
 }
 
-function parseJson(response: IndexedDBDumpResponse): any {
-  return JSON.parse(getTextContent(response));
+function parseJson<T>(response: IndexedDBDumpResponse): T {
+  return JSON.parse(getTextContent(response)) as T;
 }
 
 describe('IndexedDBDumpHandlers — coverage expansion', () => {
@@ -58,7 +59,9 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         myDb: { users: [{ id: 1 }] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({ database: 'myDb' }));
+      const body = parseJson<BrowserStatusResponse>(
+        await handlers.handleIndexedDBDump({ database: 'myDb' }),
+      );
 
       expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
         database: 'myDb',
@@ -73,7 +76,9 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         myDb: { targetStore: [{ key: 'val' }] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({ store: 'targetStore' }));
+      const body = parseJson<BrowserStatusResponse>(
+        await handlers.handleIndexedDBDump({ store: 'targetStore' }),
+      );
 
       expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
         database: '',
@@ -88,7 +93,9 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         db: { store: [{ a: 1 }, { a: 2 }] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({ maxRecords: 2 }));
+      const body = parseJson<BrowserStatusResponse>(
+        await handlers.handleIndexedDBDump({ maxRecords: 2 }),
+      );
 
       expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
         database: '',
@@ -126,9 +133,9 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         db2: { logs: [{ msg: 'hello' }] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
-      expect(Object.keys(body)).toEqual(['db1', 'db2']);
+      expect(Object.keys(body)).toEqual(['success', 'db1', 'db2']);
       expect(body.db1.users).toHaveLength(1);
       expect(body.db1.settings).toHaveLength(1);
       expect(body.db2.logs).toHaveLength(1);
@@ -141,9 +148,9 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
     it('returns empty object when no databases exist', async () => {
       page.evaluate.mockResolvedValueOnce({});
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
-      expect(body).toEqual({});
+      expect(body).toEqual({ success: true });
     });
 
     it('returns database with empty stores', async () => {
@@ -151,7 +158,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         emptyDb: {},
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.emptyDb).toEqual({});
     });
@@ -161,7 +168,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         db: { emptyStore: [] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.db.emptyStore).toEqual([]);
     });
@@ -173,7 +180,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
     it('returns error payload when page.evaluate rejects with Error', async () => {
       page.evaluate.mockRejectedValueOnce(new Error('IndexedDB not available'));
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('IndexedDB not available');
@@ -182,7 +189,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
     it('returns error payload when page.evaluate rejects with string', async () => {
       page.evaluate.mockRejectedValueOnce('string error');
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('string error');
@@ -191,7 +198,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
     it('returns error payload when page.evaluate rejects with number', async () => {
       page.evaluate.mockRejectedValueOnce(42);
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('42');
@@ -200,7 +207,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
     it('returns error payload when page.evaluate rejects with null', async () => {
       page.evaluate.mockRejectedValueOnce(null);
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('null');
@@ -210,7 +217,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
       getActivePage.mockRejectedValueOnce(new Error('no browser'));
       handlers = new IndexedDBDumpHandlers({ getActivePage });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('no browser');
@@ -220,7 +227,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
       getActivePage.mockRejectedValueOnce('connection lost');
       handlers = new IndexedDBDumpHandlers({ getActivePage });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('connection lost');
@@ -236,7 +243,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         goodDb: { store1: [{ a: 1 }] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.failedDb.__error__).toEqual(['failed to open']);
       expect(body.goodDb.store1).toEqual([{ a: 1 }]);
@@ -250,7 +257,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.db.goodStore).toEqual([{ key: 'val' }]);
       expect(body.db.badStore).toEqual(['__error reading store__']);
@@ -275,7 +282,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.appDb.config[0].settings.theme.primary).toBe('#000');
       expect(body.appDb.config[0].settings.layout.sidebar).toBe(true);
@@ -295,7 +302,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.testDb.mixed[0].strings).toEqual(['a', 'b']);
       expect(body.testDb.mixed[0].numbers).toEqual([1, 2, 3]);
@@ -308,7 +315,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         largeDb: { bigStore: records },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(body.largeDb.bigStore).toHaveLength(100);
       expect(body.largeDb.bigStore[99].id).toBe(99);
@@ -404,7 +411,9 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         db: { store: [{ only: 'one' }] },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({ maxRecords: 1 }));
+      const body = parseJson<BrowserStatusResponse>(
+        await handlers.handleIndexedDBDump({ maxRecords: 1 }),
+      );
 
       expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
         database: '',
@@ -442,7 +451,7 @@ describe('IndexedDBDumpHandlers — coverage expansion', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleIndexedDBDump({}));
+      const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
       expect(Object.keys(body.appDb)).toEqual(['users', 'sessions', 'settings']);
       expect(body.appDb.users).toHaveLength(2);

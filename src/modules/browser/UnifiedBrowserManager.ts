@@ -87,7 +87,7 @@ export interface IBrowserManager {
   newPage(): Promise<PuppeteerPage | CamoufoxPageLike>;
   goto(
     url: string,
-    page?: PuppeteerPage | CamoufoxPageLike
+    page?: PuppeteerPage | CamoufoxPageLike,
   ): Promise<PuppeteerPage | CamoufoxPageLike>;
   close(): Promise<void>;
   getBrowser(): PuppeteerBrowser | CamoufoxBrowserLike | null;
@@ -120,6 +120,7 @@ export class UnifiedBrowserManager implements IBrowserManager {
   private chromeLaunchPromise?: Promise<PuppeteerBrowser>;
   private camoufoxLaunchPromise?: Promise<CamoufoxBrowserLike>;
   private isClosing = false;
+  private _chromeIsAttached = false;
 
   constructor(config: UnifiedBrowserConfig = {}) {
     this.config = config;
@@ -127,9 +128,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     this.browserDiscovery = new BrowserDiscovery();
   }
 
-  /**
-   * Launch browser with configured driver
-   */
   async launch(): Promise<PuppeteerBrowser | CamoufoxBrowserLike> {
     if (this.driver === 'camoufox') {
       return this.launchCamoufox();
@@ -137,9 +135,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return this.launchChrome();
   }
 
-  /**
-   * Launch Chrome browser
-   */
   private async launchChrome(): Promise<PuppeteerBrowser> {
     // Prevent launch during shutdown
     if (this.isClosing) {
@@ -202,9 +197,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return browser;
   }
 
-  /**
-   * Launch Camoufox browser
-   */
   private async launchCamoufox(): Promise<CamoufoxBrowserLike> {
     // Prevent launch during shutdown
     if (this.isClosing) {
@@ -233,7 +225,7 @@ export class UnifiedBrowserManager implements IBrowserManager {
   private async doLaunchCamoufox(): Promise<CamoufoxBrowserLike> {
     const headless = this.normalizeCamoufoxHeadless();
     logger.info(
-      `Launching Camoufox (Firefox) [os=${this.config.os ?? 'windows'}, headless=${headless}]...`
+      `Launching Camoufox (Firefox) [os=${this.config.os ?? 'windows'}, headless=${headless}]...`,
     );
 
     const camoufoxConfig: CamoufoxBrowserConfig = {
@@ -253,9 +245,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return browser;
   }
 
-  /**
-   * Connect to existing browser
-   */
   async connect(wsEndpoint: string): Promise<PuppeteerBrowser | CamoufoxBrowserLike> {
     if (this.driver === 'camoufox') {
       return this.connectCamoufox(wsEndpoint);
@@ -263,29 +252,25 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return this.connectChrome(wsEndpoint);
   }
 
-  /**
-   * Connect to existing Chrome browser via WebSocket
-   */
   private async connectChrome(wsEndpoint: string): Promise<PuppeteerBrowser> {
     logger.info(`Connecting to Chrome browser: ${wsEndpoint}`);
 
     const puppeteer = await import('rebrowser-puppeteer-core');
     const browser = await puppeteer.connect({
       browserWSEndpoint: wsEndpoint,
+      defaultViewport: null,
     });
 
     // Create a minimal manager wrapper for the connected browser
     this.chromeManager = new BrowserModeManager({}, {});
     // Access internal browser reference
     Reflect.set(this.chromeManager as object, 'browser', browser);
+    this._chromeIsAttached = true;
 
     logger.info('Connected to Chrome browser successfully');
     return browser;
   }
 
-  /**
-   * Connect to existing Camoufox browser via WebSocket
-   */
   private async connectCamoufox(wsEndpoint: string): Promise<CamoufoxBrowserLike> {
     logger.info(`Connecting to Camoufox browser: ${wsEndpoint}`);
 
@@ -296,9 +281,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return browser;
   }
 
-  /**
-   * Create a new page
-   */
   async newPage(): Promise<PuppeteerPage | CamoufoxPageLike> {
     if (this.driver === 'camoufox') {
       if (!this.camoufoxManager) {
@@ -315,12 +297,9 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return this.activePage;
   }
 
-  /**
-   * Navigate to URL
-   */
   async goto(
     url: string,
-    page?: PuppeteerPage | CamoufoxPageLike
+    page?: PuppeteerPage | CamoufoxPageLike,
   ): Promise<PuppeteerPage | CamoufoxPageLike> {
     const targetPage = page ?? this.activePage;
 
@@ -337,9 +316,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return this.chromeManager!.goto(url, targetPage as PuppeteerPage);
   }
 
-  /**
-   * Close browser
-   */
   async close(): Promise<void> {
     // Set closing flag to prevent new launches
     this.isClosing = true;
@@ -353,6 +329,8 @@ export class UnifiedBrowserManager implements IBrowserManager {
       this.chromeLaunchPromise = undefined;
       this.camoufoxLaunchPromise = undefined;
       this.activePage = null;
+      const chromeWasAttached = this._chromeIsAttached;
+      this._chromeIsAttached = false;
 
       const closeTasks: Promise<void>[] = [];
 
@@ -360,16 +338,28 @@ export class UnifiedBrowserManager implements IBrowserManager {
         closeTasks.push(
           camoufoxManager.close().then(() => {
             logger.info('Camoufox browser closed');
-          })
+          }),
         );
       }
 
       if (chromeManager) {
-        closeTasks.push(
-          chromeManager.close().then(() => {
-            logger.info('Chrome browser closed');
-          })
-        );
+        if (chromeWasAttached) {
+          // Attached browsers: disconnect only, do not kill the external process
+          const browser = chromeManager.getBrowser();
+          if (browser) {
+            closeTasks.push(
+              browser.disconnect().then(() => {
+                logger.info('Detached from Chrome browser (not killed)');
+              }),
+            );
+          }
+        } else {
+          closeTasks.push(
+            chromeManager.close().then(() => {
+              logger.info('Chrome browser closed');
+            }),
+          );
+        }
       }
 
       await Promise.all(closeTasks);
@@ -379,9 +369,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     }
   }
 
-  /**
-   * Get browser instance
-   */
   getBrowser(): PuppeteerBrowser | CamoufoxBrowserLike | null {
     if (this.driver === 'camoufox') {
       return this.camoufoxManager?.getBrowser() ?? null;
@@ -389,30 +376,18 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return this.chromeManager?.getBrowser() ?? null;
   }
 
-  /**
-   * Get active page
-   */
   getActivePage(): PuppeteerPage | CamoufoxPageLike | null {
     return this.activePage;
   }
 
-  /**
-   * Get current driver
-   */
   getDriver(): BrowserDriver {
     return this.driver;
   }
 
-  /**
-   * Set driver (will require restart)
-   */
   setDriver(driver: BrowserDriver): void {
     this.driver = driver;
   }
 
-  /**
-   * Get browser status
-   */
   getStatus(): BrowserStatus {
     const browser = this.getBrowser();
     const running = browser !== null && browser.isConnected();
@@ -426,18 +401,12 @@ export class UnifiedBrowserManager implements IBrowserManager {
     };
   }
 
-  /**
-   * Discover running browsers
-   */
   async discoverBrowsers(): Promise<BrowserInfo[]> {
     return this.browserDiscovery.discoverBrowsers();
   }
 
-  /**
-   * Find existing Chrome browser with debug port
-   */
   async findChromeWithDebugPort(
-    preferredPorts: number[] = [9222, 9229, 9333]
+    preferredPorts: number[] = [9222, 9229, 9333],
   ): Promise<BrowserInfo | null> {
     const browsers = await this.discoverBrowsers();
     const chromeBrowsers = browsers.filter((b) => b.type === 'chrome' || b.type === 'edge');
@@ -451,15 +420,12 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return null;
   }
 
-  /**
-   * Attach to existing Chrome browser if found
-   */
   async attachToExistingChrome(
-    preferredPorts: number[] = [9222, 9229, 9333]
+    preferredPorts: number[] = [9222, 9229, 9333],
   ): Promise<PuppeteerBrowser | null> {
     const browserInfo = await this.findChromeWithDebugPort(preferredPorts);
 
-    if (!browserInfo || !browserInfo.debugPort) {
+    if (!browserInfo?.debugPort) {
       logger.info('No existing Chrome browser with debug port found');
       return null;
     }
@@ -519,9 +485,6 @@ export class UnifiedBrowserManager implements IBrowserManager {
     return headless ?? true;
   }
 
-  /**
-   * Get boolean headless value for mode config
-   */
   private getHeadlessBoolean(): boolean {
     const headless = this.config.headless;
     if (headless === 'shell' || headless === 'virtual') {

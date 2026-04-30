@@ -1,12 +1,10 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   handleCaptchaVisionSolve,
   handleWidgetChallengeSolve,
 } from '@server/domains/browser/handlers/captcha-solver';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 function createMockCollector(hasPage = true) {
   const page = hasPage
@@ -21,14 +19,18 @@ function createMockCollector(hasPage = true) {
 }
 
 describe('handleCaptchaVisionSolve', () => {
-  it('throws when no active page', async () => {
+  it('returns failure when no active page', async () => {
     const collector = createMockCollector(false);
-    await expect(handleCaptchaVisionSolve({}, collector)).rejects.toThrow(/No active page/);
+    const result = parseJson<BrowserStatusResponse>(await handleCaptchaVisionSolve({}, collector));
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No active page/);
   });
 
   it('returns manual mode instruction when mode is manual', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(await handleCaptchaVisionSolve({ mode: 'manual' }, collector));
+    const result = parseJson<BrowserStatusResponse>(
+      await handleCaptchaVisionSolve({ mode: 'manual' }, collector),
+    );
     expect(result.success).toBe(true);
     expect(result.mode).toBe('manual');
     expect(result.instruction).toBeDefined();
@@ -36,15 +38,15 @@ describe('handleCaptchaVisionSolve', () => {
 
   it('rejects an unimplemented legacy external service override', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'external_service',
           provider: 'anticaptcha',
           apiKey: 'test-key',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('implemented');
@@ -52,15 +54,15 @@ describe('handleCaptchaVisionSolve', () => {
 
   it('rejects another unimplemented legacy external service override', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'external_service',
           provider: 'capsolver',
           apiKey: 'test-key',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('implemented');
@@ -68,15 +70,15 @@ describe('handleCaptchaVisionSolve', () => {
 
   it('rejects unsupported external service overrides', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'external_service',
           provider: 'unknown_provider',
           apiKey: 'test-key',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('Unsupported');
@@ -88,13 +90,13 @@ describe('handleCaptchaVisionSolve', () => {
     const origKey = process.env.CAPTCHA_API_KEY;
     delete process.env.CAPTCHA_API_KEY;
 
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'external_service',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('credentials');
@@ -105,14 +107,14 @@ describe('handleCaptchaVisionSolve', () => {
   it('clamps timeoutMs to [5000, 600000]', async () => {
     const collector = createMockCollector(true);
     // Manual mode so we can inspect params without needing API
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'manual',
           timeoutMs: 1,
         },
-        collector
-      )
+        collector,
+      ),
     );
     // Manual mode doesn't expose timeoutMs in response, but no error means it clamped properly
     expect(result.success).toBe(true);
@@ -120,37 +122,41 @@ describe('handleCaptchaVisionSolve', () => {
 
   it('clamps maxRetries to [0, 5]', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'manual',
           maxRetries: 100,
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(true);
   });
 
   it('auto-detects captcha type from page', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleCaptchaVisionSolve(
         {
           mode: 'manual',
           typeHint: 'auto',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.challengeType).toBeDefined();
   });
 });
 
 describe('handleWidgetChallengeSolve', () => {
-  it('throws when no active page', async () => {
+  it('returns failure when no active page', async () => {
     const collector = createMockCollector(false);
-    await expect(handleWidgetChallengeSolve({}, collector)).rejects.toThrow(/No active page/);
+    const result = parseJson<BrowserStatusResponse>(
+      await handleWidgetChallengeSolve({}, collector),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No active page/);
   });
 
   it('requires siteKey detection or manual input', async () => {
@@ -161,8 +167,8 @@ describe('handleWidgetChallengeSolve', () => {
       url: () => 'http://test.local',
     });
 
-    const result = parseJson(
-      await handleWidgetChallengeSolve({ mode: 'external_service' }, collector)
+    const result = parseJson<BrowserStatusResponse>(
+      await handleWidgetChallengeSolve({ mode: 'external_service' }, collector),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('siteKey');
@@ -175,14 +181,14 @@ describe('handleWidgetChallengeSolve', () => {
       url: () => 'http://test.local',
     });
 
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleWidgetChallengeSolve(
         {
           mode: 'manual',
           siteKey: 'test-key',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(true);
     expect(result.mode).toBe('manual');
@@ -191,15 +197,15 @@ describe('handleWidgetChallengeSolve', () => {
 
   it('rejects unimplemented external service overrides', async () => {
     const collector = createMockCollector(true);
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleWidgetChallengeSolve(
         {
           mode: 'external_service',
           provider: 'anticaptcha',
           siteKey: 'test-key',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('implemented');
@@ -210,14 +216,14 @@ describe('handleWidgetChallengeSolve', () => {
     const origKey = process.env.CAPTCHA_API_KEY;
     delete process.env.CAPTCHA_API_KEY;
 
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleWidgetChallengeSolve(
         {
           mode: 'external_service',
           siteKey: 'test-key',
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(false);
     expect(result.error).toContain('credentials');
@@ -228,15 +234,15 @@ describe('handleWidgetChallengeSolve', () => {
   it('clamps timeoutMs to [5000, 600000]', async () => {
     const collector = createMockCollector(true);
     // Manual mode to avoid network calls
-    const result = parseJson(
+    const result = parseJson<BrowserStatusResponse>(
       await handleWidgetChallengeSolve(
         {
           mode: 'manual',
           siteKey: 'test-key',
           timeoutMs: 1,
         },
-        collector
-      )
+        collector,
+      ),
     );
     expect(result.success).toBe(true);
   });

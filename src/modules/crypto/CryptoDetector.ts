@@ -7,10 +7,7 @@ import type {
   CryptoAlgorithm,
   CryptoLibrary,
 } from '@internal-types/index';
-import { LLMService } from '@services/LLMService';
-import { generateCryptoDetectionPrompt } from '@services/prompts/crypto';
 import { logger } from '@utils/logger';
-import { CRYPTO_DETECT_LLM_MAX_TOKENS } from '@src/constants';
 import { CryptoRulesManager } from '@modules/crypto/CryptoRules';
 
 export interface SecurityIssue {
@@ -33,11 +30,9 @@ export interface CryptoStrength {
 }
 
 export class CryptoDetector {
-  private llm: LLMService;
   private rulesManager: CryptoRulesManager;
 
-  constructor(llm: LLMService, customRules?: CryptoRulesManager) {
-    this.llm = llm;
+  constructor(_llm?: any, customRules?: CryptoRulesManager) {
     this.rulesManager = customRules || new CryptoRulesManager();
   }
 
@@ -50,7 +45,7 @@ export class CryptoDetector {
   }
 
   async detect(
-    options: DetectCryptoOptions
+    options: DetectCryptoOptions,
   ): Promise<DetectCryptoResult & { securityIssues?: SecurityIssue[]; strength?: CryptoStrength }> {
     logger.info('Starting crypto detection...');
     const startTime = Date.now();
@@ -73,12 +68,6 @@ export class CryptoDetector {
         this.mergeParameters(algorithms, astResults.parameters);
       }
 
-      const useAI = (options as unknown as { useAI?: boolean }).useAI !== false;
-      if (useAI) {
-        const aiResults = await this.detectByAI(code);
-        algorithms.push(...aiResults);
-      }
-
       const mergedAlgorithms = this.mergeResults(algorithms);
 
       const securityResults = this.evaluateSecurity(mergedAlgorithms, code);
@@ -93,7 +82,7 @@ export class CryptoDetector {
           : 0;
 
       logger.info(
-        `Crypto detection completed in ${Date.now() - startTime}ms, found ${mergedAlgorithms.length} algorithms`
+        `Crypto detection completed in ${Date.now() - startTime}ms, found ${mergedAlgorithms.length} algorithms`,
       );
 
       return { algorithms: mergedAlgorithms, libraries, confidence, securityIssues, strength };
@@ -131,37 +120,6 @@ export class CryptoDetector {
 
   private escapeRegex(str: string): string {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  private async detectByAI(code: string): Promise<CryptoAlgorithm[]> {
-    try {
-      const messages = generateCryptoDetectionPrompt(code);
-      const response = await this.llm.chat(messages, {
-        temperature: 0.2,
-        maxTokens: CRYPTO_DETECT_LLM_MAX_TOKENS,
-      });
-
-      const jsonMatch = response.content.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return [];
-
-      const result = JSON.parse(jsonMatch[0]) as { algorithms?: unknown[] };
-      if (!Array.isArray(result.algorithms)) return [];
-
-      return result.algorithms.map((algo: unknown) => {
-        const a = algo as Record<string, unknown>;
-        return {
-          name: (a.name as string) || 'Unknown',
-          type: (a.type as CryptoAlgorithm['type']) || 'other',
-          confidence: (a.confidence as number) || 0.5,
-          location: { file: 'current', line: 0 },
-          parameters: a.parameters as CryptoAlgorithm['parameters'],
-          usage: (a.usage as string) || '',
-        };
-      });
-    } catch (error) {
-      logger.warn('AI crypto detection failed', error);
-      return [];
-    }
   }
 
   private detectLibraries(code: string): CryptoLibrary[] {
@@ -298,7 +256,7 @@ export class CryptoDetector {
 
   private mergeParameters(
     algorithms: CryptoAlgorithm[],
-    parameters: Map<string, Record<string, unknown>>
+    parameters: Map<string, Record<string, unknown>>,
   ): void {
     algorithms.forEach((algo) => {
       const params = parameters.get(algo.name);
@@ -338,7 +296,7 @@ export class CryptoDetector {
 
   private analyzeStrength(
     _algorithms: CryptoAlgorithm[],
-    securityIssues: SecurityIssue[]
+    securityIssues: SecurityIssue[],
   ): CryptoStrength {
     let algorithmScore = 100;
     let keySizeScore = 100;
@@ -395,7 +353,7 @@ export class CryptoDetector {
       }
     });
 
-    return Array.from(merged.values()).sort((a, b) => b.confidence - a.confidence);
+    return Array.from(merged.values()).toSorted((a, b) => b.confidence - a.confidence);
   }
 
   private findLineNumber(code: string, keyword: string): number {
@@ -409,7 +367,7 @@ export class CryptoDetector {
 
 function extractCryptoParameters(
   node: t.CallExpression,
-  parameters: Map<string, Record<string, unknown>>
+  parameters: Map<string, Record<string, unknown>>,
 ): void {
   if (!t.isMemberExpression(node.callee)) return;
 

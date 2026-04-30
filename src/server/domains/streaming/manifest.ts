@@ -1,7 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
 import { bindByDepKey, ensureBrowserCore, toolLookup } from '@server/domains/shared/registry';
 import { streamingTools } from '@server/domains/streaming/definitions';
-import { StreamingToolHandlers } from '@server/domains/streaming/index';
+import type { StreamingToolHandlers } from '@server/domains/streaming/index';
 
 const DOMAIN = 'streaming' as const;
 const DEP_KEY = 'streamingHandlers' as const;
@@ -10,8 +10,10 @@ const t = toolLookup(streamingTools);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
-  ensureBrowserCore(ctx);
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { StreamingToolHandlers } = await import('@server/domains/streaming/index');
+
+  await ensureBrowserCore(ctx);
   if (!ctx.streamingHandlers) ctx.streamingHandlers = new StreamingToolHandlers(ctx.collector!);
   return ctx.streamingHandlers;
 }
@@ -24,12 +26,7 @@ const manifest = {
   profiles: ['workflow', 'full'],
   ensure,
   registrations: [
-    { tool: t('ws_monitor_enable'), domain: DOMAIN, bind: b((h, a) => h.handleWsMonitorEnable(a)) },
-    {
-      tool: t('ws_monitor_disable'),
-      domain: DOMAIN,
-      bind: b((h, a) => h.handleWsMonitorDisable(a)),
-    },
+    { tool: t('ws_monitor'), domain: DOMAIN, bind: b((h, a) => h.handleWsMonitorDispatch(a)) },
     { tool: t('ws_get_frames'), domain: DOMAIN, bind: b((h, a) => h.handleWsGetFrames(a)) },
     {
       tool: t('ws_get_connections'),

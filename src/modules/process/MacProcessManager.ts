@@ -13,8 +13,11 @@ import {
   DEFAULT_DEBUG_PORT,
   PROCESS_LIST_MAX_BUFFER_BYTES,
   PROCESS_LAUNCH_WAIT_MS,
+  EXTERNAL_TOOL_PROBE_TIMEOUT_MS,
+  NATIVE_ADMIN_CHECK_TIMEOUT_MS,
 } from '@src/constants';
 import { ScriptLoader } from '@native/ScriptLoader';
+import { ProcessRegistry } from '@utils/ProcessRegistry';
 import type { ProcessInfo, WindowInfo } from '@modules/process/ProcessManager';
 
 const execAsync = promisify(exec);
@@ -34,7 +37,7 @@ function safePid(pid: number): number {
 
 function renderScriptTemplate(
   template: string,
-  placeholders: Record<string, string | number>
+  placeholders: Record<string, string | number>,
 ): string {
   let output = template;
   for (const [key, value] of Object.entries(placeholders)) {
@@ -73,7 +76,7 @@ export class MacProcessManager {
       const safePattern = sanitizePattern(pattern);
       const { stdout } = await execAsync(
         `ps aux | grep -i "${safePattern}" | grep -v grep || true`,
-        { maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES }
+        { maxBuffer: PROCESS_LIST_MAX_BUFFER_BYTES },
       );
 
       const processes: ProcessInfo[] = [];
@@ -116,7 +119,7 @@ export class MacProcessManager {
     try {
       pid = safePid(pid);
       const { stdout } = await execAsync(
-        `ps -p ${pid} -o pid,ppid,pcpu,pmem,comm,args 2>/dev/null || echo ""`
+        `ps -p ${pid} -o pid,ppid,pcpu,pmem,comm,args 2>/dev/null || echo ""`,
       );
 
       const lines = stdout
@@ -202,7 +205,7 @@ export class MacProcessManager {
 
       const { stdout } = await execAsync(
         `osascript -e '${appleScript.replace(/'/g, "'\"'\"'")}' 2>/dev/null || echo "[]"`,
-        { timeout: 5000 }
+        { timeout: EXTERNAL_TOOL_PROBE_TIMEOUT_MS },
       );
 
       const windows: WindowInfo[] = [];
@@ -244,7 +247,7 @@ export class MacProcessManager {
       });
 
       const { stdout } = await execFileAsync('python3', ['-c', pythonScript], {
-        timeout: 10_000,
+        timeout: NATIVE_ADMIN_CHECK_TIMEOUT_MS * 2,
         windowsHide: true,
       });
 
@@ -294,7 +297,7 @@ export class MacProcessManager {
 
       // Batch-fetch detailed info to avoid N+1 sequential exec calls
       const detailedInfos = await Promise.all(
-        processes.map((proc) => this.getProcessByPid(proc.pid))
+        processes.map((proc) => this.getProcessByPid(proc.pid)),
       );
 
       for (let i = 0; i < processes.length; i++) {
@@ -375,7 +378,7 @@ export class MacProcessManager {
 
       if (commandLine) {
         const match = commandLine.match(/--remote-debugging-port=(\d+)/);
-        if (match && match[1]) {
+        if (match?.[1]) {
           return parseInt(match[1], 10);
         }
       }
@@ -383,7 +386,7 @@ export class MacProcessManager {
       // Check listening ports using lsof
       const { stdout } = await execAsync(
         `lsof -Pan -p ${pid} -i 2>/dev/null | grep LISTEN || true`,
-        { maxBuffer: 1024 * 1024 }
+        { maxBuffer: 1024 * 1024 },
       );
 
       // Common debug ports
@@ -406,7 +409,7 @@ export class MacProcessManager {
   async launchWithDebug(
     executablePath: string,
     debugPort: number = DEFAULT_DEBUG_PORT,
-    args: string[] = []
+    args: string[] = [],
   ): Promise<ProcessInfo | null> {
     try {
       const debugArgs = [`--remote-debugging-port=${debugPort}`, ...args];
@@ -417,6 +420,7 @@ export class MacProcessManager {
       });
 
       child.unref();
+      ProcessRegistry.register(child);
 
       await new Promise((resolve) => setTimeout(resolve, PROCESS_LAUNCH_WAIT_MS));
 

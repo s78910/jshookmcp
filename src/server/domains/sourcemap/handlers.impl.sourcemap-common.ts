@@ -71,8 +71,13 @@ export class SourcemapToolHandlersCommon extends SourcemapToolHandlersParseBase 
   }
 
   protected sanitizePathSegment(segment: string): string {
-    const sanitized = segment
-      .replace(/[<>:"|?*\u0000-\u001F]/g, '_')
+    const sanitized = Array.from(segment, (char) => {
+      const codePoint = char.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 0x1f || '<>:"|?*'.includes(char))
+        ? '_'
+        : char;
+    })
+      .join('')
       .replace(/\s+/g, ' ')
       .trim();
 
@@ -137,7 +142,7 @@ export class SourcemapToolHandlersCommon extends SourcemapToolHandlersParseBase 
   protected async trySend(
     session: CdpSessionLike,
     method: string,
-    params?: JsonRecord
+    params?: JsonRecord,
   ): Promise<void> {
     try {
       await session.send(method, params);

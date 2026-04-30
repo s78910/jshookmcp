@@ -12,6 +12,7 @@
  */
 
 import { Worker } from 'node:worker_threads';
+import { ProcessRegistry } from '@utils/ProcessRegistry';
 import { logger } from '@utils/logger';
 import { cpuLimit } from '@utils/concurrency';
 import {
@@ -108,8 +109,15 @@ export class ExecutionSandbox {
 
     return new Promise<SandboxExecuteResult>((resolve) => {
       let settled = false;
-      // eslint-disable-next-line prefer-const -- reassigned in timeout handler below
-      let terminationTimeout: ReturnType<typeof setTimeout> | undefined;
+      const terminationTimeout = setTimeout(() => {
+        if (!settled) {
+          void worker.terminate();
+          logger.warn(
+            `[ExecutionSandbox] Worker terminated after ${timeoutMs + SANDBOX_TERMINATE_GRACE_MS}ms`,
+          );
+          finish({ ok: false, error: 'Execution timed out (worker terminated)', timedOut: true });
+        }
+      }, timeoutMs + SANDBOX_TERMINATE_GRACE_MS);
 
       const workerOptions: ConstructorParameters<typeof Worker>[1] & { type?: 'module' } = {
         eval: true,
@@ -126,6 +134,8 @@ export class ExecutionSandbox {
       workerOptions.type = 'module';
 
       const worker = new Worker(WORKER_SCRIPT, workerOptions);
+      if (typeof worker.unref === 'function') worker.unref();
+      ProcessRegistry.register(worker);
 
       const finish = (result: Omit<SandboxExecuteResult, 'durationMs'>) => {
         if (settled) return;
@@ -134,17 +144,6 @@ export class ExecutionSandbox {
         resolve({ ...result, durationMs: Date.now() - startTime });
       };
 
-      // Hard timeout: terminate worker if it doesn't respond
-      terminationTimeout = setTimeout(() => {
-        if (!settled) {
-          worker.terminate();
-          logger.warn(
-            `[ExecutionSandbox] Worker terminated after ${timeoutMs + SANDBOX_TERMINATE_GRACE_MS}ms`
-          );
-          finish({ ok: false, error: 'Execution timed out (worker terminated)', timedOut: true });
-        }
-      }, timeoutMs + SANDBOX_TERMINATE_GRACE_MS);
-
       worker.on('message', (msg: SandboxWorkerMessage) => {
         finish({
           ok: msg.ok,
@@ -152,7 +151,7 @@ export class ExecutionSandbox {
           error: msg.error,
           timedOut: msg.timedOut || false,
         });
-        worker.terminate();
+        void worker.terminate();
       });
 
       worker.on('error', (err: Error) => {

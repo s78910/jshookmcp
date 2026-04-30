@@ -3,8 +3,10 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { findBrowserExecutable } from '@utils/browserExecutable';
 
 const TARGET = 'https://vmoranv.github.io/jshookmcp/';
+const DEFAULT_BROWSER_EXECUTABLE = findBrowserExecutable() ?? '';
 
 // All 210 E2E tools in order
 const TOOLS = [
@@ -25,7 +27,6 @@ const TOOLS = [
   ['browser_status', {}],
   ['browser_list_tabs', {}],
   ['browser_select_tab', { index: 0 }],
-  ['page_get_performance', {}],
   ['dom_query_selector', { selector: 'body' }],
   ['dom_query_all', { selector: 'div' }],
   ['dom_get_structure', { selector: 'body', depth: 2 }],
@@ -49,11 +50,10 @@ const TOOLS = [
   ['page_screenshot', { selector: ['.VPNav', '.VPHero', '.VPFeatures'] }],
   ['page_set_viewport', { width: 1280, height: 720 }],
   ['page_emulate_device', { device: 'iPhone 14' }],
-  ['page_get_cookies', {}],
-  ['page_set_cookies', { cookies: [{ name: 'e2e', value: '1', domain: '.vmoranv.github.io' }] }],
-  ['page_clear_cookies', {}],
-  ['page_get_local_storage', {}],
-  ['page_set_local_storage', { key: 'e2e_test', value: 'hello' }],
+  ['page_cookies', { action: 'get' }],
+  ['page_cookies', { action: 'set', cookies: [{ name: 'e2e', value: '1' }] }],
+  ['page_local_storage', { action: 'get' }],
+  ['page_local_storage', { action: 'set', key: 'e2e_test', value: 'hello' }],
   ['indexeddb_dump', {}],
   ['page_select', { selector: '#test_select_e2e', values: ['b'] }],
   ['stealth_inject', {}],
@@ -64,11 +64,12 @@ const TOOLS = [
   ['captcha_detect', {}],
   ['captcha_config', { provider: '2captcha', apiKey: 'test' }],
   ['camoufox_server_status', {}],
+  ['camoufox_geolocation', { locale: 'en-US' }],
   ['human_mouse', { selector: 'body' }],
   ['human_scroll', { direction: 'down', amount: 200 }],
   ['human_typing', { selector: 'body', text: 'e2e' }],
   // Debugger phase (55-94)
-  ['debugger_enable', {}],
+  ['debugger_lifecycle', {}],
   ['get_all_scripts', {}],
   ['get_script_source', { url: TARGET }],
   ['get_detailed_data', { detailId: '__placeholder__' }],
@@ -108,7 +109,7 @@ const TOOLS = [
   ['debugger_list_sessions', {}],
   ['debugger_export_session', {}],
   // Console & Streaming phase (95-126)
-  ['console_enable', { enableNetwork: true }],
+  ['console_monitor', { enableNetwork: true }],
   ['console_get_logs', {}],
   ['console_execute', { expression: '1+1' }],
   ['console_get_exceptions', {}],
@@ -123,46 +124,39 @@ const TOOLS = [
   ['network_get_requests', {}],
   ['network_get_stats', {}],
   ['network_extract_auth', {}],
-  ['ws_monitor_enable', {}],
+  ['ws_monitor', { action: 'enable' }],
   ['ws_get_frames', {}],
   ['ws_get_connections', {}],
   ['sse_monitor_enable', {}],
   ['sse_get_events', {}],
-  ['ws_monitor_disable', {}],
+  ['ws_monitor', { action: 'disable' }],
   ['performance_get_metrics', {}],
-  ['performance_start_coverage', {}],
-  ['performance_trace_start', {}],
+  ['performance_coverage', { action: 'start' }],
+  ['performance_trace', { action: 'start' }],
   ['js_heap_search', { pattern: 'fetch' }],
-  ['performance_stop_coverage', {}],
+  ['performance_coverage', { action: 'stop' }],
   ['performance_take_heap_snapshot', {}],
-  ['profiler_cpu_start', {}],
-  ['profiler_heap_sampling_stop', {}],
-  ['performance_trace_stop', {}],
+  ['profiler_cpu', { action: 'start' }],
+  ['profiler_heap_sampling', { action: 'start' }],
+  ['profiler_heap_sampling', { action: 'stop' }],
+  ['profiler_cpu', { action: 'stop' }],
+  ['performance_trace', { action: 'stop' }],
   ['network_export_har', {}],
   // Code Analysis phase (127-160)
   ['network_disable', {}],
-  ['debugger_disable', {}],
+  ['debugger_lifecycle', {}],
   ['binary_detect_format', { data: 'SGVsbG8=', source: 'base64' }],
   ['binary_decode', { data: 'SGVsbG8=', encoding: 'base64' }],
   ['binary_encode', { data: 'Hello', inputFormat: 'utf8', outputEncoding: 'base64' }],
   ['binary_entropy_analysis', { data: 'SGVsbG8gV29ybGQ=', source: 'base64' }],
   ['protobuf_decode_raw', { data: 'CAESBXdvcmxk' }],
   ['deobfuscate', { code: 'var a = 1;' }],
-  ['advanced_deobfuscate', { code: 'var a = 1;' }],
   ['webcrack_unpack', { code: 'var a = 1;' }],
   ['understand_code', { code: 'function add(a,b){return a+b}' }],
   ['detect_obfuscation', { code: 'eval(atob("YWxlcnQoMSk="))' }],
   ['detect_crypto', { code: 'crypto.subtle.digest("SHA-256", data)' }],
   ['extract_function_tree', { scriptId: '__placeholder__' }],
   ['manage_hooks', { action: 'list' }],
-  [
-    'ai_hook_generate',
-    {
-      target: { type: 'api', name: 'fetch' },
-      description: 'log fetch calls',
-      behavior: { captureArgs: true, captureReturn: true },
-    },
-  ],
   ['ai_hook_inject', { hookId: '__placeholder__', code: 'console.log("e2e hook")' }],
   ['ai_hook_toggle', { hookId: '__placeholder__', enabled: true }],
   ['ai_hook_get_data', { hookId: '__placeholder__' }],
@@ -199,7 +193,6 @@ const TOOLS = [
   ['antidebug_bypass_stack_trace', {}],
   ['antidebug_bypass_timing', {}],
   ['sourcemap_discover', {}],
-  ['source_map_extract', { url: TARGET }],
   ['sourcemap_fetch_and_parse', { sourceMapUrl: TARGET }],
   ['sourcemap_reconstruct_tree', { sourceMapUrl: TARGET }],
   ['page_script_register', { name: 'e2e_lib', code: 'function e2eHelper() { return 42; }' }],
@@ -211,16 +204,12 @@ const TOOLS = [
   ['tab_workflow', { action: 'list' }],
   ['script_replace_persist', { url: '__never_match_e2e__', replacement: '// replaced' }],
   // Process & System phase (181-210)
-  ['process_list', { pattern: 'test' }],
-  ['process_get', { pid: 0 }],
   ['process_windows', { pid: 0 }],
-  ['process_find', { pattern: 'browser' }],
-  ['process_find_chromium', {}],
   ['process_check_debug_port', { pid: 0 }],
   [
     'process_launch_debug',
     {
-      executablePath: 'C:/Program Files/Browser/Application/browser.exe',
+      executablePath: DEFAULT_BROWSER_EXECUTABLE,
       debugPort: 19222,
       args: ['--headless'],
     },
@@ -259,7 +248,7 @@ const TOOLS = [
 
 function withTimeout<T>(
   promise: Promise<T>,
-  ms: number
+  ms: number,
 ): Promise<{ ok: boolean; value?: T; error?: string; ms: number }> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -304,7 +293,7 @@ async function main() {
   const client = new Client({ name: 'e2e-timing', version: '1.0.0' }, { capabilities: {} });
   const transport = new StdioClientTransport({
     command: 'node',
-    args: ['dist/src/index.js'],
+    args: ['dist/index.mjs'],
     cwd: process.cwd(),
     env,
     stderr: 'pipe',
@@ -322,7 +311,7 @@ async function main() {
     const [name, args] = tool;
     const result = await withTimeout(
       client.callTool({ name, arguments: args }),
-      60000 // 60s per tool
+      60000, // 60s per tool
     );
 
     const r: { i: number; name: string; ok: boolean; ms: number; error?: string } = {
@@ -351,7 +340,7 @@ async function main() {
     const icon = !result.ok ? '❌' : result.ms > 10000 ? '🐢' : '✅';
     const status = !result.ok ? ` [${r.error?.slice(0, 60)}]` : '';
     console.log(
-      `${icon} [${String(i).padStart(3)}] ${name.padEnd(35)} ${result.ms.toString().padStart(6)}ms${status}`
+      `${icon} [${String(i).padStart(3)}] ${name.padEnd(35)} ${result.ms.toString().padStart(6)}ms${status}`,
     );
   }
 
@@ -360,7 +349,7 @@ async function main() {
   const failed = results.filter((r) => !r.ok).length;
   const total = results.length;
   console.log(
-    `\n=== SUMMARY: ${passed}/${total} passed (${Math.round((passed / total) * 100)}%) ===`
+    `\n=== SUMMARY: ${passed}/${total} passed (${Math.round((passed / total) * 100)}%) ===`,
   );
   console.log(`FAILED (${failed}):`);
   results

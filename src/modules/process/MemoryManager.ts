@@ -72,77 +72,52 @@ export class MemoryManager {
 
   // ── Read / Write ──
 
-  /**
-   * Read memory from a process
-   * @param pid Target process ID
-   * @param address Memory address (hex string like "0x12345678")
-   * @param size Number of bytes to read
-   */
   async readMemory(pid: number, address: string, size: number): Promise<MemoryReadResult> {
     return _readMemory(this.platform, pid, address, size, (p, a) =>
-      _checkMemoryProtection(this.platform, p, a)
+      _checkMemoryProtection(this.platform, p, a),
     );
   }
 
-  /**
-   * Write memory to a process
-   * @param pid Target process ID
-   * @param address Memory address (hex string)
-   * @param data Data to write (hex string)
-   * @param encoding 'hex' or 'base64'
-   */
   async writeMemory(
     pid: number,
     address: string,
     data: string,
-    encoding: 'hex' | 'base64' = 'hex'
+    encoding: 'hex' | 'base64' = 'hex',
   ): Promise<MemoryWriteResult> {
     return _writeMemory(this.platform, pid, address, data, encoding, (p, a) =>
-      _checkMemoryProtection(this.platform, p, a)
+      _checkMemoryProtection(this.platform, p, a),
     );
   }
 
-  /**
-   * Batch memory write (NOP sled, patch multiple addresses)
-   */
   async batchMemoryWrite(
     pid: number,
-    patches: MemoryPatch[]
+    patches: MemoryPatch[],
   ): Promise<{
     success: boolean;
     results: { address: string; success: boolean; error?: string }[];
     error?: string;
   }> {
     return _batchMemoryWrite(pid, patches, (p, addr, data, enc) =>
-      this.writeMemory(p, addr, data, enc)
+      this.writeMemory(p, addr, data, enc),
     );
   }
 
   // ── Scan ──
 
-  /**
-   * Scan memory for a pattern
-   * @param pid Target process ID
-   * @param pattern Pattern to search (hex bytes like "48 8B 05" or value)
-   * @param patternType Type of pattern
-   */
   async scanMemory(
     pid: number,
     pattern: string,
-    patternType: PatternType = 'hex'
+    patternType: PatternType = 'hex',
+    suspendTarget = false,
   ): Promise<MemoryScanResult> {
-    return _scanMemory(this.platform, pid, pattern, patternType);
+    return _scanMemory(this.platform, pid, pattern, patternType, suspendTarget);
   }
 
-  /**
-   * Scan within specific addresses (filtered scan)
-   * For secondary scanning within previous results
-   */
   async scanMemoryFiltered(
     pid: number,
     pattern: string,
     addresses: string[],
-    patternType: PatternType = 'hex'
+    patternType: PatternType = 'hex',
   ): Promise<MemoryScanResult> {
     return _scanMemoryFiltered(
       pid,
@@ -150,44 +125,30 @@ export class MemoryManager {
       addresses,
       patternType,
       (p, addr, size) => this.readMemory(p, addr, size),
-      (p, pat, type) => this.scanMemory(p, pat, type)
+      (p, pat, type) => this.scanMemory(p, pat, type),
     );
   }
 
   // ── Regions / Modules / Protection ──
 
-  /**
-   * Dump memory region to file
-   */
   async dumpMemoryRegion(
     pid: number,
     startAddress: string,
     size: number,
-    outputPath: string
+    outputPath: string,
   ): Promise<{ success: boolean; error?: string }> {
     return _dumpMemoryRegion(this.platform, pid, startAddress, size, outputPath);
   }
 
-  /**
-   * Enumerate memory regions
-   */
   async enumerateRegions(pid: number): ReturnType<typeof _enumerateRegions> {
     return _enumerateRegions(this.platform, pid);
   }
 
-  /**
-   * Check memory protection at specific address
-   */
   async checkMemoryProtection(pid: number, address: string): Promise<MemoryProtectionInfo> {
     return _checkMemoryProtection(this.platform, pid, address);
   }
 
-  /**
-   * Enumerate loaded modules in target process
-   */
-  async enumerateModules(
-    pid: number
-  ): Promise<{
+  async enumerateModules(pid: number): Promise<{
     success: boolean;
     modules?: { name: string; baseAddress: string; size: number }[];
     error?: string;
@@ -203,7 +164,7 @@ export class MemoryManager {
    */
   async injectDll(
     pid: number,
-    dllPath: string
+    dllPath: string,
   ): Promise<{ success: boolean; remoteThreadId?: number; error?: string }> {
     return _injectDll(this.platform, pid, dllPath);
   }
@@ -215,34 +176,27 @@ export class MemoryManager {
   async injectShellcode(
     pid: number,
     shellcode: string,
-    encoding: 'hex' | 'base64' = 'hex'
+    encoding: 'hex' | 'base64' = 'hex',
   ): Promise<{ success: boolean; remoteThreadId?: number; error?: string }> {
     return _injectShellcode(this.platform, pid, shellcode, encoding);
   }
 
   // ── Anti-Detection ──
 
-  /**
-   * Check for debugger attachment in target process (Windows only)
-   */
   async checkDebugPort(
-    pid: number
+    pid: number,
   ): Promise<{ success: boolean; isDebugged?: boolean; error?: string }> {
     return _checkDebugPort(this.platform, pid);
   }
 
   // ── Monitor ──
 
-  /**
-   * Monitor memory address for changes (polling-based)
-   * Returns a monitoring session ID
-   */
   startMemoryMonitor(
     pid: number,
     address: string,
     size: number = 4,
     intervalMs: number = 1000,
-    onChange?: (oldValue: string, newValue: string) => void
+    onChange?: (oldValue: string, newValue: string) => void,
   ): string {
     return this.monitorManager.start(
       pid,
@@ -250,7 +204,7 @@ export class MemoryManager {
       size,
       intervalMs,
       (p, addr, sz) => this.readMemory(p, addr, sz),
-      onChange
+      onChange,
     );
   }
 
@@ -260,9 +214,6 @@ export class MemoryManager {
 
   // ── Availability ──
 
-  /**
-   * Check if memory operations are available on current platform
-   */
   async checkAvailability(): Promise<{ available: boolean; reason?: string }> {
     return _checkAvailability(this.platform);
   }

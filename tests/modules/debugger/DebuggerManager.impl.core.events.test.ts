@@ -33,7 +33,7 @@ describe('DebuggerManager event core helpers', () => {
       breakpointHitCallbacks: new Set(),
       breakpoints: new Map([['bp-1', { breakpointId: 'bp-1', hitCount: 0 }]]),
       pausedState: null,
-      pausedResolvers: [(state: unknown) => (resolvedState = state)],
+      pausedResolvers: [(state: any) => (resolvedState = state)],
       getScopeVariables: vi.fn(async () => ({
         variables: [{ name: 'token', value: 'abc', type: 'string' }],
       })),
@@ -62,7 +62,7 @@ describe('DebuggerManager event core helpers', () => {
       expect.objectContaining({
         breakpointId: 'bp-1',
         variables: [{ name: 'token', value: 'abc', type: 'string' }],
-      })
+      }),
     );
     expect(resolvedState.reason).toBe('other');
     expect(ctx.pausedResolvers).toEqual([]);
@@ -71,7 +71,7 @@ describe('DebuggerManager event core helpers', () => {
   it('supports unregistering callbacks and clearing paused state', () => {
     const callback = vi.fn();
     const ctx: any = {
-      breakpointHitCallbacks: new Set<unknown>([callback]),
+      breakpointHitCallbacks: new Set<any>([callback]),
       breakpoints: new Map(),
       pausedState: { reason: 'other' },
       pausedResolvers: [],

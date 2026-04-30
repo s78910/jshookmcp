@@ -27,6 +27,8 @@ vi.mock('@server/domains/shared/response', () => ({
 vi.mock('@server/MCPServer.search.helpers', () => ({
   getSearchEngine: state.getSearchEngine,
   getActiveToolNames: state.getActiveToolNames,
+  getVisibleDomainsForTier: () => new Set<string>(),
+  getBaseTier: () => 'search',
 }));
 
 vi.mock('@server/MCPServer.search.handlers.domain', () => ({
@@ -38,7 +40,8 @@ vi.mock('@server/ToolRouter', () => ({
   generateExampleArgs: state.generateExampleArgs,
 }));
 
-vi.mock('@src/constants', () => ({
+vi.mock('@src/constants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/constants')>()),
   SEARCH_AUTO_ACTIVATE_DOMAINS: true,
   ACTIVATION_TTL_MINUTES: 30,
 }));
@@ -94,7 +97,13 @@ describe('MCPServer.search.handlers.search', () => {
 
     const response = parseResponse(await handleSearchTools(ctx, { query: 'navigate' }));
 
-    expect(state.engine.search).toHaveBeenCalledWith('navigate', 10, new Set(['page_navigate']));
+    expect(state.engine.search).toHaveBeenCalledWith(
+      'navigate',
+      10,
+      new Set(['page_navigate']),
+      new Set(),
+      'search',
+    );
     expect(response.nextActions).toEqual([
       {
         step: 1,
@@ -172,120 +181,55 @@ describe('MCPServer.search.handlers.search', () => {
     ]);
   });
 
-  it('auto-activates inactive result domains and re-runs the search with refreshed active names', async () => {
+  it('does not auto-activate inactive result domains (auto-activation disabled)', async () => {
     const ctx = createCtx();
     state.activeNames = new Set(['browser_launch']);
-    state.engine.search
-      .mockReturnValueOnce([
-        {
-          name: 'page_navigate',
-          description: 'Navigate page',
-          shortDescription: 'Navigate page',
-          score: 10,
-          domain: 'browser',
-          isActive: false,
-        },
-        {
-          name: 'network_get_requests',
-          description: 'Get requests',
-          shortDescription: 'Get requests',
-          score: 9,
-          domain: 'network',
-          isActive: false,
-        },
-      ])
-      .mockReturnValueOnce([
-        {
-          name: 'page_navigate',
-          description: 'Navigate page',
-          shortDescription: 'Navigate page',
-          score: 10,
-          domain: 'browser',
-          isActive: true,
-        },
-      ]);
-    state.handleActivateDomain.mockImplementation(async (innerCtx: any, args: any) => {
-      innerCtx.enabledDomains.add(args.domain);
-      if (args.domain === 'browser') state.activeNames.add('page_navigate');
-      if (args.domain === 'network') state.activeNames.add('network_get_requests');
-      return { content: [{ type: 'text', text: '{"success":true}' }] };
-    });
+    state.engine.search.mockReturnValue([
+      {
+        name: 'page_navigate',
+        description: 'Navigate page',
+        shortDescription: 'Navigate page',
+        score: 10,
+        domain: 'browser',
+        isActive: false,
+      },
+      {
+        name: 'network_get_requests',
+        description: 'Get requests',
+        shortDescription: 'Get requests',
+        score: 9,
+        domain: 'network',
+        isActive: false,
+      },
+    ]);
 
     const response = parseResponse(await handleSearchTools(ctx, { query: 'inspect', top_k: 5 }));
 
-    expect(state.handleActivateDomain).toHaveBeenNthCalledWith(1, ctx, {
-      domain: 'browser',
-      ttlMinutes: 30,
-    });
-    expect(state.handleActivateDomain).toHaveBeenNthCalledWith(2, ctx, {
-      domain: 'network',
-      ttlMinutes: 30,
-    });
-    expect(state.engine.search).toHaveBeenNthCalledWith(
-      1,
-      'inspect',
-      5,
-      new Set(['browser_launch'])
-    );
-    expect(state.engine.search).toHaveBeenNthCalledWith(
-      2,
-      'inspect',
-      5,
-      new Set(['browser_launch', 'network_get_requests', 'page_navigate'])
-    );
-    expect(response.autoActivatedDomains).toEqual(['browser', 'network']);
+    // Auto-activation disabled for security — no domains should be activated
+    expect(state.handleActivateDomain).not.toHaveBeenCalled();
+    // Search should only run once (no re-run with refreshed names)
+    expect(state.engine.search).toHaveBeenCalledOnce();
+    expect(response.resultCount).toBe(2);
   });
 
-  it('warns on activation failures and still keeps successful auto-activations', async () => {
+  it('returns results without autoActivatedDomains metadata', async () => {
     const ctx = createCtx();
-    state.engine.search
-      .mockReturnValueOnce([
-        {
-          name: 'page_navigate',
-          description: 'Navigate page',
-          shortDescription: 'Navigate page',
-          score: 10,
-          domain: 'browser',
-          isActive: false,
-        },
-        {
-          name: 'network_get_requests',
-          description: 'Get requests',
-          shortDescription: 'Get requests',
-          score: 9,
-          domain: 'network',
-          isActive: false,
-        },
-      ])
-      .mockReturnValueOnce([
-        {
-          name: 'network_get_requests',
-          description: 'Get requests',
-          shortDescription: 'Get requests',
-          score: 9,
-          domain: 'network',
-          isActive: true,
-        },
-      ]);
-    state.handleActivateDomain.mockImplementation(async (innerCtx: any, args: any) => {
-      if (args.domain === 'browser') {
-        throw new Error('browser failed');
-      }
-      innerCtx.enabledDomains.add('network');
-      state.activeNames.add('network_get_requests');
-      return { content: [{ type: 'text', text: '{"success":true}' }] };
-    });
+    state.engine.search.mockReturnValue([
+      {
+        name: 'page_navigate',
+        description: 'Navigate page',
+        shortDescription: 'Navigate page',
+        score: 10,
+        domain: 'browser',
+        isActive: false,
+      },
+    ]);
 
-    const response = parseResponse(await handleSearchTools(ctx, { query: 'inspect' }));
+    const response = parseResponse(await handleSearchTools(ctx, { query: 'navigate' }));
 
-    expect(response.autoActivatedDomains).toEqual(['network']);
-    expect(state.logger.warn).toHaveBeenCalledWith(
-      '[search-auto-activate] Failed to activate domain "browser":',
-      expect.any(Error)
-    );
-    expect(state.logger.info).toHaveBeenCalledWith(
-      '[search-auto-activate] Activated domain "network" with TTL=30min'
-    );
+    // Since auto-activation is disabled, this metadata should never appear
+    expect(response.autoActivatedDomains).toBeUndefined();
+    expect(response.callToolHint).toBeUndefined();
   });
 
   it('skips auto-activation for domains that are already enabled', async () => {
@@ -323,7 +267,8 @@ describe('MCPServer.search.handlers.search', () => {
       nextActions: [],
       hint:
         'For guided tool discovery with workflow detection, use route_tool instead. ' +
-        'Use activate_tools to enable specific tools, activate_domain for entire domains.',
+        'Use activate_tools to enable specific tools, activate_domain for entire domains.' +
+        ' Few results — try distilling your query to key concepts (e.g. "hook fetch" instead of "how to intercept fetch requests").',
     });
     expect(state.describeTool).not.toHaveBeenCalled();
     expect(state.generateExampleArgs).not.toHaveBeenCalled();

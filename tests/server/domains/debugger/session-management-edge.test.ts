@@ -1,13 +1,6 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionManagementHandlers } from '@server/domains/debugger/handlers/session-management';
-
-function parseJson(response: { content: Array<{ text: string }> }) {
-  const firstContent = response.content[0];
-  if (!firstContent) {
-    throw new Error('Expected response content to include a text entry');
-  }
-  return JSON.parse(firstContent.text);
-}
 
 describe('SessionManagementHandlers – edge cases', () => {
   const debuggerManager = {
@@ -33,7 +26,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.saveSession.mockResolvedValueOnce('/auto-generated/path.json');
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleSaveSession({}));
+      const body = parseJson<any>(await handlers.handleSaveSession({}));
 
       expect(debuggerManager.saveSession).toHaveBeenCalledWith(undefined, undefined);
       expect(body.success).toBe(true);
@@ -50,7 +43,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       ]);
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleSaveSession({}));
+      const body = parseJson<any>(await handlers.handleSaveSession({}));
 
       expect(body.breakpointCount).toBe(3);
     });
@@ -59,7 +52,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.saveSession.mockRejectedValueOnce('unknown failure');
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleSaveSession({}));
+      const body = parseJson<any>(await handlers.handleSaveSession({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('unknown failure');
@@ -69,7 +62,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.saveSession.mockRejectedValueOnce({ code: 'ENOENT' });
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleSaveSession({}));
+      const body = parseJson<any>(await handlers.handleSaveSession({}));
 
       expect(body.success).toBe(false);
       expect(body.message).toBe('Failed to save session');
@@ -80,7 +73,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.saveSession.mockRejectedValueOnce(err);
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleSaveSession({}));
+      const body = parseJson<any>(await handlers.handleSaveSession({}));
 
       expect(body.success).toBe(false);
       // Empty message falls through to String(error)
@@ -94,11 +87,11 @@ describe('SessionManagementHandlers – edge cases', () => {
     it('prefers filePath over sessionData when both are provided', async () => {
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleLoadSession({
           filePath: '/tmp/session.json',
           sessionData: '{"breakpoints":[]}',
-        })
+        }),
       );
 
       expect(debuggerManager.loadSessionFromFile).toHaveBeenCalledWith('/tmp/session.json');
@@ -110,7 +103,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.getPauseOnExceptionsState.mockReturnValueOnce('uncaught');
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleLoadSession({ filePath: '/tmp/s.json' }));
+      const body = parseJson<any>(await handlers.handleLoadSession({ filePath: '/tmp/s.json' }));
 
       expect(body.pauseOnExceptions).toBe('uncaught');
     });
@@ -119,7 +112,9 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.loadSessionFromFile.mockRejectedValueOnce(new Error('file not found'));
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleLoadSession({ filePath: '/nonexistent.json' }));
+      const body = parseJson<any>(
+        await handlers.handleLoadSession({ filePath: '/nonexistent.json' }),
+      );
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('file not found');
@@ -130,7 +125,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.importSession.mockRejectedValueOnce(new Error('invalid JSON'));
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleLoadSession({ sessionData: '{invalid}' }));
+      const body = parseJson<any>(await handlers.handleLoadSession({ sessionData: '{invalid}' }));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('invalid JSON');
@@ -140,7 +135,9 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.loadSessionFromFile.mockRejectedValueOnce(404);
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleLoadSession({ filePath: '/tmp/missing.json' }));
+      const body = parseJson<any>(
+        await handlers.handleLoadSession({ filePath: '/tmp/missing.json' }),
+      );
 
       expect(body.success).toBe(false);
     });
@@ -155,7 +152,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       });
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleExportSession({}));
+      const body = parseJson<any>(await handlers.handleExportSession({}));
 
       expect(debuggerManager.exportSession).toHaveBeenCalledWith(undefined);
       expect(body.success).toBe(true);
@@ -168,7 +165,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       });
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleExportSession({}));
+      const body = parseJson<any>(await handlers.handleExportSession({}));
 
       expect(body.success).toBe(false);
       expect(body.message).toBe('Failed to export session');
@@ -181,7 +178,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       });
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleExportSession({}));
+      const body = parseJson<any>(await handlers.handleExportSession({}));
 
       expect(body.success).toBe(false);
       expect(body.error).toBe('crash');
@@ -195,7 +192,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.listSavedSessions.mockResolvedValueOnce([]);
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleListSessions({}));
+      const body = parseJson<any>(await handlers.handleListSessions({}));
 
       expect(body.success).toBe(true);
       expect(body.count).toBe(0);
@@ -211,7 +208,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       ]);
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleListSessions({}));
+      const body = parseJson<any>(await handlers.handleListSessions({}));
 
       expect(body.count).toBe(2);
       expect(body.sessions[0].date).toBe(new Date(ts1).toISOString());
@@ -223,7 +220,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.listSavedSessions.mockRejectedValueOnce(new Error('fs permission denied'));
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleListSessions({}));
+      const body = parseJson<any>(await handlers.handleListSessions({}));
 
       expect(body.success).toBe(false);
       expect(body.message).toBe('Failed to list sessions');
@@ -234,7 +231,7 @@ describe('SessionManagementHandlers – edge cases', () => {
       debuggerManager.listSavedSessions.mockRejectedValueOnce(null);
       const handlers = new SessionManagementHandlers({ debuggerManager } as any);
 
-      const body = parseJson(await handlers.handleListSessions({}));
+      const body = parseJson<any>(await handlers.handleListSessions({}));
 
       expect(body.success).toBe(false);
     });

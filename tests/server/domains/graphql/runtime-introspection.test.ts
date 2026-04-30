@@ -1,3 +1,4 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const isSsrfTargetMock = vi.fn(async () => false);
@@ -9,16 +10,13 @@ vi.mock('@src/server/domains/network/replay', () => ({
 import { GraphQLToolHandlersIntrospection } from '@server/domains/graphql/handlers.impl.core.runtime.introspection';
 import type { BrowserFetchResult } from '@server/domains/graphql/handlers.impl.core.runtime.shared';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0]!.text);
-}
-
 describe('GraphQLToolHandlersIntrospection', () => {
   const page = {
     evaluate: vi.fn(),
     evaluateOnNewDocument: vi.fn(),
     setRequestInterception: vi.fn(),
     on: vi.fn(),
+    url: vi.fn(() => 'https://example.com/app'),
   };
   const collector = {
     getActivePage: vi.fn(async () => page),
@@ -37,21 +35,21 @@ describe('GraphQLToolHandlersIntrospection', () => {
   describe('argument validation', () => {
     it('returns error when endpoint is missing', async () => {
       const response = await handlers.handleGraphqlIntrospect({});
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: endpoint');
     });
 
     it('returns error when endpoint is empty string', async () => {
       const response = await handlers.handleGraphqlIntrospect({ endpoint: '  ' });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: endpoint');
     });
 
     it('returns error when endpoint is not a string', async () => {
       const response = await handlers.handleGraphqlIntrospect({ endpoint: 42 });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: endpoint');
     });
@@ -62,7 +60,7 @@ describe('GraphQLToolHandlersIntrospection', () => {
   describe('endpoint validation', () => {
     it('returns error for invalid URL', async () => {
       const response = await handlers.handleGraphqlIntrospect({ endpoint: 'not-a-url' });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Invalid endpoint URL');
     });
@@ -72,16 +70,40 @@ describe('GraphQLToolHandlersIntrospection', () => {
       const response = await handlers.handleGraphqlIntrospect({
         endpoint: 'http://127.0.0.1/graphql',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Blocked');
+    });
+
+    it('allows same-origin private endpoints in browser mode', async () => {
+      isSsrfTargetMock.mockResolvedValueOnce(true);
+      page.url.mockReturnValueOnce('http://127.0.0.1/app');
+      page.evaluate.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        totalLength: 20,
+        preview: '',
+        truncated: false,
+        json: { data: { __schema: { types: [] } } },
+        responseHeaders: { 'content-type': 'application/json' },
+      });
+
+      const response = await handlers.handleGraphqlIntrospect({
+        endpoint: 'http://127.0.0.1/graphql',
+        useBrowser: true,
+      });
+      const body = parseJson<any>(response);
+
+      expect((response as any).isError).toBeUndefined();
+      expect(body.success).toBe(true);
     });
 
     it('returns error for unsupported protocol', async () => {
       const response = await handlers.handleGraphqlIntrospect({
         endpoint: 'ftp://example.com/graphql',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Unsupported endpoint protocol');
     });
@@ -91,20 +113,24 @@ describe('GraphQLToolHandlersIntrospection', () => {
 
   describe('successful introspection', () => {
     it('returns schema data from successful introspection', async () => {
+      const schemaData = { __schema: { types: [] } };
       const browserResult: BrowserFetchResult = {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '{"data":{"__schema":{"types":[]}}}',
-        responseJson: { data: { __schema: { types: [] } } },
+        totalLength: 50,
+        preview: JSON.stringify({ data: schemaData }),
+        truncated: false,
+        json: { data: schemaData },
         responseHeaders: { 'content-type': 'application/json' },
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
       const response = await handlers.handleGraphqlIntrospect({
         endpoint: 'https://example.com/graphql',
+        useBrowser: true,
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
 
       expect((response as any).isError).toBeUndefined();
       expect(body.success).toBe(true);
@@ -116,20 +142,24 @@ describe('GraphQLToolHandlersIntrospection', () => {
     });
 
     it('extracts data field from response when present', async () => {
+      const schemaData = { __schema: { queryType: { name: 'Query' } } };
       const browserResult: BrowserFetchResult = {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '',
-        responseJson: { data: { __schema: { queryType: { name: 'Query' } } } },
+        totalLength: 60,
+        preview: JSON.stringify({ data: schemaData }),
+        truncated: false,
+        json: { data: schemaData },
         responseHeaders: {},
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.schema).toEqual({ __schema: { queryType: { name: 'Query' } } });
     });
@@ -139,8 +169,10 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '{}',
-        responseJson: {},
+        totalLength: 2,
+        preview: '{}',
+        truncated: false,
+        json: {},
         responseHeaders: {},
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
@@ -148,6 +180,7 @@ describe('GraphQLToolHandlersIntrospection', () => {
       await handlers.handleGraphqlIntrospect({
         endpoint: 'https://example.com/graphql',
         headers: { Authorization: 'Bearer token123' },
+        useBrowser: true,
       });
 
       expect(page.evaluate).toHaveBeenCalledWith(
@@ -156,7 +189,7 @@ describe('GraphQLToolHandlersIntrospection', () => {
           endpoint: 'https://example.com/graphql',
           headers: { Authorization: 'Bearer token123' },
           query: expect.stringContaining('IntrospectionQuery'),
-        })
+        }),
       );
     });
 
@@ -165,16 +198,19 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '{}',
-        responseJson: {},
+        totalLength: 2,
+        preview: '{}',
+        truncated: false,
+        json: {},
         responseHeaders: { 'x-custom': 'value' },
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.responseHeaders).toEqual({ 'x-custom': 'value' });
     });
@@ -188,16 +224,19 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
-        responseText: 'Server broke',
-        responseJson: null,
+        totalLength: 12,
+        preview: 'Server broke',
+        truncated: false,
+        json: null,
         error: 'Server error',
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.success).toBe(false);
@@ -211,15 +250,18 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: false,
         status: 0,
         statusText: 'FETCH_ERROR',
-        responseText: '',
-        responseJson: null,
+        totalLength: 0,
+        preview: '',
+        truncated: false,
+        json: null,
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.error).toBe('Introspection request failed');
     });
@@ -229,8 +271,10 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '',
-        responseJson: {
+        totalLength: 60,
+        preview: JSON.stringify({ data: null, errors: [{ message: 'Not authorized' }] }),
+        truncated: false,
+        json: {
           data: null,
           errors: [{ message: 'Not authorized' }],
         },
@@ -238,10 +282,11 @@ describe('GraphQLToolHandlersIntrospection', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.errors).toEqual([{ message: 'Not authorized' }]);
     });
@@ -251,17 +296,20 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '{}',
-        responseJson: {},
+        totalLength: 2,
+        preview: '{}',
+        truncated: false,
+        json: {},
         responseHeaders: {},
         error: 'CORS issue',
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.error).toBe('CORS issue');
     });
@@ -272,24 +320,60 @@ describe('GraphQLToolHandlersIntrospection', () => {
   describe('schema truncation', () => {
     it('does not include schema field when truncated', async () => {
       const largeSchema = { data: { bigField: 'x'.repeat(200000) } };
+      const largeText = JSON.stringify(largeSchema);
       const browserResult: BrowserFetchResult = {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: JSON.stringify(largeSchema),
-        responseJson: largeSchema,
+        totalLength: largeText.length,
+        preview: largeText.slice(0, 100000) + '\n... (truncated)',
+        truncated: true,
+        json: largeSchema,
         responseHeaders: {},
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.schemaTruncated).toBe(true);
       expect(body.schema).toBeUndefined();
       expect(body.schemaPreview).toBeDefined();
+    });
+
+    it('keeps schema when only non-schema fields make the raw body exceed the limit', async () => {
+      const schemaData = { __schema: { queryType: { name: 'Query' } } };
+      const rawPayload = {
+        data: schemaData,
+        extensions: { trace: 'x'.repeat(200000) },
+      };
+      const rawText = JSON.stringify(rawPayload);
+      const browserResult: BrowserFetchResult = {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        totalLength: rawText.length,
+        preview: rawText.slice(0, 100000) + '\n... (truncated)',
+        truncated: true,
+        json: rawPayload,
+        responseHeaders: {},
+      };
+      page.evaluate.mockResolvedValueOnce(browserResult);
+
+      const body = parseJson<any>(
+        await handlers.handleGraphqlIntrospect({
+          endpoint: 'https://example.com/graphql',
+          useBrowser: true,
+        }),
+      );
+
+      expect(body.schemaTruncated).toBe(false);
+      expect(body.schema).toEqual(schemaData);
+      expect(body.schemaLength).toBe(JSON.stringify(schemaData, null, 2).length);
+      expect(body.schemaPreview).toBe(JSON.stringify(schemaData, null, 2));
     });
   });
 
@@ -300,8 +384,9 @@ describe('GraphQLToolHandlersIntrospection', () => {
       collector.getActivePage.mockRejectedValueOnce(new Error('No browser'));
       const response = await handlers.handleGraphqlIntrospect({
         endpoint: 'https://example.com/graphql',
+        useBrowser: true,
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toBe('No browser');
     });
@@ -311,16 +396,19 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: true,
         status: 200,
         statusText: 'OK',
-        responseText: '"just a string"',
-        responseJson: 'just a string',
+        totalLength: 16,
+        preview: '"just a string"',
+        truncated: false,
+        json: 'just a string',
         responseHeaders: {},
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.success).toBe(true);
     });
@@ -330,16 +418,19 @@ describe('GraphQLToolHandlersIntrospection', () => {
         ok: false,
         status: 200,
         statusText: 'OK',
-        responseText: 'raw text data',
-        responseJson: null,
+        totalLength: 13,
+        preview: 'raw text data',
+        truncated: false,
+        json: null,
         responseHeaders: {},
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlIntrospect({
           endpoint: 'https://example.com/graphql',
-        })
+          useBrowser: true,
+        }),
       );
       expect(body.responsePreview).toBeDefined();
     });

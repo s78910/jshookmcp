@@ -1,9 +1,6 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TransformToolHandlers } from '@server/domains/transform/handlers';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('TransformToolHandlers', () => {
   const collector = {
@@ -18,20 +15,20 @@ describe('TransformToolHandlers', () => {
   });
 
   it('returns error when ast_transform_preview has no code', async () => {
-    const body = parseJson(
-      await handlers.handleAstTransformPreview({ transforms: ['constant_fold'] })
+    const body = parseJson<any>(
+      await handlers.handleAstTransformPreview({ transforms: ['constant_fold'] }),
     );
     expect(body.tool).toBe('ast_transform_preview');
     expect(body.error).toContain('code must be a non-empty string');
   });
 
   it('applies transform preview and returns diff', async () => {
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleAstTransformPreview({
         code: 'const x = 1 + 2;',
         transforms: ['constant_fold'],
         preview: true,
-      })
+      }),
     );
     expect(body.appliedTransforms).toContain('constant_fold');
     expect(typeof body.diff).toBe('string');
@@ -39,12 +36,12 @@ describe('TransformToolHandlers', () => {
   });
 
   it('creates a named transform chain', async () => {
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleAstTransformChain({
         name: 'fast',
         description: 'opt chain',
         transforms: ['constant_fold', 'dead_code_remove'],
-      })
+      }),
     );
     expect(body.created).toBe(true);
     expect(body.name).toBe('fast');
@@ -57,28 +54,28 @@ describe('TransformToolHandlers', () => {
       transforms: ['constant_fold'],
     });
 
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleAstTransformApply({
         chainName: 'fast',
         code: 'const y = 2 + 3;',
-      })
+      }),
     );
     expect(body.stats.transformsApplied).toContain('constant_fold');
     expect(body.transformed).toContain('5');
   });
 
   it('returns error when ast_transform_apply has no code or scriptId', async () => {
-    const body = parseJson(await handlers.handleAstTransformApply({}));
+    const body = parseJson<any>(await handlers.handleAstTransformApply({}));
     expect(body.tool).toBe('ast_transform_apply');
     expect(body.error).toContain('Either code or scriptId');
   });
 
   it('returns error for unknown chainName', async () => {
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleAstTransformApply({
         chainName: 'missing',
         code: 'const z = 1;',
-      })
+      }),
     );
     expect(body.error).toContain('not found');
   });

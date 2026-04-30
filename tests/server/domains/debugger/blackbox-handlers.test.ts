@@ -1,13 +1,6 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BlackboxHandlers } from '@server/domains/debugger/handlers/blackbox-handlers';
-
-function parseJson(response: { content: Array<{ text: string }> }) {
-  const firstContent = response.content[0];
-  if (!firstContent) {
-    throw new Error('Expected response content to include a text entry');
-  }
-  return JSON.parse(firstContent.text);
-}
 
 describe('BlackboxHandlers', () => {
   const blackboxManager = {
@@ -35,7 +28,7 @@ describe('BlackboxHandlers', () => {
     const debuggerManager = createDebuggerManager(true);
     const handlers = new BlackboxHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleBlackboxAdd({ urlPattern: 'vendor/*.js' }));
+    const body = parseJson<any>(await handlers.handleBlackboxAdd({ urlPattern: 'vendor/*.js' }));
 
     expect(debuggerManager.ensureAdvancedFeatures).toHaveBeenCalledOnce();
     expect(debuggerManager.getBlackboxManager).toHaveBeenCalledOnce();
@@ -51,7 +44,7 @@ describe('BlackboxHandlers', () => {
     const debuggerManager = createDebuggerManager(false);
     const handlers = new BlackboxHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleBlackboxAddCommon({}));
+    const body = parseJson<any>(await handlers.handleBlackboxAddCommon({}));
 
     expect(debuggerManager.getBlackboxManager).toHaveBeenCalledOnce();
     expect(blackboxManager.blackboxCommonLibraries).toHaveBeenCalledOnce();
@@ -66,7 +59,7 @@ describe('BlackboxHandlers', () => {
     blackboxManager.blackboxByPattern.mockRejectedValueOnce(new Error('boom'));
     const handlers = new BlackboxHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleBlackboxAdd({ urlPattern: 'bad' }));
+    const body = parseJson<any>(await handlers.handleBlackboxAdd({ urlPattern: 'bad' }));
 
     expect(body).toEqual({
       success: false,
@@ -80,7 +73,7 @@ describe('BlackboxHandlers', () => {
     blackboxManager.getAllBlackboxedPatterns.mockReturnValueOnce(['vendor/*.js', 'react-dom*.js']);
     const handlers = new BlackboxHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleBlackboxList({}));
+    const body = parseJson<any>(await handlers.handleBlackboxList({}));
 
     expect(body).toEqual({
       success: true,

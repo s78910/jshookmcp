@@ -47,12 +47,6 @@ const patternState = vi.hoisted(() => ({
   extractKeyFunctions: vi.fn(() => ['fnA']),
 }));
 
-const promptState = vi.hoisted(() => ({
-  generateRequestAnalysisMessages: vi.fn(() => [{ role: 'user', content: 'req' }]),
-  generateLogAnalysisMessages: vi.fn(() => [{ role: 'user', content: 'log' }]),
-  generateKeywordExpansionMessages: vi.fn(() => [{ role: 'user', content: 'kw' }]),
-}));
-
 vi.mock('@src/utils/logger', () => ({
   logger: loggerState,
 }));
@@ -67,12 +61,6 @@ vi.mock('@src/modules/analyzer/PatternDetector', () => ({
   detectAntiDebugPatterns: patternState.detectAntiDebugPatterns,
   extractSuspiciousAPIs: patternState.extractSuspiciousAPIs,
   extractKeyFunctions: patternState.extractKeyFunctions,
-}));
-
-vi.mock('@src/services/prompts/intelligence', () => ({
-  generateRequestAnalysisMessages: promptState.generateRequestAnalysisMessages,
-  generateLogAnalysisMessages: promptState.generateLogAnalysisMessages,
-  generateKeywordExpansionMessages: promptState.generateKeywordExpansionMessages,
 }));
 
 import { IntelligentAnalyzer } from '@modules/analyzer/IntelligentAnalyzer';
@@ -105,7 +93,6 @@ describe('IntelligentAnalyzer', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     Object.values(patternState).forEach((fn) => (fn as any).mockClear?.());
-    Object.values(promptState).forEach((fn) => (fn as any).mockClear?.());
     Object.values(loggerState).forEach((fn) => (fn as any).mockReset?.());
   });
 
@@ -137,6 +124,9 @@ describe('IntelligentAnalyzer', () => {
   });
 
   it('generates readable summary text with key sections', () => {
+    patternState.detectAntiDebugPatterns.mockReturnValue([
+      { type: 'debugger', location: 'source.js', code: 'debugger;' },
+    ]);
     const analyzer = new IntelligentAnalyzer();
     const result = analyzer.analyze(makeData() as any);
     const text = analyzer.generateAIFriendlySummary(result);
@@ -144,71 +134,65 @@ describe('IntelligentAnalyzer', () => {
     expect(text).toContain('Requests: 2');
     expect(text).toContain('api.sign');
     expect(text).toContain('fnA');
+    expect(text).toContain('Anti-Debug Patterns (1):');
+    expect(text).toContain('debugger');
   });
 
-  it('returns empty request-analysis result when LLM is unavailable', async () => {
+  it('handles empty arrays and scalar values in generateAIFriendlySummary', () => {
     const analyzer = new IntelligentAnalyzer();
-    const result = await analyzer.analyzeCriticalRequestsWithLLM(makeData().requests as any);
-
-    expect(result).toEqual({ encryption: [], signature: [], token: [], customPatterns: [] });
-    expect(loggerState.warn).toHaveBeenCalled();
+    const text = analyzer.generateAIFriendlySummary({
+      summary: {
+        totalRequests: 0,
+        filteredRequests: 0,
+        totalLogs: 0,
+        filteredLogs: 0,
+        suspiciousAPIs: [],
+        keyFunctions: [],
+      },
+      patterns: {
+        encryption: [
+          { type: 'Custom', confidence: 0.9, location: 'test', evidence: 'scalar evidence' as any },
+          { type: 'AES', confidence: 0.5, location: 'test', evidence: undefined as any },
+          { type: 'RSA', confidence: 0.5, location: 'test', evidence: null as any },
+        ],
+        signature: [
+          {
+            type: 'Custom',
+            confidence: 0.8,
+            parameters: 'scalar parameter' as any,
+            location: 'test',
+          },
+          { type: 'JWT', confidence: 0.4, parameters: undefined as any, location: 'test' },
+          { type: 'HMAC', confidence: 0.4, parameters: null as any, location: 'test' },
+        ],
+        antiDebug: [],
+      },
+      exceptions: [],
+      metadata: { analysisTimeMs: 1 },
+    } as any);
+    expect(text).toContain('Statistics:');
+    expect(text).toContain('scalar evidence');
+    expect(text).toContain('scalar parameter');
+    expect(text).not.toContain('Suspicious APIs');
+    expect(text).not.toContain('Key Functions');
   });
 
-  it('parses request-analysis JSON from LLM response', async () => {
-    const llm = {
-      chat: vi.fn(async () => ({
-        content: JSON.stringify({
-          encryption: [{ type: 'AES', location: 'u', confidence: 0.8, evidence: ['k'] }],
-          signature: [],
-          token: [],
-          customPatterns: [],
-        }),
-      })),
-    } as any;
-    const analyzer = new IntelligentAnalyzer(llm);
-
-    const result = await analyzer.analyzeCriticalRequestsWithLLM(makeData().requests as any);
-
-    expect(result.encryption[0]!.type).toBe('AES');
-    expect(promptState.generateRequestAnalysisMessages).toHaveBeenCalledTimes(1);
-    expect(llm.chat).toHaveBeenCalledTimes(1);
-  });
-
-  it('falls back when log-analysis LLM response is invalid JSON', async () => {
-    const llm = { chat: vi.fn(async () => ({ content: 'oops' })) } as any;
-    const analyzer = new IntelligentAnalyzer(llm);
-
-    const result = await analyzer.analyzeCriticalLogsWithLLM(makeData().logs as any);
-
-    expect(result).toEqual({ keyFunctions: [], dataFlow: '', suspiciousPatterns: [] });
-    expect(loggerState.error).toHaveBeenCalled();
-  });
-
-  it('merges LLM enhancements into rule-based result', async () => {
-    const analyzer = new IntelligentAnalyzer({ chat: vi.fn() } as any);
-    vi.spyOn(analyzer, 'analyzeCriticalRequestsWithLLM').mockResolvedValue({
-      encryption: [{ type: 'AES', location: 'x', confidence: 1, evidence: ['e'] }] as any,
-      signature: [{ type: 'JWT', location: 'y', confidence: 1, parameters: ['p'] }] as any,
-      token: [{ type: 'JWT', location: 'z', confidence: 1, format: 'jwt' }] as any,
-      customPatterns: [],
-    });
-    vi.spyOn(analyzer, 'analyzeCriticalLogsWithLLM').mockResolvedValue({
-      keyFunctions: [{ name: 'llmFunc', purpose: 'x', confidence: 0.9 }],
-      dataFlow: 'df',
-      suspiciousPatterns: [],
-    });
+  it('analyzeWithLLM delegates to rule-based analysis and ignores legacy dependencies', async () => {
+    const legacy = { chat: vi.fn() } as any;
+    const analyzer = new IntelligentAnalyzer(legacy);
+    const analyzeSpy = vi.spyOn(analyzer, 'analyze');
 
     const result = await analyzer.analyzeWithLLM(makeData() as any);
 
-    expect(result.patterns.encryption?.some((p) => p.type === 'AES')).toBe(true);
-    expect(result.patterns.signature?.some((p) => p.type === 'JWT')).toBe(true);
-    expect(result.summary.keyFunctions).toContain('llmFunc');
+    expect(analyzeSpy).toHaveBeenCalledTimes(1);
+    expect(legacy.chat).not.toHaveBeenCalled();
+    expect(result.summary.totalRequests).toBe(2);
+    expect(result.summary.suspiciousAPIs).toEqual(['api.sign']);
   });
 
   it('generateAIFriendlySummary handles non-array evidence gracefully', () => {
     const analyzer = new IntelligentAnalyzer();
     const result = analyzer.analyze(makeData() as any);
-    // Simulate malformed LLM output where evidence is not an array
     result.patterns.encryption = [
       { type: 'AES', location: 'test', confidence: 0.9, evidence: 'not-an-array' as any },
     ];
@@ -222,7 +206,6 @@ describe('IntelligentAnalyzer', () => {
   it('generateAIFriendlySummary handles non-array parameters gracefully', () => {
     const analyzer = new IntelligentAnalyzer();
     const result = analyzer.analyze(makeData() as any);
-    // Simulate malformed LLM output where parameters is not an array
     result.patterns.signature = [
       { type: 'HMAC', location: 'test', confidence: 0.9, parameters: 'not-an-array' as any },
     ];
@@ -233,10 +216,9 @@ describe('IntelligentAnalyzer', () => {
     expect(summary).toContain('not-an-array');
   });
 
-  it('generateAIFriendlySummary handles undefined evidence/parameters gracefully', () => {
+  it('generateAIFriendlySummary handles undefined evidence and parameters gracefully', () => {
     const analyzer = new IntelligentAnalyzer();
     const result = analyzer.analyze(makeData() as any);
-    // Simulate malformed LLM output with undefined values
     result.patterns.encryption = [
       { type: 'AES', location: 'test', confidence: 0.9, evidence: undefined as any },
     ];

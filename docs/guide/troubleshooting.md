@@ -15,9 +15,13 @@ This guide covers common issues and their solutions.
 **Solution**:
 
 ```bash
-# Option 1: Use Node 20 (recommended)
-nvm install 20
-nvm use 20
+# Option 1: Use a supported Node.js version
+nvm install 20.19.0
+nvm use 20.19.0
+
+# Or use a supported Node 22 release
+nvm install 22.12.0
+nvm use 22.12.0
 
 # Option 2: Let Node 22/24 compile from source (slow)
 # This may take 10+ minutes on first install
@@ -58,6 +62,34 @@ This is a cosmetic issue and does not affect functionality.
 
 ---
 
+## Trace / SQLite Backend Issues
+
+### better-sqlite3 Missing or ABI Mismatch
+
+**Symptom**: `trace` tools are unavailable, trace tests are skipped, or errors mention `better_sqlite3.node`, `NODE_MODULE_VERSION`, or “compiled against a different Node.js version”.
+
+**Cause**: the `trace` domain uses the optional native SQLite backend `better-sqlite3`. If dependencies were installed under a different Node version, the native binary can target the wrong ABI.
+
+**Solution**:
+
+```bash
+# Install the optional trace backend at the project root
+pnpm add -O better-sqlite3@12.6.2
+
+# If it was already installed under another Node version, rebuild it
+npm rebuild better-sqlite3 --foreground-scripts
+```
+
+**Verification**:
+
+```bash
+node -e "const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.close(); console.log('better-sqlite3 OK')"
+```
+
+Run `doctor_environment` afterwards. It now reports the dedicated `better-sqlite3` health check used by `trace`.
+
+---
+
 ## camoufox-js Optional Dependency
 
 **Symptom**: Missing types or runtime errors related to `camoufox-js`.
@@ -67,11 +99,12 @@ This is a cosmetic issue and does not affect functionality.
 **Solution**:
 
 ```bash
-# Install the missing types
-npm install --save-dev @types/camoufox-js
+# Install optional browser dependencies and fetch the browser binary
+pnpm run install:full
 
-# Or if using pnpm
-pnpm add -D @types/camoufox-js
+# Or install Camoufox only
+pnpm add camoufox-js
+pnpm exec camoufox-js fetch
 ```
 
 If the package is truly missing, stealth features using Camoufox will fall back to standard Puppeteer.

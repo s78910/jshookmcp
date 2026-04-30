@@ -82,7 +82,7 @@ describe('chromeEnvironmentTemplate', () => {
     it('has taskbar-adjusted availHeight', () => {
       expect(chromeEnvironmentTemplate.screen.availHeight).toBe(1040);
       expect(chromeEnvironmentTemplate.screen.availHeight).toBeLessThan(
-        chromeEnvironmentTemplate.screen.height
+        chromeEnvironmentTemplate.screen.height,
       );
     });
 
@@ -129,7 +129,7 @@ describe('chromeEnvironmentTemplate', () => {
     it('matches location URL', () => {
       expect(chromeEnvironmentTemplate.document.URL).toBe(chromeEnvironmentTemplate.location.href);
       expect(chromeEnvironmentTemplate.document.domain).toBe(
-        chromeEnvironmentTemplate.location.hostname
+        chromeEnvironmentTemplate.location.hostname,
       );
     });
 
@@ -297,6 +297,7 @@ describe('chromeEnvironmentTemplate', () => {
     });
 
     it('WebSocket accepts url and has required methods', () => {
+      // @ts-expect-error — auto-suppressed [TS2554]
       const ws = new chromeEnvironmentTemplate.constructors.WebSocket('ws://test');
       expect(typeof ws.send).toBe('function');
       expect(typeof ws.close).toBe('function');
@@ -323,9 +324,11 @@ describe('chromeEnvironmentTemplate', () => {
     });
 
     it('URL and URLSearchParams can be instantiated', () => {
+      // @ts-expect-error — auto-suppressed [TS2554]
       const url = new chromeEnvironmentTemplate.constructors.URL('https://test.com');
       expect(url).toBeDefined();
 
+      // @ts-expect-error — auto-suppressed [TS2554]
       const params = new chromeEnvironmentTemplate.constructors.URLSearchParams('a=1');
       expect(params).toBeDefined();
       expect(typeof params.append).toBe('function');
@@ -334,6 +337,7 @@ describe('chromeEnvironmentTemplate', () => {
     });
 
     it('Blob and File can be instantiated', () => {
+      // @ts-expect-error — auto-suppressed [TS2554]
       const blob = new chromeEnvironmentTemplate.constructors.Blob([], {});
       expect(blob).toBeDefined();
 
@@ -342,6 +346,7 @@ describe('chromeEnvironmentTemplate', () => {
     });
 
     it('Request and Response can be instantiated', () => {
+      // @ts-expect-error — auto-suppressed [TS2554]
       const req = new chromeEnvironmentTemplate.constructors.Request('https://test.com');
       expect(req).toBeDefined();
 

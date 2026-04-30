@@ -31,92 +31,97 @@ describe('replay — additional coverage', () => {
   // isPrivateHost
   // ────────────────────────────────────────────────────────────────
   describe('isPrivateHost', () => {
-    it('blocks 127.x.x.x (loopback)', () => {
+    it('blocks 127.x.x.x (loopback)', async () => {
       expect(isPrivateHost('127.0.0.1')).toBe(true);
       expect(isPrivateHost('127.255.255.255')).toBe(true);
     });
 
-    it('blocks 10.x.x.x (private)', () => {
+    it('blocks 10.x.x.x (private)', async () => {
       expect(isPrivateHost('10.0.0.1')).toBe(true);
       expect(isPrivateHost('10.255.255.255')).toBe(true);
     });
 
-    it('blocks 172.16-31.x.x (private)', () => {
+    it('blocks 172.16-31.x.x (private)', async () => {
       expect(isPrivateHost('172.16.0.1')).toBe(true);
       expect(isPrivateHost('172.31.255.255')).toBe(true);
     });
 
-    it('allows 172.32.x.x (not private)', () => {
+    it('allows 172.32.x.x (not private)', async () => {
       expect(isPrivateHost('172.32.0.1')).toBe(false);
     });
 
-    it('blocks 192.168.x.x (private)', () => {
+    it('blocks 192.168.x.x (private)', async () => {
       expect(isPrivateHost('192.168.0.1')).toBe(true);
       expect(isPrivateHost('192.168.255.255')).toBe(true);
     });
 
-    it('blocks 169.254.x.x (link-local)', () => {
+    it('blocks 169.254.x.x (link-local)', async () => {
       expect(isPrivateHost('169.254.169.254')).toBe(true);
     });
 
-    it('blocks 0.x.x.x', () => {
+    it('blocks 100.64.x.x (shared address space)', async () => {
+      expect(isPrivateHost('100.64.0.1')).toBe(true);
+      expect(isPrivateHost('100.127.255.255')).toBe(true);
+    });
+
+    it('blocks 0.x.x.x', async () => {
       expect(isPrivateHost('0.0.0.0')).toBe(true);
     });
 
-    it('blocks ::1 (IPv6 loopback)', () => {
+    it('blocks ::1 (IPv6 loopback)', async () => {
       expect(isPrivateHost('::1')).toBe(true);
     });
 
-    it('blocks :: (unspecified)', () => {
+    it('blocks :: (unspecified)', async () => {
       expect(isPrivateHost('::')).toBe(true);
     });
 
-    it('blocks IPv4-mapped IPv6', () => {
+    it('blocks IPv4-mapped IPv6', async () => {
       expect(isPrivateHost('::ffff:127.0.0.1')).toBe(true);
     });
 
-    it('blocks fc00: (IPv6 unique-local)', () => {
+    it('blocks fc00: (IPv6 unique-local)', async () => {
       expect(isPrivateHost('fc00::1')).toBe(true);
     });
 
-    it('blocks fd (IPv6 unique-local)', () => {
+    it('blocks fd (IPv6 unique-local)', async () => {
       expect(isPrivateHost('fd12::1')).toBe(true);
     });
 
-    it('blocks fe80: (IPv6 link-local)', () => {
+    it('blocks fe80: (IPv6 link-local)', async () => {
       expect(isPrivateHost('fe80::1')).toBe(true);
     });
 
-    it('blocks localhost', () => {
+    it('blocks localhost', async () => {
       expect(isPrivateHost('localhost')).toBe(true);
       expect(isPrivateHost('LOCALHOST')).toBe(true);
     });
 
-    it('strips brackets from IPv6 literals', () => {
+    it('strips brackets from IPv6 literals', async () => {
       expect(isPrivateHost('[::1]')).toBe(true);
       expect(isPrivateHost('[fe80::1]')).toBe(true);
     });
 
-    it('allows public IP addresses', () => {
+    it('allows public IP addresses', async () => {
       expect(isPrivateHost('8.8.8.8')).toBe(false);
       expect(isPrivateHost('1.1.1.1')).toBe(false);
       expect(isPrivateHost(buildPublicIp())).toBe(false);
     });
 
-    it('allows public hostnames', () => {
+    it('allows public hostnames', async () => {
       expect(isPrivateHost('example.com')).toBe(false);
       expect(isPrivateHost('google.com')).toBe(false);
     });
 
-    it('blocks 64:ff9b:: (NAT64 prefix)', () => {
+    it('blocks 64:ff9b:: (NAT64 prefix)', async () => {
       expect(isPrivateHost('64:ff9b::1')).toBe(true);
     });
 
-    it('blocks 100:: (discard prefix)', () => {
+    it('blocks 100:: (discard prefix)', async () => {
       expect(isPrivateHost('100::1')).toBe(true);
     });
 
-    it('blocks ::ffff:0: (IPv4-translated)', () => {
+    it('blocks ::ffff:0: (IPv4-translated)', async () => {
       expect(isPrivateHost('::ffff:0:127.0.0.1')).toBe(true);
     });
   });
@@ -125,25 +130,25 @@ describe('replay — additional coverage', () => {
   // isLoopbackHost
   // ────────────────────────────────────────────────────────────────
   describe('isLoopbackHost', () => {
-    it('recognizes localhost', () => {
+    it('recognizes localhost', async () => {
       expect(isLoopbackHost('localhost')).toBe(true);
       expect(isLoopbackHost('LOCALHOST')).toBe(true);
       expect(isLoopbackHost('Localhost')).toBe(true);
     });
 
-    it('recognizes 127.0.0.1', () => {
+    it('recognizes 127.0.0.1', async () => {
       expect(isLoopbackHost('127.0.0.1')).toBe(true);
     });
 
-    it('recognizes ::1', () => {
+    it('recognizes ::1', async () => {
       expect(isLoopbackHost('::1')).toBe(true);
     });
 
-    it('strips brackets from IPv6', () => {
+    it('strips brackets from IPv6', async () => {
       expect(isLoopbackHost('[::1]')).toBe(true);
     });
 
-    it('rejects non-loopback hosts', () => {
+    it('rejects non-loopback hosts', async () => {
       expect(isLoopbackHost('10.0.0.1')).toBe(false);
       expect(isLoopbackHost('example.com')).toBe(false);
       expect(isLoopbackHost('192.168.1.1')).toBe(false);
@@ -178,6 +183,24 @@ describe('replay — additional coverage', () => {
     it('denies invalid URLs', async () => {
       expect(await isSsrfTarget('not-a-url')).toBe(true);
     });
+
+    it('allows private targets only when ALLOW_LOCAL_SSRF=true', async () => {
+      const previousAllowLocalSsrf = process.env.ALLOW_LOCAL_SSRF;
+      process.env.ALLOW_LOCAL_SSRF = 'true';
+
+      try {
+        expect(await isSsrfTarget('https://localhost/api')).toBe(false);
+        expect(await isSsrfTarget('https://evil.example.com/')).toBe(false);
+        expect(await isSsrfTarget('not-a-url')).toBe(true);
+        expect(lookupMock).not.toHaveBeenCalled();
+      } finally {
+        if (previousAllowLocalSsrf === undefined) {
+          delete process.env.ALLOW_LOCAL_SSRF;
+        } else {
+          process.env.ALLOW_LOCAL_SSRF = previousAllowLocalSsrf;
+        }
+      }
+    });
   });
 
   // ────────────────────────────────────────────────────────────────
@@ -203,7 +226,7 @@ describe('replay — additional coverage', () => {
             prototype: 'malicious',
           },
         },
-        { requestId: 'r1', dryRun: true }
+        { requestId: 'r1', dryRun: true },
       );
 
       expect(result.dryRun).toBe(true);
@@ -237,7 +260,7 @@ describe('replay — additional coverage', () => {
             Upgrade: 'h2c',
           },
         },
-        { requestId: 'r1', dryRun: true }
+        { requestId: 'r1', dryRun: true },
       );
 
       const preview = (result as any).preview;
@@ -259,7 +282,7 @@ describe('replay — additional coverage', () => {
           headers: { 'Content-Type': 'application/json' },
           postData: '{"key":"value"}',
         },
-        { requestId: 'r1' } // dryRun defaults to true
+        { requestId: 'r1' }, // dryRun defaults to true
       );
 
       expect(result.dryRun).toBe(true);
@@ -278,7 +301,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r1', dryRun: true }
+        { requestId: 'r1', dryRun: true },
       );
 
       expect(result.dryRun).toBe(true);
@@ -288,8 +311,8 @@ describe('replay — additional coverage', () => {
       await expect(
         replayRequest(
           { url: 'https://localhost/api', method: 'GET', headers: {} },
-          { requestId: 'r1', dryRun: true }
-        )
+          { requestId: 'r1', dryRun: true },
+        ),
       ).rejects.toThrow('private/reserved');
     });
 
@@ -310,7 +333,7 @@ describe('replay — additional coverage', () => {
           methodOverride: 'POST',
           headerPatch: { 'X-Custom': 'new' },
           bodyPatch: 'new-body',
-        }
+        },
       );
 
       const preview = (result as any).preview;
@@ -330,7 +353,7 @@ describe('replay — additional coverage', () => {
           headers: {},
           postData: 'original-body',
         },
-        { requestId: 'r1', dryRun: true }
+        { requestId: 'r1', dryRun: true },
       );
 
       const preview = (result as any).preview;
@@ -346,7 +369,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r1', dryRun: true }
+        { requestId: 'r1', dryRun: true },
       );
 
       const preview = (result as any).preview;
@@ -365,7 +388,7 @@ describe('replay — additional coverage', () => {
           status: 200,
           statusText: 'OK',
           headers: { 'content-type': 'text/plain' },
-        })
+        }),
       );
 
       const result = await replayRequest(
@@ -374,7 +397,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r-live', dryRun: false }
+        { requestId: 'r-live', dryRun: false },
       );
 
       expect(result.dryRun).toBe(false);
@@ -397,7 +420,7 @@ describe('replay — additional coverage', () => {
           headers: {},
         },
         { requestId: 'r-trunc', dryRun: false },
-        100 // small maxBodyBytes
+        100, // small maxBodyBytes
       );
 
       const live = result as any;
@@ -415,9 +438,45 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r1', dryRun: false }
-        )
-      ).rejects.toThrow('insecure HTTP is only allowed for loopback');
+          { requestId: 'r1', dryRun: false },
+        ),
+      ).rejects.toThrow(
+        'insecure HTTP is only allowed for loopback or explicitly authorized targets',
+      );
+    });
+
+    it('allows non-loopback HTTP targets when ALLOW_LOCAL_SSRF=true', async () => {
+      const previousAllowLocalSsrf = process.env.ALLOW_LOCAL_SSRF;
+      process.env.ALLOW_LOCAL_SSRF = 'true';
+      fetchMock.mockResolvedValue(new Response('ok', { status: 200 }));
+
+      try {
+        const result = await replayRequest(
+          {
+            url: 'http://10.0.0.1/api',
+            method: 'GET',
+            headers: {},
+          },
+          { requestId: 'r-http-allow', dryRun: false },
+        );
+
+        expect(result.dryRun).toBe(false);
+        expect(fetchMock).toHaveBeenCalledWith(
+          'http://10.0.0.1/api',
+          expect.objectContaining({
+            method: 'GET',
+            redirect: 'manual',
+            headers: {},
+          }),
+        );
+        expect(lookupMock).not.toHaveBeenCalled();
+      } finally {
+        if (previousAllowLocalSsrf === undefined) {
+          delete process.env.ALLOW_LOCAL_SSRF;
+        } else {
+          process.env.ALLOW_LOCAL_SSRF = previousAllowLocalSsrf;
+        }
+      }
     });
 
     it('blocks HTTP for loopback targets due to SSRF guard', async () => {
@@ -430,8 +489,8 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r-loop', dryRun: false }
-        )
+          { requestId: 'r-loop', dryRun: false },
+        ),
       ).rejects.toThrow('private/reserved');
     });
 
@@ -444,8 +503,8 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r-loop-ip', dryRun: false }
-        )
+          { requestId: 'r-loop-ip', dryRun: false },
+        ),
       ).rejects.toThrow('private/reserved');
     });
 
@@ -459,8 +518,8 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r1', dryRun: false }
-        )
+          { requestId: 'r1', dryRun: false },
+        ),
       ).rejects.toThrow('resolved to private IP');
     });
 
@@ -474,8 +533,8 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r1', dryRun: false }
-        )
+          { requestId: 'r1', dryRun: false },
+        ),
       ).rejects.toThrow('DNS resolution failed');
     });
 
@@ -490,7 +549,7 @@ describe('replay — additional coverage', () => {
           headers: {},
           postData: 'should-not-be-sent',
         },
-        { requestId: 'r1', dryRun: false }
+        { requestId: 'r1', dryRun: false },
       );
 
       const fetchCall = getFetchCall(0);
@@ -508,7 +567,7 @@ describe('replay — additional coverage', () => {
           headers: {},
           postData: 'should-not-be-sent',
         },
-        { requestId: 'r1', dryRun: false }
+        { requestId: 'r1', dryRun: false },
       );
 
       const fetchCall = getFetchCall(0);
@@ -526,7 +585,7 @@ describe('replay — additional coverage', () => {
           headers: {},
           postData: '{"key":"value"}',
         },
-        { requestId: 'r1', dryRun: false }
+        { requestId: 'r1', dryRun: false },
       );
 
       const fetchCall = getFetchCall(0);
@@ -543,7 +602,7 @@ describe('replay — additional coverage', () => {
           method: 'get',
           headers: {},
         },
-        { requestId: 'r1', dryRun: false }
+        { requestId: 'r1', dryRun: false },
       );
 
       const fetchCall = getFetchCall(0);
@@ -560,7 +619,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r1', dryRun: false, methodOverride: 'delete' }
+        { requestId: 'r1', dryRun: false, methodOverride: 'delete' },
       );
 
       const fetchCall = getFetchCall(0);
@@ -577,7 +636,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r1', dryRun: false, urlOverride: 'https://new.example.com/api' }
+        { requestId: 'r1', dryRun: false, urlOverride: 'https://new.example.com/api' },
       );
 
       const fetchCall = getFetchCall(0);
@@ -593,7 +652,7 @@ describe('replay — additional coverage', () => {
             'X-Response-1': 'value1',
             'X-Response-2': 'value2',
           },
-        })
+        }),
       );
 
       const result = await replayRequest(
@@ -602,7 +661,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r1', dryRun: false }
+        { requestId: 'r1', dryRun: false },
       );
 
       const live = result as any;
@@ -619,7 +678,7 @@ describe('replay — additional coverage', () => {
           method: 'GET',
           headers: {},
         },
-        { requestId: 'r-ip', dryRun: false }
+        { requestId: 'r-ip', dryRun: false },
       );
 
       const live = result as any;
@@ -641,7 +700,7 @@ describe('replay — additional coverage', () => {
           new Response(null, {
             status: 302,
             headers: { Location: 'https://example.com/new-path' },
-          })
+          }),
         )
         .mockResolvedValueOnce(new Response('redirected', { status: 200 }));
 
@@ -652,7 +711,7 @@ describe('replay — additional coverage', () => {
           headers: {},
           postData: 'body-data',
         },
-        { requestId: 'r-redir', dryRun: false }
+        { requestId: 'r-redir', dryRun: false },
       );
 
       const live = result as any;
@@ -673,7 +732,7 @@ describe('replay — additional coverage', () => {
           new Response(null, {
             status: 301,
             headers: { Location: 'https://example.com/new' },
-          })
+          }),
         )
         .mockResolvedValueOnce(new Response('final', { status: 200 }));
 
@@ -683,7 +742,7 @@ describe('replay — additional coverage', () => {
           method: 'POST',
           headers: {},
         },
-        { requestId: 'r-301', dryRun: false }
+        { requestId: 'r-301', dryRun: false },
       );
 
       const live = result as any;
@@ -698,7 +757,7 @@ describe('replay — additional coverage', () => {
           new Response(null, {
             status: 303,
             headers: { Location: 'https://example.com/see-other' },
-          })
+          }),
         )
         .mockResolvedValueOnce(new Response('final', { status: 200 }));
 
@@ -708,7 +767,7 @@ describe('replay — additional coverage', () => {
           method: 'POST',
           headers: {},
         },
-        { requestId: 'r-303', dryRun: false }
+        { requestId: 'r-303', dryRun: false },
       );
 
       const live = result as any;
@@ -721,7 +780,7 @@ describe('replay — additional coverage', () => {
       // A redirect without Location header breaks out of the redirect loop,
       // but the final response is still a 3xx, triggering the "too many redirects" error
       fetchMock.mockResolvedValueOnce(
-        new Response(null, { status: 302 })
+        new Response(null, { status: 302 }),
         // No Location header
       );
 
@@ -732,8 +791,8 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r-noloc', dryRun: false }
-        )
+          { requestId: 'r-noloc', dryRun: false },
+        ),
       ).rejects.toThrow('too many redirects');
     });
 
@@ -746,7 +805,7 @@ describe('replay — additional coverage', () => {
           new Response(null, {
             status: 302,
             headers: { Location: `https://example.com/hop${i + 1}` },
-          })
+          }),
         );
       }
 
@@ -757,8 +816,8 @@ describe('replay — additional coverage', () => {
             method: 'GET',
             headers: {},
           },
-          { requestId: 'r-loops', dryRun: false }
-        )
+          { requestId: 'r-loops', dryRun: false },
+        ),
       ).rejects.toThrow('too many redirects');
     });
   });
@@ -780,7 +839,7 @@ describe('replay — additional coverage', () => {
           requestId: 'r1',
           dryRun: true,
           headerPatch: { Authorization: 'Bearer new', 'X-Custom': 'added' },
-        }
+        },
       );
 
       const preview = (result as any).preview;

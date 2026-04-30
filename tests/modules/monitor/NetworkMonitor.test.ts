@@ -16,7 +16,7 @@ import { NetworkMonitor } from '@modules/monitor/NetworkMonitor';
 function createMockSession() {
   const listeners = new Map<string, Set<(payload: any) => void>>();
 
-  const send = vi.fn(async (..._args: unknown[]) => ({}));
+  const send = vi.fn(async (..._args: any[]) => ({}));
   const on = vi.fn((event: string, handler: (payload: any) => void) => {
     const group = listeners.get(event) ?? new Set<(payload: any) => void>();
     group.add(handler);
@@ -123,7 +123,7 @@ describe('NetworkMonitor', () => {
           throw new Error('Body unavailable');
         }
         return {};
-      }
+      },
     );
 
     const monitor = new NetworkMonitor(session);
@@ -198,7 +198,7 @@ describe('NetworkMonitor', () => {
           };
         }
         return {};
-      }
+      },
     );
 
     const monitor = new NetworkMonitor(session);
@@ -274,12 +274,12 @@ describe('NetworkMonitor', () => {
               resolve({
                 body: `console.log("${params.requestId}")`,
                 base64Encoded: false,
-              })
+              }),
             );
           });
         }
         return Promise.resolve({});
-      }
+      },
     );
 
     const monitor = new NetworkMonitor(session);
@@ -318,8 +318,8 @@ describe('NetworkMonitor', () => {
 
     expect(
       (send as ReturnType<typeof vi.fn>).mock.calls.filter(
-        ([method]) => method === 'Network.getResponseBody'
-      )
+        ([method]) => method === 'Network.getResponseBody',
+      ),
     ).toHaveLength(2);
 
     pendingResolvers.get('js-a')?.();

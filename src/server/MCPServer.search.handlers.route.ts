@@ -27,7 +27,7 @@ function populateCallCommands(response: RouterResponse): RouterResponse {
 
 export async function handleRouteTool(
   ctx: MCPServerContext,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
 ): Promise<ToolResponse> {
   const task = args.task as string;
   const context = args.context as
@@ -40,17 +40,19 @@ export async function handleRouteTool(
 
   if (!task || typeof task !== 'string') {
     return asTextResponse(
-      JSON.stringify({ success: false, error: 'task must be a non-empty string' })
+      JSON.stringify({ success: false, error: 'task must be a non-empty string' }),
     );
   }
 
-  const engine = getSearchEngine(ctx);
-  const autoActivate = context?.autoActivate !== false;
+  const engine = await getSearchEngine(ctx);
+  // SECURITY: Default autoActivate to false to prevent privilege escalation.
+  // Previously defaulted to true, allowing prompt injection to activate powerful tools.
+  const autoActivate = context?.autoActivate === true;
   let response = populateCallCommands(await routeToolRequest({ task, context }, ctx, engine));
 
   if (autoActivate) {
     const inactiveRecs = response.recommendations.filter(
-      (recommendation) => !recommendation.isActive
+      (recommendation) => !recommendation.isActive,
     );
 
     if (inactiveRecs.length > 0) {
@@ -99,8 +101,8 @@ export async function handleRouteTool(
           await routeToolRequest(
             { task, context: { ...context, autoActivate: false } },
             ctx,
-            engine
-          )
+            engine,
+          ),
         );
         response.autoActivated = true;
         response.activatedNames = inactiveRecs
@@ -121,13 +123,13 @@ export async function handleRouteTool(
 
 export async function handleDescribeTool(
   ctx: MCPServerContext,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
 ): Promise<ToolResponse> {
   const name = args.name as string;
 
   if (!name || typeof name !== 'string') {
     return asTextResponse(
-      JSON.stringify({ success: false, error: 'name must be a non-empty string' })
+      JSON.stringify({ success: false, error: 'name must be a non-empty string' }),
     );
   }
 

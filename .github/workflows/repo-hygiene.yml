@@ -36,7 +36,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -47,17 +47,10 @@ jobs:
       - name: Enable Corepack pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.28.2 --activate
+          corepack prepare pnpm@10.33.0 --activate
 
       - name: Markdown lint
-        run: |
-          pnpm dlx markdownlint-cli2 \
-            --config .markdownlint-cli2.jsonc \
-            README.md \
-            README.zh.md \
-            CONTRIBUTING.md \
-            "docs/**/*.md" \
-            ".github/**/*.md"
+        run: pnpm run lint:md
 
   actionlint:
     runs-on: ubuntu-latest
@@ -65,7 +58,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
       - name: Run actionlint
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.11
 
@@ -75,7 +68,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -86,7 +79,7 @@ jobs:
       - name: Enable Corepack pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@10.28.2 --activate
+          corepack prepare pnpm@10.33.0 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

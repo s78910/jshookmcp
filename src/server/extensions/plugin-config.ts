@@ -15,7 +15,7 @@ function envCandidates(pluginId: string, key: string): string[] {
 }
 
 function parseBoolean(raw: string | undefined): boolean | undefined {
-  if (raw == null) return undefined;
+  if (raw === undefined) return undefined;
   const value = raw.trim().toLowerCase();
   if (['1', 'true', 'yes', 'on'].includes(value)) return true;
   if (['0', 'false', 'no', 'off'].includes(value)) return false;
@@ -26,7 +26,7 @@ export function getPluginBooleanConfig(
   ctx: PluginLifecycleContext,
   pluginId: string,
   key: string,
-  fallback: boolean
+  fallback: boolean,
 ): boolean {
   for (const candidate of envCandidates(pluginId, key)) {
     const parsed = parseBoolean(process.env[candidate]);

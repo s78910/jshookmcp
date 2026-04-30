@@ -1,87 +1,29 @@
-import { AIHookGenerator, type AIHookRequest } from '@server/domains/shared/modules';
 import type { PageController } from '@server/domains/shared/modules';
-import { evaluateWithTimeout, evaluateOnNewDocumentWithTimeout } from '@modules/collector/PageController';
+import {
+  evaluateWithTimeout,
+  evaluateOnNewDocumentWithTimeout,
+} from '@modules/collector/PageController';
 import { logger } from '@utils/logger';
 import { argString, argStringRequired, argBool } from '@server/domains/shared/parse-args';
 
 export class AIHookToolHandlers {
-  private hookGenerator: AIHookGenerator;
   private injectedHooks: Map<string, { code: string; injectionTime: number }> = new Map();
 
-  constructor(private pageController: PageController) {
-    this.hookGenerator = new AIHookGenerator();
+  constructor(private pageController: PageController) {}
+
+  private hasAttachedTargetSession(): boolean {
+    return this.pageController.hasAttachedTargetSession();
   }
 
-  async handleAIHookGenerate(args: Record<string, unknown>) {
-    try {
-      let target: AIHookRequest['target'];
-      if (args.target) {
-        target = args.target as AIHookRequest['target'];
-      } else {
-        const pattern = argString(args, 'pattern', '');
-        let targetType: AIHookRequest['target']['type'] = 'function';
-        let targetName = pattern;
-        if (pattern === 'fetch' || pattern === 'XMLHttpRequest') {
-          targetType = 'api';
-        } else if (pattern.includes('.')) {
-          targetType = 'object-method';
-          targetName = pattern.split('.').pop() || pattern;
-        }
-        target = { type: targetType, name: targetName };
-      }
+  private async evaluateInAttachedTarget(expression: string): Promise<unknown> {
+    return await this.pageController.evaluateAttachedTarget(expression, {
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
 
-      const request: AIHookRequest = {
-        description: argString(args, 'description') || `Hook ${target.name || 'target'}`,
-        target,
-        behavior: (args.behavior as AIHookRequest['behavior']) || {
-          captureArgs: true,
-          captureReturn: true,
-          logToConsole: true,
-        },
-        condition: args.condition as AIHookRequest['condition'],
-        customCode: args.customCode as AIHookRequest['customCode'],
-      };
-
-      const response = this.hookGenerator.generateHook(request);
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: response.success,
-                hookId: response.hookId,
-                generatedCode: response.generatedCode,
-                explanation: response.explanation,
-                injectionMethod: response.injectionMethod,
-                warnings: response.warnings,
-                usage: ` ai_hook_inject(hookId: "${response.hookId}") Hook`,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    } catch (error) {
-      logger.error('AI Hook generation failed', error);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: false,
-                error: error instanceof Error ? error.message : String(error),
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
+  private async addScriptToAttachedTarget(source: string): Promise<void> {
+    await this.pageController.addScriptToAttachedTarget(source);
   }
 
   async handleAIHookInject(args: Record<string, unknown>) {
@@ -90,14 +32,24 @@ export class AIHookToolHandlers {
       const code = argStringRequired(args, 'code');
       const method = argString(args, 'method', 'evaluate') as 'evaluateOnNewDocument' | 'evaluate';
 
-      const page = await this.pageController.getPage();
-
-      if (method === 'evaluateOnNewDocument') {
-        await evaluateOnNewDocumentWithTimeout(page, code);
-        logger.info(`Hook injected (evaluateOnNewDocument): ${hookId}`);
+      if (this.hasAttachedTargetSession()) {
+        if (method === 'evaluateOnNewDocument') {
+          await this.addScriptToAttachedTarget(code);
+          logger.info(`Hook injected into attached target (evaluateOnNewDocument): ${hookId}`);
+        } else {
+          await this.evaluateInAttachedTarget(code);
+          logger.info(`Hook injected into attached target (evaluate): ${hookId}`);
+        }
       } else {
-        await evaluateWithTimeout(page, code);
-        logger.info(`Hook injected (evaluate): ${hookId}`);
+        const page = await this.pageController.getPage();
+
+        if (method === 'evaluateOnNewDocument') {
+          await evaluateOnNewDocumentWithTimeout(page, code);
+          logger.info(`Hook injected (evaluateOnNewDocument): ${hookId}`);
+        } else {
+          await evaluateWithTimeout(page, code);
+          logger.info(`Hook injected (evaluate): ${hookId}`);
+        }
       }
 
       this.injectedHooks.set(hookId, {
@@ -117,7 +69,7 @@ export class AIHookToolHandlers {
                 injectionTime: new Date().toISOString(),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -134,7 +86,7 @@ export class AIHookToolHandlers {
                 error: error instanceof Error ? error.message : String(error),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -145,23 +97,35 @@ export class AIHookToolHandlers {
   async handleAIHookGetData(args: Record<string, unknown>) {
     try {
       const hookId = argStringRequired(args, 'hookId');
-      const page = await this.pageController.getPage();
-
-      const hookData = await evaluateWithTimeout(
-        page,
-        (id) => {
-          if (!window.__aiHooks || !window.__aiHooks[id]) {
-            return null;
-          }
-          return {
-            hookId: id,
-            metadata: window.__aiHookMetadata?.[id],
-            records: window.__aiHooks[id],
-            totalRecords: window.__aiHooks[id].length,
-          };
-        },
-        hookId
-      );
+      const hookData = this.hasAttachedTargetSession()
+        ? await this.evaluateInAttachedTarget(`(() => {
+            const hookId = ${JSON.stringify(hookId)};
+            const hooks = globalThis.__aiHooks;
+            if (!hooks?.[hookId]) {
+              return null;
+            }
+            return {
+              hookId,
+              metadata: globalThis.__aiHookMetadata?.[hookId],
+              records: hooks[hookId],
+              totalRecords: hooks[hookId].length,
+            };
+          })()`)
+        : await evaluateWithTimeout(
+            await this.pageController.getPage(),
+            (id) => {
+              if (!window.__aiHooks?.[id]) {
+                return null;
+              }
+              return {
+                hookId: id,
+                metadata: window.__aiHookMetadata?.[id],
+                records: window.__aiHooks[id],
+                totalRecords: window.__aiHooks[id].length,
+              };
+            },
+            hookId,
+          );
 
       if (!hookData) {
         return {
@@ -174,7 +138,7 @@ export class AIHookToolHandlers {
                   message: `Hook: ${hookId}`,
                 },
                 null,
-                2
+                2,
               ),
             },
           ],
@@ -191,7 +155,7 @@ export class AIHookToolHandlers {
                 ...hookData,
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -208,7 +172,7 @@ export class AIHookToolHandlers {
                 error: error instanceof Error ? error.message : String(error),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -218,19 +182,30 @@ export class AIHookToolHandlers {
 
   async handleAIHookList(_args: Record<string, unknown>) {
     try {
-      const page = await this.pageController.getPage();
+      const allHooks = this.hasAttachedTargetSession()
+        ? ((await this.evaluateInAttachedTarget(`(() => {
+            const metadata = globalThis.__aiHookMetadata;
+            const hooks = globalThis.__aiHooks;
+            if (!metadata) {
+              return [];
+            }
+            return Object.keys(metadata).map((hookId) => ({
+              hookId,
+              metadata: metadata[hookId],
+              recordCount: hooks?.[hookId]?.length || 0,
+            }));
+          })()`)) as Array<Record<string, unknown>>)
+        : await evaluateWithTimeout(await this.pageController.getPage(), () => {
+            if (!window.__aiHookMetadata) {
+              return [];
+            }
 
-      const allHooks = await evaluateWithTimeout(page, () => {
-        if (!window.__aiHookMetadata) {
-          return [];
-        }
-
-        return Object.keys(window.__aiHookMetadata).map((hookId) => ({
-          hookId,
-          metadata: window.__aiHookMetadata![hookId],
-          recordCount: window.__aiHooks?.[hookId]?.length || 0,
-        }));
-      });
+            return Object.keys(window.__aiHookMetadata).map((hookId) => ({
+              hookId,
+              metadata: window.__aiHookMetadata![hookId],
+              recordCount: window.__aiHooks?.[hookId]?.length || 0,
+            }));
+          });
 
       return {
         content: [
@@ -243,7 +218,7 @@ export class AIHookToolHandlers {
                 hooks: allHooks,
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -260,7 +235,7 @@ export class AIHookToolHandlers {
                 error: error instanceof Error ? error.message : String(error),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -271,18 +246,27 @@ export class AIHookToolHandlers {
   async handleAIHookClear(args: Record<string, unknown>) {
     try {
       const hookId = argString(args, 'hookId');
-      const page = await this.pageController.getPage();
 
       if (hookId) {
-        await evaluateWithTimeout(
-          page,
-          (id) => {
-            if (window.__aiHooks && window.__aiHooks[id]) {
-              window.__aiHooks[id] = [];
-            }
-          },
-          hookId
-        );
+        if (this.hasAttachedTargetSession()) {
+          await this.evaluateInAttachedTarget(`(() => {
+              const hookId = ${JSON.stringify(hookId)};
+              if (globalThis.__aiHooks?.[hookId]) {
+                globalThis.__aiHooks[hookId] = [];
+              }
+              return true;
+            })()`);
+        } else {
+          await evaluateWithTimeout(
+            await this.pageController.getPage(),
+            (id) => {
+              if (window.__aiHooks?.[id]) {
+                window.__aiHooks[id] = [];
+              }
+            },
+            hookId,
+          );
+        }
 
         return {
           content: [
@@ -294,19 +278,30 @@ export class AIHookToolHandlers {
                   message: `Hook: ${hookId}`,
                 },
                 null,
-                2
+                2,
               ),
             },
           ],
         };
       } else {
-        await evaluateWithTimeout(page, () => {
-          if (window.__aiHooks) {
-            for (const key in window.__aiHooks) {
-              window.__aiHooks[key] = [];
+        if (this.hasAttachedTargetSession()) {
+          await this.evaluateInAttachedTarget(`(() => {
+              if (globalThis.__aiHooks) {
+                for (const key in globalThis.__aiHooks) {
+                  globalThis.__aiHooks[key] = [];
+                }
+              }
+              return true;
+            })()`);
+        } else {
+          await evaluateWithTimeout(await this.pageController.getPage(), () => {
+            if (window.__aiHooks) {
+              for (const key in window.__aiHooks) {
+                window.__aiHooks[key] = [];
+              }
             }
-          }
-        });
+          });
+        }
 
         return {
           content: [
@@ -318,7 +313,7 @@ export class AIHookToolHandlers {
                   message: 'Hook',
                 },
                 null,
-                2
+                2,
               ),
             },
           ],
@@ -336,7 +331,7 @@ export class AIHookToolHandlers {
                 error: error instanceof Error ? error.message : String(error),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -348,18 +343,27 @@ export class AIHookToolHandlers {
     try {
       const hookId = argStringRequired(args, 'hookId');
       const enabled = argBool(args, 'enabled')!;
-      const page = await this.pageController.getPage();
-
-      await evaluateWithTimeout(
-        page,
-        (id, enable) => {
-          if (window.__aiHookMetadata && window.__aiHookMetadata[id]) {
-            window.__aiHookMetadata[id].enabled = enable;
-          }
-        },
-        hookId,
-        enabled
-      );
+      if (this.hasAttachedTargetSession()) {
+        await this.evaluateInAttachedTarget(`(() => {
+            const hookId = ${JSON.stringify(hookId)};
+            const enabled = ${JSON.stringify(enabled)};
+            if (globalThis.__aiHookMetadata?.[hookId]) {
+              globalThis.__aiHookMetadata[hookId].enabled = enabled;
+            }
+            return true;
+          })()`);
+      } else {
+        await evaluateWithTimeout(
+          await this.pageController.getPage(),
+          (id, enable) => {
+            if (window.__aiHookMetadata?.[id]) {
+              window.__aiHookMetadata[id].enabled = enable;
+            }
+          },
+          hookId,
+          enabled,
+        );
+      }
 
       return {
         content: [
@@ -373,7 +377,7 @@ export class AIHookToolHandlers {
                 message: `Hook${enabled ? '' : ''}`,
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -390,7 +394,7 @@ export class AIHookToolHandlers {
                 error: error instanceof Error ? error.message : String(error),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -402,26 +406,39 @@ export class AIHookToolHandlers {
     try {
       const hookId = argString(args, 'hookId');
       const format = argString(args, 'format', 'json') as 'json' | 'csv';
-      const page = await this.pageController.getPage();
-
-      const exportData = await evaluateWithTimeout(
-        page,
-        (id) => {
-          if (id) {
+      const exportData = this.hasAttachedTargetSession()
+        ? await this.evaluateInAttachedTarget(`(() => {
+            const hookId = ${JSON.stringify(hookId)};
+            if (hookId) {
+              return {
+                hookId,
+                metadata: globalThis.__aiHookMetadata?.[hookId],
+                records: globalThis.__aiHooks?.[hookId] || [],
+              };
+            }
             return {
-              hookId: id,
-              metadata: window.__aiHookMetadata?.[id],
-              records: window.__aiHooks?.[id] || [],
+              metadata: globalThis.__aiHookMetadata || {},
+              records: globalThis.__aiHooks || {},
             };
-          } else {
-            return {
-              metadata: window.__aiHookMetadata || {},
-              records: window.__aiHooks || {},
-            };
-          }
-        },
-        hookId
-      );
+          })()`)
+        : await evaluateWithTimeout(
+            await this.pageController.getPage(),
+            (id) => {
+              if (id) {
+                return {
+                  hookId: id,
+                  metadata: window.__aiHookMetadata?.[id],
+                  records: window.__aiHooks?.[id] || [],
+                };
+              } else {
+                return {
+                  metadata: window.__aiHookMetadata || {},
+                  records: window.__aiHooks || {},
+                };
+              }
+            },
+            hookId,
+          );
 
       return {
         content: [
@@ -435,7 +452,7 @@ export class AIHookToolHandlers {
                 exportTime: new Date().toISOString(),
               },
               null,
-              2
+              2,
             ),
           },
         ],
@@ -452,11 +469,41 @@ export class AIHookToolHandlers {
                 error: error instanceof Error ? error.message : String(error),
               },
               null,
-              2
+              2,
             ),
           },
         ],
       };
+    }
+  }
+
+  async handleAIHook(args: Record<string, unknown>) {
+    const action = String(args['action'] ?? '');
+    switch (action) {
+      case 'inject':
+        return this.handleAIHookInject(args);
+      case 'get_data':
+        return this.handleAIHookGetData(args);
+      case 'list':
+        return this.handleAIHookList(args);
+      case 'clear':
+        return this.handleAIHookClear(args);
+      case 'toggle':
+        return this.handleAIHookToggle(args);
+      case 'export':
+        return this.handleAIHookExport(args);
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: `Unknown action: ${action}. Valid actions: inject, get_data, list, clear, toggle, export`,
+              }),
+            },
+          ],
+        };
     }
   }
 }

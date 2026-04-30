@@ -1,7 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
 import { bindByDepKey, toolLookup } from '@server/domains/shared/registry';
 import { coordinationTools } from '@server/domains/coordination/definitions';
-import { CoordinationHandlers } from '@server/domains/coordination/index';
+import type { CoordinationHandlers } from '@server/domains/coordination/index';
 
 const DOMAIN = 'coordination' as const;
 const DEP_KEY = 'coordinationHandlers' as const;
@@ -10,7 +10,8 @@ const t = toolLookup(coordinationTools);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { CoordinationHandlers } = await import('@server/domains/coordination/index');
   if (!ctx.coordinationHandlers) {
     ctx.coordinationHandlers = new CoordinationHandlers(ctx);
   }
@@ -22,7 +23,7 @@ const manifest = {
   version: 1,
   domain: DOMAIN,
   depKey: DEP_KEY,
-  profiles: ['workflow', 'full'],
+  profiles: ['full'],
   ensure,
   registrations: [
     {
@@ -44,6 +45,21 @@ const manifest = {
       tool: t('append_session_insight'),
       domain: DOMAIN,
       bind: b((h, a) => h.handleAppendSessionInsight(a)),
+    },
+    {
+      tool: t('save_page_snapshot'),
+      domain: DOMAIN,
+      bind: b((h, a) => h.handleSavePageSnapshot(a)),
+    },
+    {
+      tool: t('restore_page_snapshot'),
+      domain: DOMAIN,
+      bind: b((h, a) => h.handleRestorePageSnapshot(a)),
+    },
+    {
+      tool: t('list_page_snapshots'),
+      domain: DOMAIN,
+      bind: b((h) => h.handleListPageSnapshots()),
     },
   ],
 } satisfies DomainManifest<typeof DEP_KEY, H, typeof DOMAIN>;

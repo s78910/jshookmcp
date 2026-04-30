@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   unlink: vi.fn(),
   nativeReadMemory: vi.fn(),
   isKoffiAvailable: vi.fn(),
+  createPlatformProvider: vi.fn(),
 }));
 
 vi.mock('node:fs', () => ({
@@ -31,6 +32,10 @@ vi.mock('@src/native/Win32API', () => ({
   isKoffiAvailable: state.isKoffiAvailable,
 }));
 
+vi.mock('@native/platform/factory.js', () => ({
+  createPlatformProvider: state.createPlatformProvider,
+}));
+
 vi.mock('@src/utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -40,11 +45,13 @@ vi.mock('@src/utils/logger', () => ({
   },
 }));
 
-import { readMemory } from '@modules/process/memory/reader';
+import { readMemory, _resetLinuxProviderCache } from '@modules/process/memory/reader';
+import { MEMORY_MAX_READ_BYTES } from '@src/constants';
 
 describe('memory/reader', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetLinuxProviderCache();
     state.isKoffiAvailable.mockReturnValue(false);
   });
 
@@ -52,6 +59,13 @@ describe('memory/reader', () => {
     const result = await readMemory('linux', 1, 'not-hex', 4, vi.fn());
     expect(result.success).toBe(false);
     expect(result.error).toContain('Invalid address format');
+  });
+
+  it('rejects read sizes outside the allowed range', async () => {
+    const result = await readMemory('linux', 1, '0x10', MEMORY_MAX_READ_BYTES + 1, vi.fn());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Read size must be');
   });
 
   it('uses native Windows reader when koffi is available and succeeds', async () => {
@@ -80,11 +94,47 @@ describe('memory/reader', () => {
   });
 
   it('returns Linux privilege error when read output is empty', async () => {
+    state.createPlatformProvider.mockReturnValue({
+      checkAvailability: vi.fn().mockResolvedValue({ available: false }),
+    });
     state.execAsync.mockResolvedValue({ stdout: '', stderr: '' });
     const result = await readMemory('linux', 4, '0x30', 8, vi.fn());
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Requires root');
+    expect(result.error).toContain('Requires ptrace access');
+  });
+
+  it('uses native Linux provider when available', async () => {
+    state.createPlatformProvider.mockReturnValue({
+      checkAvailability: vi.fn().mockResolvedValue({ available: true }),
+      openProcess: vi.fn().mockReturnValue({ pid: 4 }),
+      readMemory: vi.fn().mockReturnValue({ data: Buffer.from([0xde, 0xad]), bytesRead: 2 }),
+      closeProcess: vi.fn(),
+    });
+    const result = await readMemory('linux', 4, '0x30', 2, vi.fn());
+
+    expect(result.success).toBe(true);
+    expect(result.data).toContain('DE');
+    expect(result.data).toContain('AD');
+  });
+
+  it('falls back to dd when native Linux provider throws', async () => {
+    state.createPlatformProvider.mockReturnValue({
+      checkAvailability: vi.fn().mockRejectedValue(new Error('no /proc')),
+    });
+    state.execAsync.mockResolvedValue({ stdout: 'deadbeef', stderr: '' });
+    const result = await readMemory('linux', 4, '0x30', 4, vi.fn());
+
+    expect(result.success).toBe(true);
+  });
+
+  it('returns Linux read failure when the shell command throws', async () => {
+    state.execAsync.mockRejectedValueOnce(new Error('boom'));
+
+    const result = await readMemory('linux', 4, '0x30', 8, vi.fn());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('ptrace access or root');
   });
 
   it('returns macOS protection error when region is not readable', async () => {
@@ -93,14 +143,59 @@ describe('memory/reader', () => {
       5,
       '0x1000',
       16,
-      vi.fn().mockResolvedValue({ success: true, isReadable: false, protection: '---' })
+      vi.fn().mockResolvedValue({ success: true, isReadable: false, protection: '---' }),
     );
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('not readable');
   });
 
+  it('rejects macOS null pointers before probing protection', async () => {
+    const result = await readMemory('darwin', 5, '0x0', 16, vi.fn());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('null pointer');
+  });
+
+  it('rejects macOS reads that exceed the maximum size', async () => {
+    const result = await readMemory('darwin', 5, '0x1000', MEMORY_MAX_READ_BYTES + 1, vi.fn());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Read size must be');
+  });
+
+  it('uses the macOS native fast-path when the provider is available', async () => {
+    state.createPlatformProvider.mockReturnValue({
+      checkAvailability: vi.fn().mockResolvedValue({ available: true }),
+      openProcess: vi.fn().mockReturnValue({ handle: 'darwin-handle' }),
+      readMemory: vi.fn().mockReturnValue({
+        data: Buffer.from([0xde, 0xad, 0xbe, 0xef]),
+        bytesRead: 4,
+      }),
+      closeProcess: vi.fn(),
+    });
+
+    const result = await readMemory('darwin', 5, '0x1000', 4, vi.fn());
+
+    expect(result.success).toBe(true);
+    expect(result.data).toBe('DE AD BE EF');
+    expect(state.createPlatformProvider).toHaveBeenCalled();
+  });
+
+  it('returns unsupported-platform error for unknown targets', async () => {
+    const result = await readMemory('freebsd' as never, 6, '0x2000', 4, vi.fn());
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not supported');
+  });
+
   it('reads macOS memory dump and returns uppercase hex bytes', async () => {
+    state.createPlatformProvider.mockReturnValue({
+      checkAvailability: vi.fn().mockResolvedValue({ available: false }),
+      openProcess: vi.fn(),
+      readMemory: vi.fn(),
+      closeProcess: vi.fn(),
+    });
     state.execAsync.mockResolvedValue({ stdout: '16 bytes written', stderr: '' });
     state.readFile.mockResolvedValue(Buffer.from([0xde, 0xad, 0xbe, 0xef]));
     state.unlink.mockResolvedValue(undefined);
@@ -110,7 +205,7 @@ describe('memory/reader', () => {
       6,
       '0x2000',
       4,
-      vi.fn().mockResolvedValue({ success: true, isReadable: true })
+      vi.fn().mockResolvedValue({ success: true, isReadable: true }),
     );
 
     expect(result.success).toBe(true);

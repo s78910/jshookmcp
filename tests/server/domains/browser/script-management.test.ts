@@ -1,10 +1,8 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ScriptManagementHandlers } from '@server/domains/browser/handlers/script-management';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('ScriptManagementHandlers', () => {
   const scriptManager = {
@@ -30,7 +28,7 @@ describe('ScriptManagementHandlers', () => {
       wrapped: { count: 2, scripts },
     });
 
-    const body = parseJson(await handlers.handleGetAllScripts({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleGetAllScripts({}));
 
     expect(scriptManager.getAllScripts).toHaveBeenCalledWith(false, 500);
     expect(detailedDataManager.smartHandle).toHaveBeenCalledWith({
@@ -46,19 +44,20 @@ describe('ScriptManagementHandlers', () => {
   it('returns not found payload when script source is missing', async () => {
     scriptManager.getScriptSource.mockResolvedValue(null);
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleGetScriptSource({
         scriptId: 'missing-script',
         url: 'https://example.test/app.js',
-      })
+      }),
     );
 
     expect(scriptManager.getScriptSource).toHaveBeenCalledWith(
       'missing-script',
-      'https://example.test/app.js'
+      'https://example.test/app.js',
     );
     expect(body).toEqual({
       success: false,
+      error: 'Script not found',
       message: 'Script not found',
     });
   });
@@ -70,8 +69,8 @@ describe('ScriptManagementHandlers', () => {
       source: ['first line', 'second line', 'third line'].join('\n'),
     });
 
-    const body = parseJson(
-      await handlers.handleGetScriptSource({ scriptId: 'script-1', preview: true })
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleGetScriptSource({ scriptId: 'script-1', preview: true }),
     );
 
     expect(body).toMatchObject({
@@ -94,12 +93,12 @@ describe('ScriptManagementHandlers', () => {
       source: largeLines.join('\n'),
     });
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleGetScriptSource({
         scriptId: 'script-2',
         startLine: 2,
         endLine: 3,
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
@@ -121,12 +120,13 @@ describe('ScriptManagementHandlers', () => {
       truncated: true,
     });
 
-    const body = parseJson(await handlers.handleGetScriptSource({ scriptId: 'script-3' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleGetScriptSource({ scriptId: 'script-3', preview: false }),
+    );
 
     expect(detailedDataManager.smartHandle).toHaveBeenCalledWith(script, 51200);
-    expect(body).toEqual({
-      detailId: 'detail-123',
-      truncated: true,
-    });
+    expect(body.success).toBe(true);
+    expect(body.detailId).toBe('detail-123');
+    expect(body.truncated).toBe(true);
   });
 });

@@ -82,7 +82,7 @@ export class ElectronHandlers {
       const outputDirectory = await resolveOutputDirectory(
         'asar-extract',
         basename(absoluteInputPath, extname(absoluteInputPath)),
-        outputDirArg
+        outputDirArg,
       );
 
       let extractedFiles = 0;
@@ -197,7 +197,7 @@ export class ElectronHandlers {
 
       if (parsedAsar && asarBuffer) {
         const packageEntry = parsedAsar.files.find(
-          (entry) => entry.path === 'package.json' || entry.path.endsWith('/package.json')
+          (entry) => entry.path === 'package.json' || entry.path.endsWith('/package.json'),
         );
 
         if (packageEntry) {
@@ -260,7 +260,7 @@ export class ElectronHandlers {
       const version = typeof packageJson.version === 'string' ? packageJson.version : null;
 
       const dependenciesRaw = packageJson.dependencies;
-      const dependencies = isRecord(dependenciesRaw) ? Object.keys(dependenciesRaw).sort() : [];
+      const dependencies = isRecord(dependenciesRaw) ? Object.keys(dependenciesRaw).toSorted() : [];
 
       let mainScriptSource = '';
       let mainScriptPath = '';
@@ -272,7 +272,7 @@ export class ElectronHandlers {
             sanitizeArchiveRelativePath(join(packageBase, mainEntry)),
             sanitizeArchiveRelativePath(mainEntry),
             sanitizeArchiveRelativePath(basename(mainEntry)),
-          ])
+          ]),
         ).filter((value) => value.length > 0);
 
         for (const candidate of candidateMainPaths) {
@@ -286,7 +286,7 @@ export class ElectronHandlers {
 
         if (mainScriptSource.length === 0) {
           const fallbackEntry = parsedAsar.files.find(
-            (entry) => basename(entry.path) === basename(mainEntry)
+            (entry) => basename(entry.path) === basename(mainEntry),
           );
           if (fallbackEntry) {
             const fallbackText = readAsarEntryText(asarBuffer, parsedAsar, fallbackEntry.path);
@@ -348,7 +348,7 @@ export class ElectronHandlers {
         scanRoot: scanRoot.replace(/\\/g, '/'),
         mainEntry,
         version,
-        preloadScripts: Array.from(preloadScripts).sort(),
+        preloadScripts: Array.from(preloadScripts).toSorted(),
         dependencies,
         devToolsEnabled,
         packageSource,
@@ -367,6 +367,118 @@ export class ElectronHandlers {
       });
     } catch (error) {
       return toErrorResponse('electron_inspect_app', error);
+    }
+  }
+
+  /**
+   * asar_search — regex search inside ASAR archive files.
+   * Pattern is agent-provided, no hardcoded defaults.
+   */
+  async handleAsarSearch(args: Record<string, unknown>) {
+    try {
+      const inputPath = parseStringArg(args, 'inputPath', true);
+      const searchPattern = parseStringArg(args, 'pattern', true);
+      if (!inputPath) throw new Error('inputPath is required');
+      if (!searchPattern) throw new Error('pattern is required');
+
+      const fileGlob = parseStringArg(args, 'fileGlob') || '*.js';
+      const maxResults =
+        typeof args.maxResults === 'number' && args.maxResults > 0 ? args.maxResults : 100;
+
+      const searchAbsPath = resolve(inputPath);
+      if (!(await pathExists(searchAbsPath))) {
+        return toTextResponse({
+          success: false,
+          tool: 'asar_search',
+          error: `File does not exist: ${inputPath}`,
+        });
+      }
+
+      const searchAsarBuf = await readFile(searchAbsPath);
+      const searchParsed = parseAsarBuffer(searchAsarBuf);
+
+      // Determine which extensions to include from fileGlob
+      const globExt = fileGlob.startsWith('*.') ? fileGlob.slice(1) : null;
+
+      const matchingFiles = searchParsed.files.filter((entry) => {
+        if (entry.unpacked || entry.size <= 0) return false;
+        if (globExt) {
+          return extname(entry.path).toLowerCase() === globExt.toLowerCase();
+        }
+        return true;
+      });
+
+      let regex: RegExp;
+      try {
+        regex = new RegExp(searchPattern, 'gi');
+      } catch {
+        return toTextResponse({
+          success: false,
+          tool: 'asar_search',
+          error: `Invalid regex pattern: ${searchPattern}`,
+        });
+      }
+
+      const matches: Array<{
+        filePath: string;
+        matchCount: number;
+        matchLines: Array<{ lineNumber: number; text: string }>;
+      }> = [];
+      let totalMatches = 0;
+      let filesScanned = 0;
+
+      for (const entry of matchingFiles) {
+        if (totalMatches >= maxResults) break;
+
+        const start = searchParsed.dataOffset + entry.offset;
+        const end = start + entry.size;
+        if (start < 0 || end > searchAsarBuf.length || end < start) continue;
+
+        // Skip very large files (>512KB)
+        if (entry.size > 512_000) continue;
+
+        const content = searchAsarBuf.subarray(start, end).toString('utf-8');
+        filesScanned++;
+
+        // Reset regex state
+        regex.lastIndex = 0;
+
+        const lines = content.split('\n');
+        const fileMatches: Array<{ lineNumber: number; text: string }> = [];
+
+        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+          if (totalMatches >= maxResults) break;
+          const line = lines[lineIdx];
+          if (!line) continue;
+          regex.lastIndex = 0;
+          if (regex.test(line)) {
+            fileMatches.push({
+              lineNumber: lineIdx + 1,
+              text: line.slice(0, 200),
+            });
+            totalMatches++;
+          }
+        }
+
+        if (fileMatches.length > 0) {
+          matches.push({
+            filePath: entry.path,
+            matchCount: fileMatches.length,
+            matchLines: fileMatches,
+          });
+        }
+      }
+
+      return toTextResponse({
+        success: true,
+        tool: 'asar_search',
+        matches,
+        totalMatches,
+        filesScanned,
+        pattern: searchPattern,
+      });
+    } catch (error) {
+      return toErrorResponse('asar_search', error);
     }
   }
 }

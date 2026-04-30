@@ -1,3 +1,5 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -21,15 +23,31 @@ const {
   camoufoxBrowserMocks,
 } = vi.hoisted(() => ({
   browserControlMocks: {
-    handleBrowserLaunch: vi.fn(async (args: any) => ({ from: 'browser-launch', args })),
-    handleBrowserClose: vi.fn(async (args: any) => ({ from: 'browser-close', args })),
-    handleBrowserStatus: vi.fn(async (args: any) => ({ from: 'browser-status', args })),
-    handleBrowserListTabs: vi.fn(async (args: any) => ({ from: 'list-tabs', args })),
-    handleBrowserSelectTab: vi.fn(async (args: any) => ({ from: 'select-tab', args })),
-    handleBrowserAttach: vi.fn(async (args: any) => ({ from: 'attach', args })),
+    handleBrowserLaunch: vi.fn(async (args: any) => ({
+      success: true,
+      from: 'browser-launch',
+      args,
+    })),
+    handleBrowserClose: vi.fn(async (args: any) => ({
+      success: true,
+      from: 'browser-close',
+      args,
+    })),
+    handleBrowserStatus: vi.fn(async (args: any) => ({
+      success: true,
+      from: 'browser-status',
+      args,
+    })),
+    handleBrowserListTabs: vi.fn(async (args: any) => ({ success: true, from: 'list-tabs', args })),
+    handleBrowserSelectTab: vi.fn(async (args: any) => ({
+      success: true,
+      from: 'select-tab',
+      args,
+    })),
+    handleBrowserAttach: vi.fn(async (args: any) => ({ success: true, from: 'attach', args })),
   },
   pageNavigationMocks: {
-    handlePageNavigate: vi.fn(async (args: any) => ({ from: 'page-nav', args })),
+    handlePageNavigate: vi.fn(async (args: any) => ({ success: true, from: 'page-nav', args })),
     handlePageReload: vi.fn(async () => ({ from: 'reload' })),
     handlePageBack: vi.fn(async () => ({ from: 'back' })),
     handlePageForward: vi.fn(async () => ({ from: 'forward' })),
@@ -49,7 +67,6 @@ const {
     handlePageWaitForSelector: vi.fn(),
   },
   pageDataMocks: {
-    handlePageGetPerformance: vi.fn(),
     handlePageSetCookies: vi.fn(),
     handlePageGetCookies: vi.fn(),
     handlePageClearCookies: vi.fn(),
@@ -73,7 +90,7 @@ const {
     handleDOMGetXPath: vi.fn(),
   },
   consoleMocks: {
-    handleConsoleEnable: vi.fn(),
+    handleConsoleMonitor: vi.fn(),
     handleConsoleGetLogs: vi.fn(),
     handleConsoleExecute: vi.fn(),
   },
@@ -121,18 +138,14 @@ const { browserControlCtor, camoufoxManagerCtor, resolveOutputDirectoryMock, sma
   }));
 
 function classFactory(spy: ReturnType<typeof vi.fn>, instance: any) {
-  return class {
-    constructor(deps: unknown) {
-      (spy as any)(deps);
-      return instance;
-    }
+  return function MockHandler(deps: any) {
+    (spy as any)(deps);
+    return instance;
   };
 }
 
 vi.mock('@src/modules/captcha/AICaptchaDetector', () => ({
-  AICaptchaDetector: class {
-    constructor() {}
-  },
+  AICaptchaDetector: vi.fn(),
 }));
 
 vi.mock('@src/utils/outputPaths', () => ({
@@ -150,7 +163,7 @@ vi.mock('@src/utils/DetailedDataManager', () => ({
 vi.mock('@src/modules/browser/CamoufoxBrowserManager', () => ({
   CamoufoxBrowserManager: class {
     private page: any;
-    constructor(opts: unknown) {
+    constructor(opts: any) {
       camoufoxManagerCtor(opts);
       this.page = {
         goto: vi.fn(async () => {}),
@@ -227,14 +240,7 @@ vi.mock('@src/server/domains/browser/handlers/tab-workflow', () => ({
 
 import { BrowserToolHandlers } from '@server/domains/browser/handlers';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
-
 describe('BrowserToolHandlers', () => {
-  const domInspector = {
-    getStructure: vi.fn(async () => ({ node: 'root' })),
-  } as any;
   const collector = {
     getActivePage: vi.fn(),
   } as any;
@@ -245,23 +251,15 @@ describe('BrowserToolHandlers', () => {
     disable: vi.fn(async () => {}),
     clearPlaywrightPage: vi.fn(),
   } as any;
-  const llmService = {} as any;
 
   let handlers: BrowserToolHandlers;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    handlers = new BrowserToolHandlers(
-      collector,
-      pageController,
-      domInspector,
-      scriptManager,
-      consoleMonitor,
-      llmService
-    );
+    handlers = new BrowserToolHandlers(collector, pageController, scriptManager, consoleMonitor);
   });
 
-  it('constructs BrowserControlHandlers and resolves screenshot dir', () => {
+  it('constructs BrowserControlHandlers and resolves screenshot dir', async () => {
     expect(browserControlCtor).toHaveBeenCalledOnce();
     expect(resolveOutputDirectoryMock).toHaveBeenCalled();
   });
@@ -271,7 +269,7 @@ describe('BrowserToolHandlers', () => {
     (handlers as any).camoufoxManager = { close: vi.fn(async () => {}) };
 
     const result = await handlers.handleBrowserLaunch({ driver: 'chrome' });
-    expect(result).toEqual({ from: 'browser-launch', args: { driver: 'chrome' } });
+    expect(result).toEqual({ success: true, from: 'browser-launch', args: { driver: 'chrome' } });
     expect(browserControlMocks.handleBrowserLaunch).toHaveBeenCalledWith({ driver: 'chrome' });
     expect(consoleMonitor.disable).toHaveBeenCalledTimes(1);
     expect(consoleMonitor.clearPlaywrightPage).toHaveBeenCalledTimes(1);
@@ -282,7 +280,11 @@ describe('BrowserToolHandlers', () => {
     (handlers as any).camoufoxManager = { close: vi.fn(async () => {}) };
 
     const result = await handlers.handleBrowserAttach({ browserURL: 'http://127.0.0.1:9222' });
-    expect(result).toEqual({ from: 'attach', args: { browserURL: 'http://127.0.0.1:9222' } });
+    expect(result).toEqual({
+      success: true,
+      from: 'attach',
+      args: { browserURL: 'http://127.0.0.1:9222' },
+    });
     expect(browserControlMocks.handleBrowserAttach).toHaveBeenCalledWith({
       browserURL: 'http://127.0.0.1:9222',
     });
@@ -295,7 +297,7 @@ describe('BrowserToolHandlers', () => {
       driver: 'camoufox',
       mode: 'connect',
     });
-    const body = parseJson(response);
+    const body = parseJson<BrowserStatusResponse>(response);
     expect(body.success).toBe(false);
     expect(body.error).toContain('wsEndpoint is required');
   });
@@ -306,7 +308,9 @@ describe('BrowserToolHandlers', () => {
       close: vi.fn(async () => {}),
       getBrowser: vi.fn(() => ({})),
     };
-    const body = parseJson(await handlers.handleBrowserClose({}));
+    consoleMonitor.disable.mockRejectedValueOnce(new Error('reset failed'));
+
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleBrowserClose({}));
     expect(body.success).toBe(true);
     expect(body.message).toContain('Camoufox browser closed');
     expect(browserControlMocks.handleBrowserClose).toHaveBeenCalledWith({});
@@ -314,13 +318,65 @@ describe('BrowserToolHandlers', () => {
     expect(consoleMonitor.clearPlaywrightPage).toHaveBeenCalledTimes(1);
   });
 
-  it('wraps DOM structure via DetailedDataManager smartHandle', async () => {
-    const body = parseJson(
-      await handlers.handleDOMGetStructure({ maxDepth: 2, includeText: false })
+  it('delegates browser close when chrome is active', async () => {
+    const result = await handlers.handleBrowserClose({ reason: 'manual' });
+
+    expect(result).toEqual({ success: true, from: 'browser-close', args: { reason: 'manual' } });
+    expect(browserControlMocks.handleBrowserClose).toHaveBeenCalledWith({ reason: 'manual' });
+  });
+
+  it('delegates page navigation when chrome is active', async () => {
+    const result = await handlers.handlePageNavigate({
+      url: 'https://example.com',
+      waitUntil: 'domcontentloaded',
+    });
+
+    expect(result).toEqual({
+      success: true,
+      from: 'page-nav',
+      args: {
+        url: 'https://example.com',
+        waitUntil: 'domcontentloaded',
+      },
+    });
+    expect(pageNavigationMocks.handlePageNavigate).toHaveBeenCalledWith({
+      url: 'https://example.com',
+      waitUntil: 'domcontentloaded',
+    });
+  });
+
+  it('launches camoufox through the launch flow', async () => {
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleBrowserLaunch({ driver: 'camoufox' }),
     );
-    expect(domInspector.getStructure).toHaveBeenCalledWith(2, false);
-    expect(smartHandleMock).toHaveBeenCalled();
-    expect(body.wrapped).toEqual({ node: 'root' });
+
+    expect(body.success).toBe(true);
+    expect(body.driver).toBe('camoufox');
+    expect(body.mode).toBe('launch');
+    expect((handlers as any).activeDriver).toBe('camoufox');
+    expect((handlers as any).camoufoxManager).toBeTruthy();
+  });
+
+  it('returns camoufox status when active driver is camoufox', async () => {
+    (handlers as any).activeDriver = 'camoufox';
+    (handlers as any).camoufoxManager = {
+      getBrowser: vi.fn(() => ({})),
+    };
+    (handlers as any).camoufoxPage = { url: vi.fn(() => 'https://example.com') };
+
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleBrowserStatus({}));
+
+    expect(body.success).toBe(true);
+    expect(body.driver).toBe('camoufox');
+    expect(body.running).toBe(true);
+    expect(body.hasActivePage).toBe(true);
+  });
+
+  it('delegates browser status when chrome is active', async () => {
+    const result = await handlers.handleBrowserStatus({ verbose: true });
+
+    expect(result).toEqual({ success: true, from: 'browser-status', args: { verbose: true } });
+    expect(browserControlMocks.handleBrowserStatus).toHaveBeenCalledWith({ verbose: true });
   });
 
   it('navigates with camoufox page and updates console monitor', async () => {
@@ -335,11 +391,11 @@ describe('BrowserToolHandlers', () => {
       getBrowser: vi.fn(() => ({})),
     };
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handlePageNavigate({
         url: 'https://vmoranv.github.io/jshookmcp/target',
         waitUntil: 'networkidle2',
-      })
+      }),
     );
     expect(consoleMonitor.setPlaywrightPage).toHaveBeenCalledOnce();
     expect(body.success).toBe(true);

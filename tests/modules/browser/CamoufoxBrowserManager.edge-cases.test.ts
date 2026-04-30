@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CamoufoxBrowserManager,
+  type CamoufoxBrowserLike,
+  type CamoufoxPageLike,
+  type CamoufoxBrowserServerLike,
+} from '@modules/browser/CamoufoxBrowserManager';
 
 const loggerState = vi.hoisted(() => ({
   info: vi.fn(),
@@ -14,8 +20,8 @@ vi.mock('@src/utils/logger', () => ({
 }));
 
 vi.mock('camoufox-js', () => ({
-  Camoufox: (...args: any[]) => camoufoxLaunchMock(...args),
-  launchServer: (...args: any[]) => camoufoxServerLaunchMock(...args),
+  Camoufox: camoufoxLaunchMock,
+  launchServer: camoufoxServerLaunchMock,
 }));
 
 vi.mock('playwright-core', () => ({
@@ -24,23 +30,21 @@ vi.mock('playwright-core', () => ({
   },
 }));
 
-import { CamoufoxBrowserManager } from '@modules/browser/CamoufoxBrowserManager';
-
-function createFakeBrowser(connected = true) {
+function createFakeBrowser(connected = true): CamoufoxBrowserLike {
   return {
     newPage: vi.fn().mockResolvedValue(createFakePage()),
     close: vi.fn(async () => {}),
     isConnected: vi.fn(() => connected),
-  };
+  } as CamoufoxBrowserLike;
 }
 
-function createFakePage() {
+function createFakePage(): CamoufoxPageLike {
   return {
     goto: vi.fn(async () => {}),
     context: vi.fn(() => ({
       newCDPSession: vi.fn(async () => ({ send: vi.fn() })),
     })),
-  };
+  } as CamoufoxPageLike;
 }
 
 describe('CamoufoxBrowserManager — edge cases', () => {
@@ -93,6 +97,7 @@ describe('CamoufoxBrowserManager — edge cases', () => {
       await manager.launch();
 
       // Start closing (make isConnected return false so launch tries doLaunch)
+      // @ts-expect-error — auto-suppressed [TS2339]
       fakeBrowser.isConnected.mockReturnValue(false);
       // Set isClosing flag by calling close
       const closePromise = manager.close();
@@ -111,6 +116,7 @@ describe('CamoufoxBrowserManager — edge cases', () => {
       await manager.launch();
 
       // Simulate disconnection
+      // @ts-expect-error — auto-suppressed [TS2339]
       firstBrowser.isConnected.mockReturnValue(false);
 
       const result = await manager.launch();
@@ -187,6 +193,7 @@ describe('CamoufoxBrowserManager — edge cases', () => {
 
     it('resets isClosing flag even on close error', async () => {
       const fakeBrowser = createFakeBrowser(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       fakeBrowser.close.mockRejectedValue(new Error('Close failed'));
       camoufoxLaunchMock.mockResolvedValue(fakeBrowser);
       const manager = new CamoufoxBrowserManager();
@@ -237,7 +244,7 @@ describe('CamoufoxBrowserManager — edge cases', () => {
       const session = await manager.getCDPSession(fakePage);
       expect(session).toBeDefined();
       expect(loggerState.warn).toHaveBeenCalledWith(
-        expect.stringContaining('CDP sessions on camoufox')
+        expect.stringContaining('CDP sessions on camoufox'),
       );
     });
   });
@@ -247,7 +254,7 @@ describe('CamoufoxBrowserManager — edge cases', () => {
       const fakeServer = {
         wsEndpoint: vi.fn(() => 'ws://127.0.0.1:8888/camoufox'),
         close: vi.fn(async () => {}),
-      };
+      } as CamoufoxBrowserServerLike;
       camoufoxServerLaunchMock.mockResolvedValue(fakeServer);
       const manager = new CamoufoxBrowserManager();
 
@@ -260,11 +267,11 @@ describe('CamoufoxBrowserManager — edge cases', () => {
       const firstServer = {
         wsEndpoint: vi.fn(() => 'ws://127.0.0.1:8888/first'),
         close: vi.fn(async () => {}),
-      };
+      } as CamoufoxBrowserServerLike;
       const secondServer = {
         wsEndpoint: vi.fn(() => 'ws://127.0.0.1:9999/second'),
         close: vi.fn(async () => {}),
-      };
+      } as CamoufoxBrowserServerLike;
       camoufoxServerLaunchMock
         .mockResolvedValueOnce(firstServer)
         .mockResolvedValueOnce(secondServer);
@@ -283,7 +290,7 @@ describe('CamoufoxBrowserManager — edge cases', () => {
       const fakeServer = {
         wsEndpoint: vi.fn(() => 'ws://127.0.0.1:8888/path'),
         close: vi.fn(async () => {}),
-      };
+      } as CamoufoxBrowserServerLike;
       camoufoxServerLaunchMock.mockResolvedValue(fakeServer);
       const manager = new CamoufoxBrowserManager();
       await manager.launchAsServer(8888);

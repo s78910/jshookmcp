@@ -102,7 +102,7 @@ export async function checkExternalCommand(
     const { stdout, stderr } = await execFileAsync(command, versionArgs, {
       timeout: 10_000,
     });
-    const version = (stdout || stderr).trim().split('\n')[0] ?? '';
+    const version = (stdout || stderr).trim().split('\n')[0];
     return toTextResponse({
       success: true,
       tool: label,
@@ -260,7 +260,7 @@ export async function requestJson(
       Accept: 'application/json',
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
-    body,
+    ...(body === undefined ? {} : { body }),
     signal: AbortSignal.timeout(timeoutMs),
   });
 

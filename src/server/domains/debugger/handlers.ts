@@ -1,5 +1,5 @@
 /**
- * Debugger Tool Handlers - Facade Module
+ * Debugger tool handlers.
  *
  * This file serves as the main entry point for debugger tool handlers.
  * Handlers are organized into atomic modules by functional domain:
@@ -19,7 +19,7 @@
 
 import type { DebuggerManager } from '@server/domains/shared/modules';
 import type { RuntimeInspector } from '@server/domains/shared/modules';
-
+import type { EventBus, ServerEventMap } from '@server/EventBus';
 
 import { DebuggerControlHandlers } from '@server/domains/debugger/handlers/debugger-control';
 import { DebuggerSteppingHandlers } from '@server/domains/debugger/handlers/debugger-stepping';
@@ -35,10 +35,8 @@ import { ScopeInspectionHandlers } from '@server/domains/debugger/handlers/scope
 import { BlackboxHandlers } from '@server/domains/debugger/handlers/blackbox-handlers';
 
 export class DebuggerToolHandlers {
-
   private debuggerManager: DebuggerManager;
   private runtimeInspector: RuntimeInspector;
-
 
   private debuggerControl: DebuggerControlHandlers;
   private debuggerStepping: DebuggerSteppingHandlers;
@@ -53,10 +51,13 @@ export class DebuggerToolHandlers {
   private scopeInspection: ScopeInspectionHandlers;
   private blackbox: BlackboxHandlers;
 
-  constructor(debuggerManager: DebuggerManager, runtimeInspector: RuntimeInspector) {
+  constructor(
+    debuggerManager: DebuggerManager,
+    runtimeInspector: RuntimeInspector,
+    eventBus?: EventBus<ServerEventMap>,
+  ) {
     this.debuggerManager = debuggerManager;
     this.runtimeInspector = runtimeInspector;
-
 
     const commonDeps = {
       debuggerManager: this.debuggerManager,
@@ -76,6 +77,7 @@ export class DebuggerToolHandlers {
     });
     this.breakpointBasic = new BreakpointBasicHandlers({
       debuggerManager: this.debuggerManager,
+      eventBus,
     });
     this.breakpointException = new BreakpointExceptionHandlers({
       debuggerManager: this.debuggerManager,
@@ -96,12 +98,8 @@ export class DebuggerToolHandlers {
   }
 
   // ── Debugger Control ──
-  async handleDebuggerEnable(args: Record<string, unknown>) {
-    return this.debuggerControl.handleDebuggerEnable(args);
-  }
-
-  async handleDebuggerDisable(args: Record<string, unknown>) {
-    return this.debuggerControl.handleDebuggerDisable(args);
+  async handleDebuggerLifecycle(args: Record<string, unknown>) {
+    return this.debuggerControl.handleDebuggerLifecycle(args);
   }
 
   async handleDebuggerPause(args: Record<string, unknown>) {
@@ -253,6 +251,159 @@ export class DebuggerToolHandlers {
 
   async handleBlackboxList(args: Record<string, unknown>) {
     return this.blackbox.handleBlackboxList(args);
+  }
+
+  // ── Consolidated Dispatchers (Wave-2 merges) ──
+
+  /** breakpoint(action, type, ...) — unified breakpoint management */
+  async handleBreakpoint(args: Record<string, unknown>) {
+    const action = String(args['action'] ?? '');
+    const type = String(args['type'] ?? 'code');
+
+    switch (type) {
+      case 'code': {
+        switch (action) {
+          case 'set':
+            return this.breakpointBasic.handleBreakpointSet(args);
+          case 'remove':
+            return this.breakpointBasic.handleBreakpointRemove(args);
+          case 'list':
+            return this.breakpointBasic.handleBreakpointList(args);
+        }
+        break;
+      }
+      case 'xhr': {
+        switch (action) {
+          case 'set':
+            return this.xhrBreakpoint.handleXHRBreakpointSet(args);
+          case 'remove':
+            return this.xhrBreakpoint.handleXHRBreakpointRemove(args);
+          case 'list':
+            return this.xhrBreakpoint.handleXHRBreakpointList(args);
+        }
+        break;
+      }
+      case 'event': {
+        switch (action) {
+          case 'set':
+            return this.eventBreakpoint.handleEventBreakpointSet(args);
+          case 'remove':
+            return this.eventBreakpoint.handleEventBreakpointRemove(args);
+          case 'list':
+            return this.eventBreakpoint.handleEventBreakpointList(args);
+        }
+        break;
+      }
+      case 'event_category': {
+        if (action === 'set') return this.eventBreakpoint.handleEventBreakpointSetCategory(args);
+        break;
+      }
+      case 'exception': {
+        if (action === 'set') return this.breakpointException.handleBreakpointSetOnException(args);
+        break;
+      }
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: `Invalid breakpoint action/type: ${action}/${type}. Valid types: code, xhr, event, event_category, exception. Valid actions: set, remove, list.`,
+          }),
+        },
+      ],
+    };
+  }
+
+  /** watch(action) — unified watch expression management */
+  async handleWatch(args: Record<string, unknown>) {
+    const action = String(args['action'] ?? '');
+    switch (action) {
+      case 'add':
+        return this.watchExpressions.handleWatchAdd(args);
+      case 'remove':
+        return this.watchExpressions.handleWatchRemove(args);
+      case 'list':
+        return this.watchExpressions.handleWatchList(args);
+      case 'evaluate_all':
+        return this.watchExpressions.handleWatchEvaluateAll(args);
+      case 'clear_all':
+        return this.watchExpressions.handleWatchClearAll(args);
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: `Unknown watch action: ${action}. Valid: add, remove, list, evaluate_all, clear_all`,
+              }),
+            },
+          ],
+        };
+    }
+  }
+
+  /** debugger_step(direction: 'into'|'over'|'out') */
+  async handleDebuggerStep(args: Record<string, unknown>) {
+    const direction = String(args['direction'] ?? 'over');
+    switch (direction) {
+      case 'into':
+        return this.debuggerStepping.handleDebuggerStepInto(args);
+      case 'over':
+        return this.debuggerStepping.handleDebuggerStepOver(args);
+      case 'out':
+        return this.debuggerStepping.handleDebuggerStepOut(args);
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: `Unknown direction: ${direction}. Valid: into, over, out`,
+              }),
+            },
+          ],
+        };
+    }
+  }
+
+  /** debugger_evaluate(context: 'frame'|'global') */
+  async handleDebuggerEvaluateDispatch(args: Record<string, unknown>) {
+    const context = String(args['context'] ?? 'frame');
+    if (context === 'global') {
+      return this.debuggerEvaluate.handleDebuggerEvaluateGlobal(args);
+    }
+    return this.debuggerEvaluate.handleDebuggerEvaluate(args);
+  }
+
+  /** debugger_session(action: 'save'|'load'|'export'|'list') */
+  async handleDebuggerSession(args: Record<string, unknown>) {
+    const action = String(args['action'] ?? '');
+    switch (action) {
+      case 'save':
+        return this.sessionManagement.handleSaveSession(args);
+      case 'load':
+        return this.sessionManagement.handleLoadSession(args);
+      case 'export':
+        return this.sessionManagement.handleExportSession(args);
+      case 'list':
+        return this.sessionManagement.handleListSessions(args);
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                success: false,
+                error: `Unknown action: ${action}. Valid actions: save, load, export, list`,
+              }),
+            },
+          ],
+        };
+    }
   }
 }
 

@@ -36,7 +36,7 @@ describe('TokenBudgetManager – additional coverage', () => {
 
       const stats = manager.getStats();
       expect(
-        stats.suggestions.some((s) => s.includes('collect_code') && s.includes('smartMode'))
+        stats.suggestions.some((s) => s.includes('collect_code') && s.includes('smartMode')),
       ).toBe(true);
     });
 
@@ -64,7 +64,7 @@ describe('TokenBudgetManager – additional coverage', () => {
 
       const stats = manager.getStats();
       expect(
-        stats.suggestions.some((s) => s.includes('get_script_source') && s.includes('preview'))
+        stats.suggestions.some((s) => s.includes('get_script_source') && s.includes('preview')),
       ).toBe(true);
     });
 
@@ -92,7 +92,7 @@ describe('TokenBudgetManager – additional coverage', () => {
 
       const stats = manager.getStats();
       expect(
-        stats.suggestions.some((s) => s.includes('network_get_requests') && s.includes('limit'))
+        stats.suggestions.some((s) => s.includes('network_get_requests') && s.includes('limit')),
       ).toBe(true);
     });
 
@@ -120,7 +120,7 @@ describe('TokenBudgetManager – additional coverage', () => {
 
       const stats = manager.getStats();
       expect(
-        stats.suggestions.some((s) => s.includes('page_evaluate') && s.includes('properties'))
+        stats.suggestions.some((s) => s.includes('page_evaluate') && s.includes('properties')),
       ).toBe(true);
     });
   });
@@ -251,13 +251,13 @@ describe('TokenBudgetManager – additional coverage', () => {
   describe('normalizeForSizeEstimate edge cases', () => {
     it('handles bigint values', () => {
       expect(() =>
-        manager.recordToolCall('test', { big: BigInt(123) }, { ok: true })
+        manager.recordToolCall('test', { big: BigInt(123) }, { ok: true }),
       ).not.toThrow();
     });
 
     it('handles symbol values', () => {
       expect(() =>
-        manager.recordToolCall('test', { sym: Symbol('test') }, { ok: true })
+        manager.recordToolCall('test', { sym: Symbol('test') }, { ok: true }),
       ).not.toThrow();
     });
 
@@ -267,13 +267,13 @@ describe('TokenBudgetManager – additional coverage', () => {
 
     it('handles Error objects', () => {
       expect(() =>
-        manager.recordToolCall('test', new Error('test error'), { ok: true })
+        manager.recordToolCall('test', new Error('test error'), { ok: true }),
       ).not.toThrow();
     });
 
     it('handles Buffer values', () => {
       expect(() =>
-        manager.recordToolCall('test', Buffer.from('hello'), { ok: true })
+        manager.recordToolCall('test', Buffer.from('hello'), { ok: true }),
       ).not.toThrow();
     });
 

@@ -3,6 +3,7 @@
  * Contains BM25 parameters, scoring functions, and TF-IDF cosine similarity.
  */
 import { DEFAULT_SEARCH_CONFIG } from '@src/config/search-defaults';
+import { SEARCH_BM25_B, SEARCH_BM25_K1 } from '@src/constants';
 import type {
   SearchCjkQueryAliasConfig,
   SearchConfig,
@@ -10,10 +11,15 @@ import type {
 } from '@internal-types/config';
 import { SynonymExpander } from './SynonymExpander';
 
-// ── BM25 parameters ──
+// ── BM25 parameters (runtime-tunable via env) ──
 
-const K1 = 1.5;
-const B = 0.3;
+/**
+ * K1 — term frequency saturation. Default 1.5 (typical range 1.2..2.0).
+ * B  — length normalization factor. Default 0.75 (textbook). Previously
+ *      hardcoded at 0.3 which under-penalized long descriptions.
+ */
+const K1 = SEARCH_BM25_K1;
+const B = SEARCH_BM25_B;
 
 // ── query category adaptive weights (§4.1.3 task-type encoding) ──
 
@@ -47,7 +53,7 @@ export class BM25ScorerImpl {
   }
 
   static compileQueryCategoryProfiles(
-    config: SearchQueryCategoryProfileConfig[]
+    config: SearchQueryCategoryProfileConfig[],
   ): ReadonlyArray<QueryCategoryProfile> {
     return config.flatMap((profile) => {
       if (!profile || typeof profile.pattern !== 'string' || !Array.isArray(profile.domainBoosts)) {
@@ -73,7 +79,7 @@ export class BM25ScorerImpl {
             return [];
           }
           return [[boost.domain, boost.weight] as const];
-        })
+        }),
       );
 
       return [{ pattern, domainBoosts }];
@@ -81,7 +87,7 @@ export class BM25ScorerImpl {
   }
 
   static compileCjkQueryAliasRules(
-    config: SearchCjkQueryAliasConfig[]
+    config: SearchCjkQueryAliasConfig[],
   ): ReadonlyArray<CjkQueryAliasRule> {
     return config.flatMap((alias) => {
       if (!alias || typeof alias.pattern !== 'string' || !Array.isArray(alias.tokens)) {
@@ -96,7 +102,7 @@ export class BM25ScorerImpl {
       }
 
       const tokens = alias.tokens.filter(
-        (token): token is string => typeof token === 'string' && token.length > 0
+        (token): token is string => typeof token === 'string' && token.length > 0,
       );
       return [{ pattern, tokens }];
     });

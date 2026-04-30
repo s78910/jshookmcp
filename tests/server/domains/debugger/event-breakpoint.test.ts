@@ -1,14 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DebuggerManager } from '@server/domains/shared/modules';
 import { EventBreakpointHandlers } from '@server/domains/debugger/handlers/event-breakpoint';
-
-function parseJson(response: { content: Array<{ text: string }> }) {
-  const firstContent = response.content[0];
-  if (!firstContent) {
-    throw new Error('Missing response content');
-  }
-  return JSON.parse(firstContent.text);
-}
 
 describe('EventBreakpointHandlers', () => {
   type EventManager = ReturnType<DebuggerManager['getEventManager']>;
@@ -17,7 +10,7 @@ describe('EventBreakpointHandlers', () => {
 
   const eventManager = {
     setEventListenerBreakpoint: vi.fn(
-      async (_eventName: string, _targetName?: string): Promise<string> => 'event-default'
+      async (_eventName: string, _targetName?: string): Promise<string> => 'event-default',
     ),
     setMouseEventBreakpoints: vi.fn(async (): Promise<string[]> => []),
     setKeyboardEventBreakpoints: vi.fn(async (): Promise<string[]> => []),
@@ -28,7 +21,7 @@ describe('EventBreakpointHandlers', () => {
   };
 
   function createDebuggerManager(
-    withAdvancedFeatures: true
+    withAdvancedFeatures: true,
   ): EventDebuggerManager & Required<Pick<DebuggerManager, 'ensureAdvancedFeatures'>>;
   function createDebuggerManager(withAdvancedFeatures: false): EventDebuggerManager;
   function createDebuggerManager(withAdvancedFeatures = true): EventDebuggerManager {
@@ -52,11 +45,11 @@ describe('EventBreakpointHandlers', () => {
     eventManager.setEventListenerBreakpoint.mockResolvedValueOnce('event-1');
     const handlers = new EventBreakpointHandlers({ debuggerManager } as any);
 
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleEventBreakpointSet({
         eventName: 'click',
         targetName: 'button',
-      })
+      }),
     );
 
     expect(debuggerManager.ensureAdvancedFeatures).toHaveBeenCalledOnce();
@@ -75,8 +68,8 @@ describe('EventBreakpointHandlers', () => {
     eventManager.setWebSocketEventBreakpoints.mockResolvedValueOnce(['ws-1', 'ws-2']);
     const handlers = new EventBreakpointHandlers({ debuggerManager } as any);
 
-    const body = parseJson(
-      await handlers.handleEventBreakpointSetCategory({ category: 'websocket' })
+    const body = parseJson<any>(
+      await handlers.handleEventBreakpointSetCategory({ category: 'websocket' }),
     );
 
     expect(eventManager.setWebSocketEventBreakpoints).toHaveBeenCalledOnce();
@@ -92,10 +85,10 @@ describe('EventBreakpointHandlers', () => {
     const debuggerManager = createDebuggerManager(true);
     const handlers = new EventBreakpointHandlers({ debuggerManager } as any);
 
-    const body = parseJson(
+    const body = parseJson<any>(
       await handlers.handleEventBreakpointSetCategory({
         category: 'unknown',
-      })
+      }),
     );
 
     expect(body).toEqual({
@@ -110,7 +103,9 @@ describe('EventBreakpointHandlers', () => {
     eventManager.removeEventListenerBreakpoint.mockResolvedValueOnce(false);
     const handlers = new EventBreakpointHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleEventBreakpointRemove({ breakpointId: 'missing' }));
+    const body = parseJson<any>(
+      await handlers.handleEventBreakpointRemove({ breakpointId: 'missing' }),
+    );
 
     expect(body).toEqual({
       success: false,
@@ -132,7 +127,7 @@ describe('EventBreakpointHandlers', () => {
     ]);
     const handlers = new EventBreakpointHandlers({ debuggerManager } as any);
 
-    const body = parseJson(await handlers.handleEventBreakpointList({}));
+    const body = parseJson<any>(await handlers.handleEventBreakpointList({}));
 
     expect(body).toEqual({
       success: true,

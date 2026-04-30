@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import puppeteer from 'rebrowser-puppeteer-core';
+import { executablePath } from 'rebrowser-puppeteer-core';
 
 /**
  * Browser executable resolution policy:
@@ -25,7 +25,7 @@ function resolveFromEnvironment(): string | undefined {
 
 function resolveFromPuppeteer(): string | undefined {
   try {
-    const candidate = puppeteer.executablePath('chrome');
+    const candidate = executablePath('chrome');
     if (candidate && existsSync(candidate)) {
       return candidate;
     }

@@ -21,7 +21,7 @@ vi.mock('@services/prompts/deobfuscation', () => ({
 }));
 
 vi.mock('@modules/security/ExecutionSandbox', () => ({
-  ExecutionSandbox: class ExecutionSandbox {},
+  ExecutionSandbox: {},
 }));
 
 import {
@@ -48,7 +48,7 @@ describe('JSVMPDeobfuscator.restore', () => {
       { sandbox } as any,
       'var _0xabc=["hello","world"];console.log(_0xabc[1],0x10);',
       'obfuscator.io',
-      false
+      false,
     );
 
     expect(sandbox.execute).toHaveBeenCalledWith({
@@ -74,7 +74,7 @@ describe('JSVMPDeobfuscator.restore', () => {
       expect.arrayContaining([
         expect.stringContaining('file too large'),
         expect.stringContaining('online JSFuck decoder'),
-      ])
+      ]),
     );
   });
 
@@ -111,7 +111,7 @@ describe('JSVMPDeobfuscator.restore', () => {
       { sandbox } as any,
       'var message = 1;\n$$$$',
       'jjencode',
-      false
+      false,
     );
 
     expect(sandbox.execute).toHaveBeenCalledWith({
@@ -134,29 +134,28 @@ describe('JSVMPDeobfuscator.restore', () => {
       { sandbox } as any,
       'debugger; "" + value; if (a) {}',
       'custom',
-      true
+      true,
     );
 
     expect(result.code).not.toContain('debugger');
     expect(result.code).not.toContain('"" +');
     expect(result.warnings).toEqual(
       expect.arrayContaining([
-        'LLM service unavailable, using fallback',
-        'Configure DeepSeek/OpenAI API key for AI-assisted deobfuscation',
+        'AI-assisted deobfuscation removed, using fallback directly.',
         'Analysis incomplete, partial results may be returned',
         'For better results, configure an LLM API key',
-      ])
+      ]),
     );
     expect(result.unresolvedParts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           location: 'Custom VM',
         }),
-      ])
+      ]),
     );
   });
 
-  it('uses llm analysis when a structured JSON payload is returned', async () => {
+  it('ignores llm context and still uses fallback heuristics for custom VMs', async () => {
     const sandbox = {
       execute: vi.fn(),
     };
@@ -172,17 +171,21 @@ describe('JSVMPDeobfuscator.restore', () => {
 
     const result = await restoreJSVMPCode({ llm, sandbox } as any, 'vm();', 'custom', false);
 
-    expect(promptState.generateVMAnalysisMessages).toHaveBeenCalledWith('vm();');
-    expect(llm.chat).toHaveBeenCalledTimes(1);
-    expect(result.confidence).toBe(0.6);
-    expect(result.warnings).toEqual(expect.arrayContaining(['LLMVM: stack-vm', 'extra warning']));
+    expect(promptState.generateVMAnalysisMessages).not.toHaveBeenCalled();
+    expect(llm.chat).not.toHaveBeenCalled();
+    expect(result.confidence).toBe(0.3);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        'AI-assisted deobfuscation removed, using fallback directly.',
+        'Analysis incomplete, partial results may be returned',
+      ]),
+    );
     expect(result.unresolvedParts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          location: 'VM Restoration',
-          suggestion: 'recover dispatch table',
+          location: 'Custom VM',
         }),
-      ])
+      ]),
     );
   });
 
@@ -200,12 +203,12 @@ describe('JSVMPDeobfuscator.restore', () => {
       { llm, sandbox } as any,
       'debugger; "" + value;',
       'custom',
-      true
+      true,
     );
 
     expect(result.code).not.toContain('debugger');
     expect(result.warnings).toEqual(
-      expect.arrayContaining(['Analysis incomplete, partial results may be returned'])
+      expect.arrayContaining(['Analysis incomplete, partial results may be returned']),
     );
   });
 
@@ -217,7 +220,7 @@ describe('JSVMPDeobfuscator.restore', () => {
       'debugger; if (flag) {} "" + value; cond ? same : same;',
       true,
       warnings,
-      unresolvedParts as any
+      unresolvedParts as any,
     );
 
     expect(result.code).not.toContain('debugger');

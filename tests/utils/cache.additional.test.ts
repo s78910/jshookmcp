@@ -56,7 +56,7 @@ describe('CacheManager – additional coverage', () => {
 
       expect(loggerState.error).toHaveBeenCalledWith(
         'Failed to initialize cache directory',
-        expect.any(Error)
+        expect.any(Error),
       );
     });
   });
@@ -64,7 +64,7 @@ describe('CacheManager – additional coverage', () => {
   describe('get – cache miss (lines 71-80)', () => {
     it('returns null and logs cache miss on read error', async () => {
       vi.spyOn(fs, 'readFile').mockRejectedValue(
-        Object.assign(new Error('no such file'), { code: 'ENOENT' })
+        Object.assign(new Error('no such file'), { code: 'ENOENT' }),
       );
       const manager = new CacheManager(createConfig());
 
@@ -132,7 +132,7 @@ describe('CacheManager – additional coverage', () => {
   describe('clear – non-ENOENT error (lines 102-106)', () => {
     it('logs error for non-ENOENT readdir failures', async () => {
       vi.spyOn(fs, 'readdir').mockRejectedValue(
-        Object.assign(new Error('permission denied'), { code: 'EACCES' })
+        Object.assign(new Error('permission denied'), { code: 'EACCES' }),
       );
       const manager = new CacheManager(createConfig());
 
@@ -146,7 +146,7 @@ describe('CacheManager – additional coverage', () => {
     it('returns cached value when within TTL', async () => {
       const now = Date.now();
       vi.spyOn(fs, 'readFile').mockResolvedValue(
-        JSON.stringify({ timestamp: now - 500, value: { fresh: true } })
+        JSON.stringify({ timestamp: now - 500, value: { fresh: true } }),
       );
       const manager = new CacheManager(createConfig({ ttl: 10 }));
 
@@ -156,7 +156,7 @@ describe('CacheManager – additional coverage', () => {
 
     it('returns null and deletes when past TTL', async () => {
       vi.spyOn(fs, 'readFile').mockResolvedValue(
-        JSON.stringify({ timestamp: Date.now() - 60_000, value: { stale: true } })
+        JSON.stringify({ timestamp: Date.now() - 60_000, value: { stale: true } }),
       );
       const unlinkSpy = vi.spyOn(fs, 'unlink').mockResolvedValue(undefined);
       const manager = new CacheManager(createConfig({ ttl: 5 }));

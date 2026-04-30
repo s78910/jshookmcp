@@ -1,0 +1,340 @@
+/**
+ * Frida sub-handler — attach, runScript, detach, listSessions, generateScript,
+ * enumerateModules, enumerateFunctions, findSymbols.
+ */
+
+import { FridaSession } from '@modules/binary-instrument';
+import type { BinaryInstrumentState } from './shared';
+import {
+  readRequiredString,
+  readOptionalString,
+  parsePid,
+  makeMockId,
+  jsonResponse,
+  textResponse,
+  getLegacyPluginStatus,
+  invokeLegacyPlugin,
+} from './shared';
+
+export class FridaHandlers {
+  private state: BinaryInstrumentState;
+
+  constructor(state: BinaryInstrumentState) {
+    this.state = state;
+  }
+
+  async handleFridaAttach(args: Record<string, unknown>): Promise<unknown> {
+    const legacyPid = readOptionalString(args, 'pid');
+    const explicitTarget = readOptionalString(args, 'target');
+    if (!explicitTarget && legacyPid) {
+      return invokeLegacyPlugin(this.state.context, 'plugin_frida_bridge', 'frida_attach', args);
+    }
+
+    const target = readRequiredString(args, 'target');
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+
+    if (!availability.available) {
+      const sessionId = `mock-frida-${makeMockId(target)}`;
+      return jsonResponse({
+        success: false,
+        available: false,
+        capability: 'frida_cli',
+        fix: 'Install frida-tools and ensure the frida CLI is on PATH.',
+        target,
+        sessionId,
+        reason: availability.reason ?? 'Frida CLI is not available',
+        sessions: [{ id: sessionId, target, pid: parsePid(target), status: 'unavailable' }],
+      });
+    }
+
+    let sessionId: string;
+    try {
+      sessionId = await frida.attach(target);
+    } catch (error) {
+      return jsonResponse({
+        success: false,
+        available: true,
+        capability: 'frida_attach',
+        fix: 'Run the server elevated or choose a target process that allows Frida injection.',
+        target,
+        reason: error instanceof Error ? error.message : String(error),
+        sessions: frida.listSessions(),
+      });
+    }
+
+    void this.state.context?.eventBus.emit('frida:attached', {
+      target,
+      sessionId,
+      timestamp: new Date().toISOString(),
+    });
+    return jsonResponse({
+      success: true,
+      available: true,
+      target,
+      sessionId,
+      sessions: frida.listSessions(),
+    });
+  }
+
+  async handleFridaEnumerateModules(args: Record<string, unknown>): Promise<unknown> {
+    const sessionId = readRequiredString(args, 'sessionId');
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+
+    if (!availability.available) {
+      return jsonResponse({
+        available: false,
+        capability: 'frida_cli',
+        fix: 'Install frida-tools and ensure the frida CLI is on PATH.',
+        sessionId,
+        reason: availability.reason ?? 'Frida CLI is not available',
+        modules: [{ name: 'mock-module', base: '0x0', size: 0, path: '<unavailable>' }],
+      });
+    }
+
+    if (!frida.useSession(sessionId)) {
+      return jsonResponse({
+        available: false,
+        capability: 'frida_session',
+        fix: 'Call frida_attach first and reuse the returned sessionId.',
+        sessionId,
+        reason: `Unknown Frida session: ${sessionId}`,
+        modules: [],
+      });
+    }
+
+    const modules = await frida.enumerateModules();
+    const diagnostics = frida.getSessionDiagnostics(sessionId);
+    if (diagnostics?.status === 'error' && diagnostics.lastError) {
+      return jsonResponse({
+        success: false,
+        available: true,
+        sessionId,
+        reason: diagnostics.lastError,
+        modules,
+      });
+    }
+
+    return jsonResponse({ success: true, available: true, sessionId, modules });
+  }
+
+  async handleFridaRunScript(args: Record<string, unknown>): Promise<unknown> {
+    const sessionId = readOptionalString(args, 'sessionId');
+    if (!sessionId) return textResponse('Missing required string argument: sessionId');
+    const script = readRequiredString(args, 'script');
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+
+    if (!availability.available) {
+      return {
+        available: false,
+        capability: 'frida_cli',
+        fix: 'Install frida-tools and ensure the frida CLI is on PATH.',
+        sessionId,
+        reason: availability.reason ?? 'Frida CLI is not available',
+        execution: { output: '', error: 'Frida unavailable' },
+      };
+    }
+
+    if (!frida.useSession(sessionId)) {
+      return {
+        available: false,
+        capability: 'frida_session',
+        fix: 'Call frida_attach first and reuse the returned sessionId.',
+        sessionId,
+        reason: `Unknown Frida session: ${sessionId}`,
+        execution: { output: '', error: 'Unknown session' },
+      };
+    }
+
+    const execution = await frida.executeScript(script);
+    if (execution.error) {
+      return jsonResponse({
+        success: false,
+        available: true,
+        sessionId,
+        reason: execution.error,
+        execution,
+      });
+    }
+
+    return jsonResponse({ success: true, available: true, sessionId, execution });
+  }
+
+  async handleFridaDetach(args: Record<string, unknown>): Promise<unknown> {
+    const sessionId = readOptionalString(args, 'sessionId');
+    if (!sessionId) return textResponse('Missing required string argument: sessionId');
+
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+    if (availability.available && frida.hasSession(sessionId)) {
+      frida.useSession(sessionId);
+      await frida.detach();
+      return jsonResponse({ success: true, sessionId, detached: true });
+    }
+
+    return invokeLegacyPlugin(this.state.context, 'plugin_frida_bridge', 'frida_detach', args);
+  }
+
+  async handleFridaListSessions(_args: Record<string, unknown>): Promise<unknown> {
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+    const sessions = frida.listSessions();
+
+    if (availability.available) {
+      return jsonResponse({ success: true, available: true, sessions, count: sessions.length });
+    }
+
+    const pluginStatus = getLegacyPluginStatus(this.state.context, 'plugin_frida_bridge');
+    if (sessions.length > 0 || pluginStatus.status === 'unavailable') {
+      return jsonResponse({
+        success: true,
+        available: false,
+        capability: 'frida_cli',
+        reason: availability.reason ?? 'Frida CLI is not available',
+        fix: 'Install frida-tools and ensure the frida CLI is on PATH.',
+        sessions,
+        count: sessions.length,
+      });
+    }
+
+    return invokeLegacyPlugin(
+      this.state.context,
+      'plugin_frida_bridge',
+      'frida_list_sessions',
+      _args,
+    );
+  }
+
+  async handleFridaGenerateScript(args: Record<string, unknown>): Promise<unknown> {
+    const target = readOptionalString(args, 'target') ?? 'unknown';
+    const template = readOptionalString(args, 'template') ?? 'trace';
+    const functionName = readOptionalString(args, 'functionName') ?? 'target_function';
+
+    const templates = [
+      {
+        functionName,
+        hookCode: `console.log('[${template}] ${functionName} called');`,
+        description: `${template} hook for ${functionName}`,
+        parameters: [],
+      },
+    ];
+
+    const script = this.state.hookCodeGenerator.exportScript(templates, 'frida');
+    return jsonResponse({ success: true, target, template, functionName, script });
+  }
+
+  async handleFridaEnumerateFunctions(args: Record<string, unknown>): Promise<unknown> {
+    const sessionId = readRequiredString(args, 'sessionId');
+    const moduleName = readRequiredString(args, 'moduleName');
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+
+    if (!availability.available) {
+      return {
+        available: false,
+        capability: 'frida_cli',
+        fix: 'Install frida-tools and ensure the frida CLI is on PATH.',
+        sessionId,
+        moduleName,
+        reason: availability.reason ?? 'Frida CLI is not available',
+        functions: [],
+      };
+    }
+
+    if (!frida.useSession(sessionId)) {
+      return {
+        available: false,
+        capability: 'frida_session',
+        fix: 'Call frida_attach first and reuse the returned sessionId.',
+        sessionId,
+        reason: `Unknown Frida session: ${sessionId}`,
+        functions: [],
+      };
+    }
+
+    const functions = await frida.enumerateFunctions(moduleName);
+    const diagnostics = frida.getSessionDiagnostics(sessionId);
+    if (diagnostics?.status === 'error' && diagnostics.lastError) {
+      return jsonResponse({
+        success: false,
+        available: true,
+        sessionId,
+        moduleName,
+        reason: diagnostics.lastError,
+        functions,
+        count: functions.length,
+      });
+    }
+
+    return jsonResponse({
+      success: true,
+      available: true,
+      sessionId,
+      moduleName,
+      functions,
+      count: functions.length,
+    });
+  }
+
+  async handleFridaFindSymbols(args: Record<string, unknown>): Promise<unknown> {
+    const sessionId = readRequiredString(args, 'sessionId');
+    const pattern = readRequiredString(args, 'pattern');
+    const frida = this.getFridaSession();
+    const availability = await frida.getAvailability();
+
+    if (!availability.available) {
+      return {
+        available: false,
+        capability: 'frida_cli',
+        fix: 'Install frida-tools and ensure the frida CLI is on PATH.',
+        sessionId,
+        pattern,
+        reason: availability.reason ?? 'Frida CLI is not available',
+        symbols: [],
+      };
+    }
+
+    if (!frida.useSession(sessionId)) {
+      return {
+        available: false,
+        capability: 'frida_session',
+        fix: 'Call frida_attach first and reuse the returned sessionId.',
+        sessionId,
+        reason: `Unknown Frida session: ${sessionId}`,
+        symbols: [],
+      };
+    }
+
+    const symbols = await frida.findSymbols(pattern);
+    const diagnostics = frida.getSessionDiagnostics(sessionId);
+    if (diagnostics?.status === 'error' && diagnostics.lastError) {
+      return jsonResponse({
+        success: false,
+        available: true,
+        sessionId,
+        pattern,
+        reason: diagnostics.lastError,
+        symbols,
+        count: symbols.length,
+      });
+    }
+
+    return jsonResponse({
+      success: true,
+      available: true,
+      sessionId,
+      pattern,
+      symbols,
+      count: symbols.length,
+    });
+  }
+
+  private getFridaSession(): FridaSession {
+    if (!this.state.fridaSession) {
+      this.state.fridaSession = new FridaSession();
+    }
+    return this.state.fridaSession;
+  }
+}

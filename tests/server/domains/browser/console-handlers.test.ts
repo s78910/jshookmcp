@@ -1,9 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConsoleHandlers } from '@server/domains/browser/handlers/console-handlers';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('ConsoleHandlers', () => {
   let consoleMonitor: any;
@@ -18,7 +16,7 @@ describe('ConsoleHandlers', () => {
       execute: vi.fn(),
     };
     detailedDataManager = {
-      smartHandle: vi.fn((value: unknown) => ({ wrapped: value })),
+      smartHandle: vi.fn((value: any) => ({ wrapped: value })),
     };
     handlers = new ConsoleHandlers({ consoleMonitor, detailedDataManager });
   });
@@ -26,7 +24,9 @@ describe('ConsoleHandlers', () => {
   it('enables console monitoring and returns a success payload', async () => {
     consoleMonitor.enable.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handleConsoleEnable({}));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleConsoleMonitor({ action: 'enable' }),
+    );
 
     expect(consoleMonitor.enable).toHaveBeenCalledOnce();
     expect(body).toEqual({
@@ -41,8 +41,8 @@ describe('ConsoleHandlers', () => {
       { type: 'warn', text: 'careful' },
     ]);
 
-    const body = parseJson(
-      await handlers.handleConsoleGetLogs({ type: 'error', limit: 25, since: 1000 })
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleConsoleGetLogs({ type: 'error', limit: 25, since: 1000 }),
     );
 
     expect(consoleMonitor.getLogs).toHaveBeenCalledWith({
@@ -58,16 +58,15 @@ describe('ConsoleHandlers', () => {
           { type: 'warn', text: 'careful' },
         ],
       },
-      51200
+      51200,
     );
-    expect(body).toEqual({
-      wrapped: {
-        count: 2,
-        logs: [
-          { type: 'error', text: 'boom' },
-          { type: 'warn', text: 'careful' },
-        ],
-      },
+    expect(body.success).toBe(true);
+    expect(body.wrapped).toEqual({
+      count: 2,
+      logs: [
+        { type: 'error', text: 'boom' },
+        { type: 'warn', text: 'careful' },
+      ],
     });
   });
 
@@ -86,7 +85,9 @@ describe('ConsoleHandlers', () => {
   it('executes console expressions and returns the result payload', async () => {
     consoleMonitor.execute.mockResolvedValue({ value: 42 });
 
-    const body = parseJson(await handlers.handleConsoleExecute({ expression: '6 * 7' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleConsoleExecute({ expression: '6 * 7' }),
+    );
 
     expect(consoleMonitor.execute).toHaveBeenCalledWith('6 * 7');
     expect(body).toEqual({
@@ -95,11 +96,12 @@ describe('ConsoleHandlers', () => {
     });
   });
 
-  it('rethrows console execution errors', async () => {
+  it('returns failure response for console execution errors', async () => {
     consoleMonitor.execute.mockRejectedValue(new Error('execution failed'));
 
-    await expect(
-      handlers.handleConsoleExecute({ expression: 'throw new Error()' })
-    ).rejects.toThrow('execution failed');
+    const response = await handlers.handleConsoleExecute({ expression: 'throw new Error()' });
+    const body = parseJson<BrowserStatusResponse>(response);
+    expect(body.success).toBe(false);
+    expect(body.message).toContain('execution failed');
   });
 });

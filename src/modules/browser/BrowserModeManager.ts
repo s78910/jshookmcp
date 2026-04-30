@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import puppeteer, { Browser, Page, type LaunchOptions } from 'rebrowser-puppeteer-core';
+import { launch, type Browser, type Page, type LaunchOptions } from 'rebrowser-puppeteer-core';
 import { logger } from '@utils/logger';
 import { findBrowserExecutable } from '@utils/browserExecutable';
 import { CaptchaDetector, type CaptchaDetectionResult } from '@modules/captcha/CaptchaDetector';
@@ -66,6 +66,9 @@ export class BrowserModeManager {
   private config: Required<BrowserModeConfig>;
   private captchaDetector: CaptchaDetector;
   private launchOptions: LaunchOptions;
+  /** PID of the Chrome child process launched by puppeteer, used for force-kill fallback. */
+  private chromePid: number | null = null;
+  private static readonly BROWSER_CLOSE_TIMEOUT_MS = 5000;
   private sessionData: {
     origin?: string;
     cookies?: Awaited<ReturnType<Page['cookies']>>;
@@ -134,16 +137,22 @@ export class BrowserModeManager {
       options.executablePath = executablePath;
     }
 
-    const browser = await puppeteer.launch(options);
+    const browser = await launch(options);
+    const pid = browser.process()?.pid ?? null;
 
     if (this.isClosing) {
       await browser.close().catch((error) => {
         logger.warn('Failed to close browser launched during shutdown', error);
+        BrowserModeManager.forceKillPid(pid);
       });
       throw new Error('Browser launch aborted because close was requested');
     }
 
     this.browser = browser;
+    this.chromePid = pid;
+    if (pid) {
+      logger.debug(`Chrome child process PID: ${pid}`);
+    }
 
     logger.info('Browser launched successfully');
 
@@ -158,7 +167,7 @@ export class BrowserModeManager {
       }
       throw new Error(
         `Configured browser executable was not found: ${configuredPath}. ` +
-          'Set a valid executablePath or configure CHROME_PATH / PUPPETEER_EXECUTABLE_PATH / BROWSER_EXECUTABLE_PATH.'
+          'Set a valid executablePath or configure CHROME_PATH / PUPPETEER_EXECUTABLE_PATH / BROWSER_EXECUTABLE_PATH.',
       );
     }
 
@@ -168,7 +177,7 @@ export class BrowserModeManager {
     }
 
     logger.info(
-      'No explicit browser executable configured. Falling back to Puppeteer-managed browser resolution.'
+      'No explicit browser executable configured. Falling back to Puppeteer-managed browser resolution.',
     );
     return undefined;
   }
@@ -191,12 +200,27 @@ export class BrowserModeManager {
   private async finalizeClose(): Promise<void> {
     try {
       const browser = this.browser;
+      const pid = this.chromePid;
       this.browser = null;
       this.currentPage = null;
+      this.chromePid = null;
 
       if (browser) {
-        await browser.close();
-        logger.info('Browser closed');
+        try {
+          await Promise.race([
+            browser.close(),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () => reject(new Error('browser.close() timed out')),
+                BrowserModeManager.BROWSER_CLOSE_TIMEOUT_MS,
+              ),
+            ),
+          ]);
+          logger.info('Browser closed');
+        } catch (error) {
+          logger.warn('browser.close() failed or timed out, attempting force-kill:', error);
+          BrowserModeManager.forceKillPid(pid);
+        }
       }
     } finally {
       this.isClosing = false;
@@ -233,7 +257,7 @@ export class BrowserModeManager {
       logger.warn(
         `CAPTCHA assessment candidates: ${captchaAssessment.candidates
           .map((candidate) => `${candidate.type}@${candidate.source}(${candidate.confidence}%)`)
-          .join(', ')}`
+          .join(', ')}`,
       );
     }
 
@@ -248,7 +272,7 @@ export class BrowserModeManager {
 
     const captchaResult: CaptchaDetectionResult = captchaAssessment.primaryDetection;
     logger.warn(
-      `CAPTCHA detected (type: ${captchaResult.type}, confidence: ${captchaResult.confidence}%)`
+      `CAPTCHA detected (type: ${captchaResult.type}, confidence: ${captchaResult.confidence}%)`,
     );
 
     if (captchaResult.providerHint) {
@@ -266,13 +290,20 @@ export class BrowserModeManager {
   private async switchToHeaded(
     currentPage: Page,
     url: string,
-    captchaInfo: CaptchaDetectionResult
+    captchaInfo: CaptchaDetectionResult,
   ): Promise<void> {
     logger.info('Switching browser to headed mode for manual CAPTCHA solving');
 
     await this.saveSessionData(currentPage);
 
-    await this.browser?.close();
+    const oldPid = this.chromePid;
+    try {
+      await this.browser?.close();
+    } catch (error) {
+      logger.warn('Failed to close old browser during mode switch:', error);
+      BrowserModeManager.forceKillPid(oldPid);
+    }
+    this.chromePid = null;
 
     this.isHeadless = false;
     await this.launch();
@@ -294,7 +325,7 @@ export class BrowserModeManager {
 
     const completed = await this.captchaDetector.waitForCompletion(
       newPage,
-      this.config.captchaTimeout
+      this.config.captchaTimeout,
     );
 
     if (completed) {
@@ -383,7 +414,7 @@ export class BrowserModeManager {
       if (this.sessionData.origin && currentOrigin && this.sessionData.origin !== currentOrigin) {
         logger.warn(
           `Origin mismatch: session data from ${this.sessionData.origin} cannot be restored to ${currentOrigin}. ` +
-            'This prevents cross-origin data leakage.'
+            'This prevents cross-origin data leakage.',
         );
         return;
       }
@@ -391,24 +422,21 @@ export class BrowserModeManager {
       if (this.sessionData.localStorage || this.sessionData.sessionStorage) {
         await page.evaluate(
           (data) => {
-            // Helper function to reduce code duplication
-            const restoreStorage = (
-              storage: Storage,
-              items: Record<string, string> | undefined
-            ) => {
-              if (items) {
-                for (const [key, value] of Object.entries(items)) {
-                  storage.setItem(key, value);
-                }
+            if (data.local) {
+              for (const [key, value] of Object.entries(data.local)) {
+                localStorage.setItem(key, value);
               }
-            };
-            restoreStorage(localStorage, data.local);
-            restoreStorage(sessionStorage, data.session);
+            }
+            if (data.session) {
+              for (const [key, value] of Object.entries(data.session)) {
+                sessionStorage.setItem(key, value);
+              }
+            }
           },
           {
             local: this.sessionData.localStorage,
             session: this.sessionData.sessionStorage,
-          }
+          },
         );
         logger.info('Session storage data restored');
       }
@@ -543,5 +571,24 @@ export class BrowserModeManager {
 
   isHeadlessMode(): boolean {
     return this.isHeadless;
+  }
+
+  /** Get the tracked Chrome child process PID. */
+  getChromePid(): number | null {
+    return this.chromePid;
+  }
+
+  /** Force-kill a process by PID. Safe to call with null/invalid PIDs. */
+  static forceKillPid(pid: number | null): void {
+    if (!pid) return;
+    try {
+      process.kill(pid, 'SIGKILL');
+      logger.info(`Force-killed Chrome process PID ${pid}`);
+    } catch (error) {
+      // ESRCH = process already exited, which is fine
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        logger.warn(`Failed to force-kill Chrome PID ${pid}:`, error);
+      }
+    }
   }
 }

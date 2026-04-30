@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import '../shared/manifest-test-mocks';
+import { manifestTestMocksInstalled } from '../shared/manifest-test-mocks';
+
+void manifestTestMocksInstalled;
 
 describe('server/domains/browser/manifest', () => {
   beforeEach(() => {
@@ -20,7 +22,7 @@ describe('server/domains/browser/manifest', () => {
         profiles: ['workflow', 'full'],
         ensure: expect.any(Function),
         registrations: expect.any(Array),
-      })
+      }),
     );
   });
 
@@ -36,14 +38,12 @@ describe('server/domains/browser/manifest', () => {
     });
   });
 
-  it('includes camoufox server tools in registrations', async () => {
+  it('includes camoufox server tool in registrations', async () => {
     const { default: manifest } = await import('@server/domains/browser/manifest');
 
     const toolNames = manifest.registrations.map((r) => (r.tool as { name: string }).name);
 
-    expect(toolNames).toContain('camoufox_server_launch');
-    expect(toolNames).toContain('camoufox_server_close');
-    expect(toolNames).toContain('camoufox_server_status');
+    expect(toolNames).toContain('camoufox_server');
   });
 
   it('includes core browser tools in registrations', async () => {
@@ -57,6 +57,10 @@ describe('server/domains/browser/manifest', () => {
     expect(toolNames).toContain('browser_status');
     expect(toolNames).toContain('browser_list_tabs');
     expect(toolNames).toContain('browser_select_tab');
+    expect(toolNames).toContain('browser_list_cdp_targets');
+    expect(toolNames).toContain('browser_attach_cdp_target');
+    expect(toolNames).toContain('browser_detach_cdp_target');
+    expect(toolNames).toContain('browser_evaluate_cdp_target');
   });
 
   it('includes page interaction tools in registrations', async () => {
@@ -70,18 +74,6 @@ describe('server/domains/browser/manifest', () => {
     expect(toolNames).toContain('page_type');
     expect(toolNames).toContain('page_screenshot');
     expect(toolNames).toContain('page_evaluate');
-  });
-
-  it('includes DOM tools in registrations', async () => {
-    const { default: manifest } = await import('@server/domains/browser/manifest');
-
-    const toolNames = manifest.registrations.map((r) => (r.tool as { name: string }).name);
-
-    expect(toolNames).toContain('dom_query_selector');
-    expect(toolNames).toContain('dom_query_all');
-    expect(toolNames).toContain('dom_get_structure');
-    expect(toolNames).toContain('dom_find_clickable');
-    expect(toolNames).toContain('dom_find_by_text');
   });
 
   it('includes advanced browser tools in registrations', async () => {
@@ -112,6 +104,7 @@ describe('server/domains/browser/manifest', () => {
 
     const toolNames = manifest.registrations.map((r) => (r.tool as { name: string }).name);
 
+    expect(toolNames).toContain('captcha_solver_capabilities');
     expect(toolNames).toContain('captcha_vision_solve');
     expect(toolNames).toContain('widget_challenge_solve');
   });
@@ -137,7 +130,7 @@ describe('server/domains/browser/manifest', () => {
       browserHandlers: undefined,
     } as any;
 
-    const result = manifest.ensure(ctx);
+    const result = await manifest.ensure(ctx);
     expect(result).toBeDefined();
     expect(ctx.browserHandlers).toBeDefined();
   });
@@ -156,7 +149,7 @@ describe('server/domains/browser/manifest', () => {
       browserHandlers: existingHandlers,
     } as any;
 
-    const result = manifest.ensure(ctx);
+    const result = await manifest.ensure(ctx);
     expect(result).toBe(existingHandlers);
   });
 });

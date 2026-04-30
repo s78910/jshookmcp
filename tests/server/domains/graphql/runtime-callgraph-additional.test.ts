@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  createCodeCollectorMock,
+  createPageMock,
+  parseJson,
+} from '@tests/server/domains/shared/mock-factories';
 
 const isSsrfTargetMock = vi.fn(async () => false);
 
@@ -9,27 +14,28 @@ vi.mock('@src/server/domains/network/replay', () => ({
 import { GraphQLToolHandlersCallGraph } from '@server/domains/graphql/handlers.impl.core.runtime.callgraph';
 import type { CallGraphEdge } from '@server/domains/graphql/handlers.impl.core.runtime.shared';
 
-function parseJson(response: unknown) {
-  return JSON.parse((response as any).content[0]!.text);
+interface CallGraphResponse {
+  success: boolean;
+  nodes: any[];
+  edges: CallGraphEdge[];
+  stats: {
+    scannedRecords: number;
+    acceptedRecords: number;
+  };
 }
 
 describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
-  const page = {
-    evaluate: vi.fn(),
-    evaluateOnNewDocument: vi.fn(),
-    setRequestInterception: vi.fn(),
-    on: vi.fn(),
-  };
-  const collector = {
+  const page = createPageMock();
+  const collector = createCodeCollectorMock({
     getActivePage: vi.fn(async () => page),
-  } as any;
+  });
 
   let handlers: GraphQLToolHandlersCallGraph;
 
   beforeEach(() => {
     vi.clearAllMocks();
     isSsrfTargetMock.mockResolvedValue(false);
-    handlers = new GraphQLToolHandlersCallGraph(collector);
+    handlers = new GraphQLToolHandlersCallGraph(collector as any);
   });
 
   // ── page.evaluate callback execution ─────────────────────────────────
@@ -39,7 +45,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
   describe('page.evaluate callback logic', () => {
     it('executes the evaluate callback and processes empty globals', async () => {
       // Simulate a window with no trace data
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         // Execute the callback with a mock window that has no data
         const fakeWindow = {};
         const origWindow = globalThis.window;
@@ -61,7 +67,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.nodes).toHaveLength(0);
       expect(body.edges).toHaveLength(0);
@@ -70,7 +76,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
     });
 
     it('processes __aiHooks records with caller and callee', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             fetchHook: [
@@ -96,7 +102,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.nodes.length).toBeGreaterThan(0);
       expect(body.edges.length).toBeGreaterThan(0);
@@ -108,7 +114,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
     });
 
     it('processes stack trace frames from records', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -139,7 +145,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.acceptedRecords).toBeGreaterThan(0);
       // Stack frames create edges from caller to callee
@@ -147,7 +153,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
     });
 
     it('processes __functionTraceRecords global array', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __functionTraceRecords: [
             { callee: 'doWork', caller: 'init' },
@@ -171,14 +177,14 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(2);
       expect(body.stats.acceptedRecords).toBe(2);
     });
 
     it('processes __functionTracer.records', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __functionTracer: {
             records: [
@@ -204,13 +210,13 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(2);
     });
 
     it('skips non-array __aiHooks entries', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             validHook: [{ caller: 'a', callee: 'b' }],
@@ -235,13 +241,13 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(1);
     });
 
     it('skips non-object entries in hook arrays', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [null, 42, 'string', { caller: 'real', callee: 'entry' }],
@@ -264,13 +270,13 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(1);
     });
 
     it('normalizes empty/whitespace callee names to fallback', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -296,14 +302,14 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       // Empty callee names get fallback name from the hook name
       expect(body.stats.scannedRecords).toBe(2);
     });
 
     it('deduplicates edges and increments counts', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -330,14 +336,15 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.edges).toHaveLength(1);
+      // @ts-expect-error — auto-suppressed [TS2532]
       expect(body.edges[0].count).toBe(3);
     });
 
     it('skips self-referencing edges (source === target)', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [{ caller: 'selfRef', callee: 'selfRef' }],
@@ -360,7 +367,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.edges).toHaveLength(0);
       // acceptedRecords is 1 because caller && callee is truthy,
@@ -369,7 +376,7 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
     });
 
     it('applies filterPattern to include only matching edges', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -395,15 +402,18 @@ describe('GraphQLToolHandlersCallGraph - additional coverage', () => {
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({ filterPattern: '^fetch' }));
+      const body = parseJson<CallGraphResponse>(
+        await handlers.handleCallGraphAnalyze({ filterPattern: '^fetch' }),
+      );
       expect(body.success).toBe(true);
       // Only the edge with 'fetchUser' should match
       expect(body.edges).toHaveLength(1);
+      // @ts-expect-error — auto-suppressed [TS2532]
       expect(body.edges[0].source).toBe('fetchUser');
     });
 
     it('handles Firefox-style stack traces (function@file)', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -432,13 +442,13 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.acceptedRecords).toBeGreaterThan(0);
     });
 
     it('handles single stack frame that differs from callee', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -466,14 +476,14 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       // Single frame != callee => edge from frame[0] to callee
       expect(body.edges.length).toBeGreaterThan(0);
     });
 
     it('handles single stack frame matching callee (no extra edge)', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -502,14 +512,14 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       // caller->callee edge exists, but single frame == callee => no extra edge
       expect(body.stats.acceptedRecords).toBe(1);
     });
 
     it('handles empty stack string', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -535,14 +545,14 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(2);
       expect(body.stats.acceptedRecords).toBe(2);
     });
 
     it('uses alternate record field names (method, target)', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __functionCalls: [
             { method: 'myMethod', from: 'caller1' },
@@ -566,14 +576,14 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(2);
       expect(body.stats.acceptedRecords).toBe(2);
     });
 
     it('handles non-string stack values', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __callTrace: [
             { callee: 'fn1', caller: 'fn2', stack: 42 },
@@ -598,14 +608,14 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(3);
       expect(body.stats.acceptedRecords).toBe(3); // caller/callee pairs still create edges
     });
 
     it('handles records with no caller and no stack (callee only uses fallback)', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __traceCalls: [{ callee: 'orphanFn' }],
         };
@@ -626,7 +636,7 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(1);
       // No caller, no stack => not "used"
@@ -634,7 +644,7 @@ callerFn@app.js:20:10`,
     });
 
     it('respects maxDepth for deep stack traces', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -668,7 +678,9 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({ maxDepth: 2 }));
+      const body = parseJson<CallGraphResponse>(
+        await handlers.handleCallGraphAnalyze({ maxDepth: 2 }),
+      );
       expect(body.success).toBe(true);
       // maxDepth=2 limits stack-derived edges to depth of 2
       expect(body.edges.length).toBeGreaterThan(0);
@@ -676,7 +688,7 @@ callerFn@app.js:20:10`,
     });
 
     it('handles __functionTracer that is not an object', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __functionTracer: 'not-an-object',
         };
@@ -697,13 +709,13 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(0);
     });
 
     it('handles __functionTracer.records that is not an array', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __functionTracer: {
             records: 'not-an-array',
@@ -726,13 +738,13 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(0);
     });
 
     it('sorts nodes by callCount descending and edges by count descending', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [
@@ -760,7 +772,7 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       // Nodes should be sorted by callCount descending
       for (let i = 1; i < body.nodes.length; i++) {
@@ -768,12 +780,13 @@ callerFn@app.js:20:10`,
       }
       // Edges should be sorted by count descending
       for (let i = 1; i < body.edges.length; i++) {
+        // @ts-expect-error — auto-suppressed [TS2532]
         expect(body.edges[i - 1].count).toBeGreaterThanOrEqual(body.edges[i].count);
       }
     });
 
     it('handles __aiHooks that is falsy', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: null,
         };
@@ -794,13 +807,13 @@ callerFn@app.js:20:10`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(0);
     });
 
     it('processes stackTrace and trace fields as stack aliases', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __functionTracerRecords: [
             {
@@ -832,14 +845,14 @@ at caller2 (b.js:2:1)`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       expect(body.stats.scannedRecords).toBe(2);
       expect(body.stats.acceptedRecords).toBe(2);
     });
 
     it('handles non-numeric callee values via normalization', async () => {
-      page.evaluate.mockImplementationOnce(async (fn: Function, evalArgs: unknown) => {
+      (page.evaluate as Mock).mockImplementationOnce(async (fn: Function, evalArgs: any) => {
         const fakeWindow: Record<string, unknown> = {
           __aiHooks: {
             hook1: [{ callee: 42, caller: 'main' }],
@@ -862,7 +875,7 @@ at caller2 (b.js:2:1)`,
         }
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<CallGraphResponse>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
       // Non-string callee falls back to hook name
       expect(body.stats.scannedRecords).toBe(1);

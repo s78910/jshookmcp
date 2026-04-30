@@ -20,6 +20,7 @@ vi.mock('rebrowser-puppeteer-core', () => ({
   default: {
     launch: puppeteerState.launch,
   },
+  launch: puppeteerState.launch,
 }));
 
 import { fetchRealEnvironmentData } from '@modules/emulator/EnvironmentEmulatorFetch';
@@ -317,7 +318,7 @@ describe('EnvironmentEmulatorFetch – additional coverage', () => {
       expect(result.manifest).toEqual({ fallbackKey: 'val' });
       expect(loggerState.warn).toHaveBeenCalledWith(
         'Variable extraction failed',
-        expect.any(Error)
+        expect.any(Error),
       );
     });
 

@@ -35,7 +35,6 @@ vi.mock('@server/domains/shared/modules', () => ({
   BlackboxManager: mockClass(),
   ExternalToolRunner: mockClass(),
   ToolRegistry: mockClass(),
-  AIHookGenerator: mockClass(),
   HookManager: mockClass(),
   ConsoleMonitor: mockClass(),
   PerformanceMonitor: mockClass(),
@@ -78,7 +77,7 @@ const mockSubHandler = () =>
   vi
     .fn()
     .mockImplementation(
-      () => new Proxy({}, { get: () => vi.fn().mockResolvedValue({ content: [] }) })
+      () => new Proxy({}, { get: () => vi.fn().mockResolvedValue({ content: [] }) }),
     );
 
 vi.mock('@server/domains/debugger/handlers/debugger-control', () => ({
@@ -152,10 +151,14 @@ vi.mock('@utils/artifacts', () => ({
     .fn()
     .mockResolvedValue({ absolutePath: '/tmp/test', displayPath: 'test' }),
 }));
-vi.mock('@src/constants', () => ({
-  EXTENSION_GIT_CLONE_TIMEOUT_MS: 30000,
-  EXTENSION_GIT_CHECKOUT_TIMEOUT_MS: 10000,
-}));
+vi.mock(import('@src/constants'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    EXTENSION_GIT_CLONE_TIMEOUT_MS: 30000,
+    EXTENSION_GIT_CHECKOUT_TIMEOUT_MS: 10000,
+  };
+});
 
 // Analysis web-tools
 vi.mock('@server/domains/analysis/handlers.web-tools', () => ({

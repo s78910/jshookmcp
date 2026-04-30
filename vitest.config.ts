@@ -1,37 +1,254 @@
+import { cpus } from 'node:os';
 import { defineConfig } from 'vitest/config';
+import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// Project root (directory containing package.json)
+const root = resolve(dirname(fileURLToPath(import.meta.url)));
+
+const detectedCpuCount = Math.max(1, cpus().length);
+const requestedMaxWorkers = Number.parseInt(process.env.VITEST_MAX_WORKERS ?? '', 10);
+const configuredMaxWorkers =
+  Number.isFinite(requestedMaxWorkers) && requestedMaxWorkers > 0
+    ? Math.min(requestedMaxWorkers, detectedCpuCount)
+    : undefined;
+
+// Coverage reporter configuration based on environment
+const coverageReporter =
+  process.env.COVERAGE_FULL === 'true'
+    ? ['text', 'json', 'html', 'text-summary']
+    : ['text-summary'];
+
+// Coverage exclusion patterns (shared across all projects)
+const coverageExclude = [
+  'src/**/*.d.ts',
+  'src/**/types.ts',
+  'src/types/**',
+  'src/*/**/index.ts',
+  'src/**/manifest.ts',
+  'src/**/*.types.ts',
+  // Pure re-export handler files (zero logic, just re-export from impl)
+  'src/server/domains/analysis/handlers.ts',
+  'src/server/domains/browser/handlers.ts',
+  'src/server/domains/encoding/handlers.ts',
+  'src/server/domains/graphql/handlers.ts',
+  'src/server/domains/network/handlers.ts',
+  'src/server/domains/process/handlers.ts',
+  'src/server/domains/sourcemap/handlers.ts',
+  'src/server/domains/streaming/handlers.ts',
+  'src/server/domains/transform/handlers.ts',
+  'src/server/domains/workflow/handlers.ts',
+  // Pure re-export/type-only barrel files
+  'src/server/domains/shared/modules.ts',
+  'src/server/domains/shared/registry.ts',
+  'src/server/registry/contracts.ts',
+  'src/server/plugins/pluginContract.ts',
+  // Definition-only files (0% coverage, contain only Tool[] arrays)
+  'src/server/domains/*/definitions.ts',
+  // Requires real browser CDP connection — untestable in unit tests
+  'src/modules/collector/playwright-cdp-fallback.ts',
+  // v0.3.0 domains: handlers require real hardware / native FFI / CDP sessions
+  'src/server/domains/adb-bridge/handlers.impl.ts',
+  'src/server/domains/binary-instrument/handlers.impl.ts',
+  'src/server/domains/boringssl-inspector/handlers.impl.ts',
+  'src/server/domains/mojo-ipc/handlers.impl.ts',
+  'src/server/domains/skia-capture/handlers.impl.ts',
+  'src/server/domains/syscall-hook/handlers.impl.ts',
+  // Pure re-export backward-compat shim files (1-10 lines, zero logic)
+  'src/server/domains/graphql/handlers.base.ts',
+  'src/server/domains/graphql/handlers.impl.core.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.base.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.callgraph.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.extract.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.introspection.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.script-replace.ts',
+  'src/server/domains/graphql/handlers.impl.core.runtime.replay.ts',
+  'src/server/domains/network/handlers.impl.core.ts',
+  'src/server/domains/network/handlers.impl.core.runtime.ts',
+  'src/server/domains/process/handlers.impl.core.ts',
+  'src/server/domains/process/handlers.impl.core.runtime.ts',
+  'src/server/domains/process/handlers.impl.core.runtime.base.ts',
+  'src/server/domains/process/handlers.impl.core.runtime.inject.ts',
+  'src/server/domains/process/handlers.impl.core.runtime.memory.ts',
+  // Legacy monolithic handler file superseded by composed sub-modules
+  // (all logic now lives in handlers/*, tested via handlers.impl.ts facade)
+  'src/server/domains/shared-state-board/handlers.impl.ts',
+  // Hardware/native FFI dependent — cannot be unit tested
+  'src/modules/debugger/DebuggerManager.impl.ts',
+  'src/modules/debugger/manager.impl.ts',
+  'src/modules/debugger/DebuggerManager.ts',
+  'src/modules/debugger/ScriptManager.ts',
+  'src/modules/monitor/ConsoleMonitor.impl.ts',
+  'src/modules/monitor/ConsoleMonitor.ts',
+  'src/modules/monitor/NetworkMonitor.impl.ts',
+  'src/modules/monitor/NetworkMonitor.ts',
+  'src/server/domains/process/handlers.base.ts',
+  'src/server/domains/process/handlers.base.process.ts',
+  'src/server/domains/network/handlers.impl.core.runtime.raw.ts',
+  'src/server/domains/network/handlers.impl.core.runtime.replay.ts',
+  'src/server/domains/network/handlers.impl.core.runtime.intercept.ts',
+  'src/server/domains/network/handlers.impl.core.runtime.performance.ts',
+  'src/modules/binary-instrument/UnidbgRunner.ts',
+  'src/modules/binary-instrument/GhidraAnalyzer.ts',
+  'src/modules/binary-instrument/HookGenerator.ts',
+  'src/native/platform/linux/LinuxMemoryProvider.impl.ts',
+  // Native/raw-socket platform probes requiring OS privileges or real network stack
+  'src/native/IcmpProbe.ts',
+  // Requires a live browser-side inspector websocket target
+  'src/modules/v8-inspector/V8InspectorClient.ts',
+  // Requires a live page/canvas runtime with extracted Skia scene data
+  'src/modules/skia-capture/SkiaSceneExtractor.ts',
+  // Duplicate extracted utility module; runtime coverage is exercised via handlers.extensions.ts
+  'src/server/domains/maintenance/handlers/extension-registry-utils.ts',
+  'src/server/domains/adb-bridge/handlers.ts',
+  'src/server/domains/binary-instrument/handlers.ts',
+  'src/server/domains/boringssl-inspector/handlers.ts',
+  'src/server/domains/boringssl-inspector/handlers.impl.core.ts',
+  'src/server/domains/canvas/dependencies.ts',
+  'src/server/domains/canvas/handlers.ts',
+  'src/server/domains/cross-domain/handlers.ts',
+  'src/server/domains/cross-domain/handlers.impl.ts',
+  'src/server/domains/encoding/handlers.ts',
+  'src/server/domains/extension-registry/handlers.ts',
+  'src/server/domains/mojo-ipc/handlers.ts',
+  'src/server/domains/protocol-analysis/handlers.ts',
+  'src/server/domains/protocol-analysis/handlers.impl.core.ts',
+  // Pure composition facades delegating to focused sub-handlers; covered at the sub-handler layer.
+  'src/server/domains/debugger/handlers.ts',
+  'src/server/domains/memory/handlers.impl.ts',
+  'src/server/domains/syscall-hook/handlers.ts',
+  'src/server/domains/v8-inspector/handlers.ts',
+  'src/server/domains/v8-inspector/handlers.impl.ts',
+  'src/server/domains/wasm/handlers.ts',
+  'src/server/domains/wasm/handlers.impl.ts',
+  // Stateful live-stream handler surfaces; underlying monitor/injection logic is already covered
+  // through the lower-level streaming impl tests and direct domain tests.
+  'src/server/domains/streaming/handlers/sse-handlers.ts',
+  'src/server/domains/streaming/handlers/ws-handlers.ts',
+  'src/native/MemoryManager.ts',
+  'src/modules/process/memory/regions.ts',
+  'src/modules/process/memory/regions.impl.ts',
+  'src/native/platform/lin32/linMemoryAPI.ts',
+];
 
 export default defineConfig({
   resolve: {
-    alias: {
-      '@src': fileURLToPath(new URL('./src', import.meta.url)),
-      '@extension-sdk': fileURLToPath(new URL('./packages/extension-sdk/src', import.meta.url)),
-      '@errors': fileURLToPath(new URL('./src/errors', import.meta.url)),
-      '@modules': fileURLToPath(new URL('./src/modules', import.meta.url)),
-      '@native': fileURLToPath(new URL('./src/native', import.meta.url)),
-      '@server': fileURLToPath(new URL('./src/server', import.meta.url)),
-      '@services': fileURLToPath(new URL('./src/services', import.meta.url)),
-      '@tests': fileURLToPath(new URL('./tests', import.meta.url)),
-      '@internal-types': fileURLToPath(new URL('./src/types', import.meta.url)),
-      '@utils': fileURLToPath(new URL('./src/utils', import.meta.url)),
-    },
+    alias: [
+      // Explicit .ts extensions so require() can find modules without extension auto-append
+      {
+        find: '@server/domains/canvas/adapters/cocos-adapter',
+        replacement: resolve(root, 'src/server/domains/canvas/adapters/cocos-adapter.ts'),
+      },
+      {
+        find: '@server/domains/canvas/adapters/pixi-adapter',
+        replacement: resolve(root, 'src/server/domains/canvas/adapters/pixi-adapter.ts'),
+      },
+      {
+        find: '@server/domains/canvas/adapters/phaser-adapter',
+        replacement: resolve(root, 'src/server/domains/canvas/adapters/phaser-adapter.ts'),
+      },
+      {
+        find: '@server/domains/canvas/adapters',
+        replacement: resolve(root, 'src/server/domains/canvas/adapters'),
+      },
+      { find: '@server', replacement: resolve(root, 'src/server') },
+      { find: '@src', replacement: resolve(root, 'src') },
+      { find: '@modules', replacement: resolve(root, 'src/modules') },
+      { find: '@native', replacement: resolve(root, 'src/native') },
+      { find: '@utils', replacement: resolve(root, 'src/utils') },
+      { find: '@services', replacement: resolve(root, 'src/services') },
+      { find: '@errors', replacement: resolve(root, 'src/errors') },
+      { find: '@internal-types', replacement: resolve(root, 'src/types') },
+      { find: '@extension-sdk', replacement: resolve(root, 'packages/extension-sdk/src') },
+      {
+        find: '@jshookmcp/extension-sdk',
+        replacement: resolve(root, 'packages/extension-sdk/src'),
+      },
+      { find: '@tests', replacement: resolve(root, 'tests') },
+    ],
+    // Note: tsconfigPaths is intentionally omitted. The explicit resolve.alias
+    // entries above handle all path aliases correctly. tsconfigPaths can mangle
+    // aliases into incorrect relative paths when dynamic require() is used in
+    // tests (e.g. the canvas multi-engine adapter tests), causing ENOENT errors.
+    // Additionally, explicit .ts extensions are needed for require() resolution.
   },
   test: {
+    // ── Shared defaults (inherited by projects via extends: true) ──
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
-    exclude: ['tests/e2e/**'],
-    setupFiles: ['tests/setup.ts'],
     clearMocks: true,
     restoreMocks: true,
     mockReset: true,
     testTimeout: 30000,
     hookTimeout: 30000,
-    pool: 'threads',
+    pool: 'forks',
+    ...(configuredMaxWorkers ? { maxWorkers: configuredMaxWorkers } : {}),
     coverage: {
       provider: 'v8',
+      reportsDirectory: './coverage',
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.d.ts', 'src/**/types.ts', 'src/types/**'],
-      reporter: ['text', 'json', 'html'],
+      exclude: coverageExclude,
+      reporter: coverageReporter,
+      thresholds: {
+        // Coverage gate is calibrated to the current repo baseline so push hooks
+        // catch regressions without blocking on long-standing uncovered surfaces.
+        // Branch coverage varies slightly across V8/OS combinations in CI, so
+        // keep a small buffer below the observed Linux baseline instead of
+        // failing healthy pushes on 0.01-0.05% runner deltas.
+        lines: 88,
+        functions: 88,
+        branches: 78.9,
+        statements: 88,
+      },
     },
+
+    // ── Projects for optimized parallel execution ──
+    // Run all:     vitest run
+    // Run single:  vitest run --project pure
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'pure',
+          pool: 'forks', // Use forks because pure tests might load better-sqlite3 via cache utils
+          include: [
+            'tests/utils/**/*.test.ts',
+            'tests/errors/**/*.test.ts',
+            'tests/contracts/**/*.test.ts',
+            'tests/cli/**/*.test.ts',
+            'tests/packages/**/*.test.ts',
+            'tests/constants.test.ts',
+          ],
+          exclude: ['tests/e2e/**'],
+          setupFiles: ['tests/setup.light.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'server',
+          pool: 'forks', // Use forks for better-sqlite3 compatibility
+          include: [
+            'tests/server/**/*.test.ts',
+            'tests/modules/**/*.test.ts',
+            'tests/services/**/*.test.ts',
+            'tests/index.test.ts',
+            'tests/simple-stub-test.test.ts',
+          ],
+          exclude: ['tests/e2e/**', 'tests/modules/process/**/*.test.ts'],
+          setupFiles: ['tests/setup.registry.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'native',
+          pool: 'forks', // FFI (koffi) is NOT thread-safe — must use process isolation
+          include: ['tests/native/**/*.test.ts', 'tests/modules/process/**/*.test.ts'],
+          exclude: ['tests/e2e/**'],
+          setupFiles: ['tests/setup.registry.ts'],
+        },
+      },
+    ],
   },
 });

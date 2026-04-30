@@ -1,3 +1,5 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { cdpLimitMock, smartHandleMock, loggerMocks } = vi.hoisted(() => ({
@@ -9,6 +11,8 @@ const { cdpLimitMock, smartHandleMock, loggerMocks } = vi.hoisted(() => ({
     error: vi.fn(),
   },
 }));
+
+function noopChunkListener(_params: any): void {}
 
 vi.mock('@src/utils/concurrency', () => ({
   cdpLimit: (...args: any[]) => (cdpLimitMock as any)(...args),
@@ -28,15 +32,11 @@ vi.mock('@src/utils/logger', () => ({
 
 import { JSHeapSearchHandlers } from '@server/domains/browser/handlers/js-heap';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
-
 describe('JSHeapSearchHandlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    cdpLimitMock.mockImplementation(async (fn: () => Promise<unknown>) => fn());
-    smartHandleMock.mockImplementation((value: unknown) => value);
+    cdpLimitMock.mockImplementation(async (fn: () => Promise<any>) => fn());
+    smartHandleMock.mockImplementation((value: any) => value);
   });
 
   it('returns a validation error when pattern is missing', async () => {
@@ -46,7 +46,7 @@ describe('JSHeapSearchHandlers', () => {
       getActiveDriver: () => 'chrome',
     });
 
-    const body = parseJson(await handlers.handleJSHeapSearch({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleJSHeapSearch({}));
 
     expect(body.success).toBe(false);
     expect(body.error).toContain('pattern is required');
@@ -55,7 +55,7 @@ describe('JSHeapSearchHandlers', () => {
   });
 
   it('takes a heap snapshot with default options and returns matched strings', async () => {
-    let chunkListener = (_params: unknown) => {};
+    let chunkListener = noopChunkListener;
     const snapshot = JSON.stringify({
       snapshot: {
         meta: {
@@ -75,7 +75,7 @@ describe('JSHeapSearchHandlers', () => {
           chunkListener({ chunk: snapshot.slice(midpoint) });
         }
       }),
-      on: vi.fn((event: string, listener: (params: unknown) => void) => {
+      on: vi.fn((event: string, listener: (params: any) => void) => {
         if (event === 'HeapProfiler.addHeapSnapshotChunk') {
           chunkListener = listener;
         }
@@ -92,13 +92,15 @@ describe('JSHeapSearchHandlers', () => {
       getActiveDriver: () => 'chrome',
     });
 
-    const body = parseJson(await handlers.handleJSHeapSearch({ pattern: 'secret' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleJSHeapSearch({ pattern: 'secret' }),
+    );
 
     expect(cdpLimitMock).toHaveBeenCalledOnce();
     expect(page.createCDPSession).toHaveBeenCalledOnce();
     expect(cdpSession.on).toHaveBeenCalledWith(
       'HeapProfiler.addHeapSnapshotChunk',
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(cdpSession.send).toHaveBeenNthCalledWith(1, 'HeapProfiler.enable');
     expect(cdpSession.send).toHaveBeenNthCalledWith(2, 'HeapProfiler.takeHeapSnapshot', {
@@ -115,7 +117,7 @@ describe('JSHeapSearchHandlers', () => {
         matchCount: 1,
         truncated: false,
       }),
-      51200
+      51200,
     );
     expect(body.success).toBe(true);
     expect(body.matchCount).toBe(1);
@@ -126,6 +128,56 @@ describe('JSHeapSearchHandlers', () => {
       value: 'secret token',
     });
     expect(body.tip).toContain('page_evaluate');
+    expect(cdpSession.detach).toHaveBeenCalledOnce();
+  });
+
+  it('accepts legacy query as an alias for pattern', async () => {
+    let chunkListener = noopChunkListener;
+    const snapshot = JSON.stringify({
+      snapshot: {
+        meta: {
+          node_fields: ['type', 'name', 'id'],
+          node_types: [['hidden', 'array', 'string', 'object']],
+        },
+      },
+      strings: ['unused', 'legacy secret', 'other value'],
+      nodes: [2, 1, 201, 2, 2, 202],
+    });
+
+    const cdpSession = {
+      send: vi.fn(async (method: string) => {
+        if (method === 'HeapProfiler.takeHeapSnapshot') {
+          chunkListener({ chunk: snapshot });
+        }
+      }),
+      on: vi.fn((event: string, listener: (params: any) => void) => {
+        if (event === 'HeapProfiler.addHeapSnapshotChunk') {
+          chunkListener = listener;
+        }
+      }),
+      detach: vi.fn(async () => {}),
+    };
+
+    const page = {
+      createCDPSession: vi.fn(async () => cdpSession),
+    };
+
+    const handlers = new JSHeapSearchHandlers({
+      getActivePage: vi.fn(async () => page),
+      getActiveDriver: () => 'chrome',
+    });
+
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleJSHeapSearch({ query: 'legacy secret' }),
+    );
+
+    expect(body.success).toBe(true);
+    expect(body.pattern).toBe('legacy secret');
+    expect(body.matchCount).toBe(1);
+    expect(body.matches[0]).toMatchObject({
+      nodeId: 201,
+      value: 'legacy secret',
+    });
     expect(cdpSession.detach).toHaveBeenCalledOnce();
   });
 
@@ -149,12 +201,12 @@ describe('JSHeapSearchHandlers', () => {
       getActiveDriver: () => 'chrome',
     });
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleJSHeapSearch({
         pattern: 'secret',
         maxResults: 3,
         caseSensitive: true,
-      })
+      }),
     );
 
     expect(body.success).toBe(false);

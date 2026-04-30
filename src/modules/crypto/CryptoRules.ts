@@ -377,7 +377,7 @@ export class CryptoRulesManager {
         rules.constants.forEach((rule: CryptoConstantRule) => this.addConstantRule(rule));
       }
     } catch (error) {
-      throw new Error(`Failed to load rules from JSON: ${error}`);
+      throw new Error(`Failed to load rules from JSON: ${error}`, { cause: error });
     }
   }
 
@@ -391,7 +391,7 @@ export class CryptoRulesManager {
         security: this.getSecurityRules(),
       },
       null,
-      2
+      2,
     );
   }
 }

@@ -10,13 +10,11 @@ import {
   getArtifactRetentionConfig,
   startArtifactRetentionScheduler,
 } from '@utils/artifactRetention';
-
-interface AppError extends Error {
-  code?: string;
-  message: string;
-  name: string;
-  stack?: string;
-}
+import {
+  SHUTDOWN_TIMEOUT_MS,
+  RUNTIME_ERROR_WINDOW_MS,
+  RUNTIME_ERROR_THRESHOLD,
+} from '@src/constants';
 
 interface RuntimeRecoveryState {
   windowStart: number;
@@ -41,13 +39,17 @@ const FATAL_ERRNO_CODES: ReadonlySet<string> = new Set([
 function isFatalError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
 
-  const appErr = error as AppError;
+  // Safely extract code property (Node.js SystemError / ErrnoException)
+  const code =
+    'code' in error && typeof (error as Record<string, unknown>).code === 'string'
+      ? ((error as Record<string, unknown>).code as string)
+      : undefined;
 
   // Node.js internal fatal error codes
-  if (appErr.code && FATAL_ERROR_CODES.has(appErr.code)) return true;
+  if (code && FATAL_ERROR_CODES.has(code)) return true;
 
   // OS-level errno codes
-  if (appErr.code && FATAL_ERRNO_CODES.has(appErr.code)) return true;
+  if (code && FATAL_ERRNO_CODES.has(code)) return true;
 
   // RangeError from V8 heap exhaustion
   if (error instanceof RangeError && error.message.includes('allocation')) return true;
@@ -67,8 +69,17 @@ function formatUnknownError(input: unknown): string {
   }
 }
 
-async function main() {
+export async function main(): Promise<void> {
   try {
+    const cliFastPath = resolveCliFastPath(process.argv.slice(2), import.meta.url);
+    if (cliFastPath.handled) {
+      if (cliFastPath.output) {
+        process.stdout.write(cliFastPath.output);
+      }
+      process.exit(cliFastPath.exitCode);
+      return;
+    }
+
     const config = getConfig();
     logger.debug('Configuration loaded:', config);
 
@@ -77,17 +88,7 @@ async function main() {
       logger.error('Configuration validation failed:');
       validation.errors.forEach((error) => logger.error(`  - ${error}`));
       process.exit(1);
-    }
-
-    if (config.llm.provider === 'openai' && !config.llm.openai?.apiKey) {
-      logger.warn(
-        'OPENAI_API_KEY is not configured. AI-assisted tools may return configuration errors.'
-      );
-    }
-    if (config.llm.provider === 'anthropic' && !config.llm.anthropic?.apiKey) {
-      logger.warn(
-        'ANTHROPIC_API_KEY is not configured. AI-assisted tools may return configuration errors.'
-      );
+      return; // prevent further execution conceptually
     }
 
     const artifactRetention = getArtifactRetentionConfig();
@@ -95,23 +96,26 @@ async function main() {
       const cleanup = await cleanupArtifacts();
       if (cleanup.removedFiles > 0) {
         logger.info(
-          `[artifacts] Startup cleanup removed ${cleanup.removedFiles} files (${cleanup.removedBytes} bytes)`
+          `[artifacts] Startup cleanup removed ${cleanup.removedFiles} files (${cleanup.removedBytes} bytes)`,
         );
       }
     }
 
     logger.info('Creating MCP server instance...');
-    await initRegistry();
+    const explicitProfile = (process.env.MCP_TOOL_PROFILE ?? '').trim().toLowerCase() as
+      | 'search'
+      | 'workflow'
+      | 'full'
+      | undefined;
+    const profile =
+      explicitProfile === 'full' || explicitProfile === 'workflow' || explicitProfile === 'search'
+        ? explicitProfile
+        : 'search';
+    await initRegistry(profile);
     const server = new MCPServer(config);
     const stopArtifactRetentionScheduler = startArtifactRetentionScheduler();
-    const recoveryWindowMs = Math.max(
-      1000,
-      parseInt(process.env.RUNTIME_ERROR_WINDOW_MS ?? '60000', 10)
-    );
-    const maxRecoverableErrors = Math.max(
-      1,
-      parseInt(process.env.RUNTIME_ERROR_THRESHOLD ?? '5', 10)
-    );
+    const recoveryWindowMs = Math.max(1000, RUNTIME_ERROR_WINDOW_MS);
+    const maxRecoverableErrors = Math.max(1, RUNTIME_ERROR_THRESHOLD);
     const runtimeRecovery: RuntimeRecoveryState = {
       windowStart: Date.now(),
       errorCount: 0,
@@ -120,12 +124,12 @@ async function main() {
 
     const handleRuntimeFailure = (
       kind: 'uncaughtException' | 'unhandledRejection',
-      reason: unknown
+      reason: unknown,
     ) => {
       // Fatal errors must exit immediately — no recovery possible
       if (isFatalError(reason)) {
         logger.error(
-          `[${kind}] FATAL unrecoverable error — forcing exit: ${formatUnknownError(reason)}`
+          `[${kind}] FATAL unrecoverable error — forcing exit: ${formatUnknownError(reason)}`,
         );
         process.exit(1);
       }
@@ -139,13 +143,13 @@ async function main() {
       runtimeRecovery.errorCount += 1;
 
       logger.error(
-        `[${kind}] Runtime failure captured (${runtimeRecovery.errorCount}/${maxRecoverableErrors}): ${formatUnknownError(reason)}`
+        `[${kind}] Runtime failure captured (${runtimeRecovery.errorCount}/${maxRecoverableErrors}): ${formatUnknownError(reason)}`,
       );
 
       if (!runtimeRecovery.degradedMode && runtimeRecovery.errorCount >= maxRecoverableErrors) {
         runtimeRecovery.degradedMode = true;
         server.enterDegradedMode(
-          `Runtime failures reached ${runtimeRecovery.errorCount} within ${recoveryWindowMs}ms`
+          `Runtime failures reached ${runtimeRecovery.errorCount} within ${recoveryWindowMs}ms`,
         );
         logger.warn('Degraded mode enabled. Server keeps running without forced process exit.');
       }
@@ -153,15 +157,36 @@ async function main() {
 
     process.on('SIGINT', async () => {
       logger.info('Received SIGINT, shutting down...');
-      stopArtifactRetentionScheduler?.();
-      await server.close();
+      const forceExitTimer = setTimeout(() => {
+        logger.error('Graceful shutdown timed out, forcing exit');
+        process.exit(1);
+      }, SHUTDOWN_TIMEOUT_MS);
+      // Unref so this timer alone doesn't keep the event loop alive
+      forceExitTimer.unref();
+      try {
+        stopArtifactRetentionScheduler?.();
+        await server.close();
+      } catch (error) {
+        logger.error('Error during SIGINT shutdown:', error);
+      }
+      clearTimeout(forceExitTimer);
       process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
       logger.info('Received SIGTERM, shutting down...');
-      stopArtifactRetentionScheduler?.();
-      await server.close();
+      const forceExitTimer = setTimeout(() => {
+        logger.error('Graceful shutdown timed out, forcing exit');
+        process.exit(1);
+      }, SHUTDOWN_TIMEOUT_MS);
+      forceExitTimer.unref();
+      try {
+        stopArtifactRetentionScheduler?.();
+        await server.close();
+      } catch (error) {
+        logger.error('Error during SIGTERM shutdown:', error);
+      }
+      clearTimeout(forceExitTimer);
       process.exit(0);
     });
 
@@ -173,34 +198,48 @@ async function main() {
       handleRuntimeFailure('unhandledRejection', reason);
     });
 
-    // Safety net: detect parent disconnect even if transport mode is HTTP (stdin not read)
-    process.stdin.resume();
-    process.stdin.on('end', async () => {
-      logger.info('stdin EOF — parent disconnected, shutting down...');
-      stopArtifactRetentionScheduler?.();
-      await server.close();
-      process.exit(0);
-    });
-
     logger.info('Starting MCP server...');
     await server.start();
     logger.info('MCP server started successfully');
+
+    // Safety net: detect parent disconnect — cleanup only, exit is handled by
+    // StdioServerTransport's onclose + SIGINT/SIGTERM handlers above.
+    process.stdin.resume();
+    process.stdin.on('end', async () => {
+      logger.info('stdin EOF — parent disconnected, shutting down...');
+      const forceExitTimer = setTimeout(() => {
+        logger.error('Graceful shutdown timed out after stdin EOF, forcing exit');
+        process.exit(1);
+      }, SHUTDOWN_TIMEOUT_MS);
+      forceExitTimer.unref();
+      try {
+        stopArtifactRetentionScheduler?.();
+        await server.close();
+      } catch (error) {
+        logger.error('Error during stdin EOF shutdown:', error);
+      }
+      clearTimeout(forceExitTimer);
+      process.exit(0);
+    });
 
     logger.info('MCP server is running. Press Ctrl+C to stop.');
   } catch (error) {
     logger.error('Failed to start MCP server:');
 
-    const appError = error as AppError;
-
-    logger.error('Error name:', appError.name);
-    logger.error('Error message:', appError.message);
-    logger.error('Error stack:', appError.stack);
+    if (error instanceof Error) {
+      logger.error('Error name:', error.name);
+      logger.error('Error message:', error.message);
+      logger.error('Error stack:', error.stack);
+    }
     logger.error('Full error object:', JSON.stringify(error, null, 2));
 
-    if (appError.code === 'EADDRINUSE') {
+    const code = (error as Record<string, unknown>)?.['code'];
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (code === 'EADDRINUSE') {
       logger.error('Port is already in use. Please check if another instance is running.');
     }
-    if (appError.message?.includes('credentials')) {
+    if (message?.includes('credentials')) {
       logger.error('Authentication failed. Please check your API keys or credentials.');
     }
 
@@ -208,12 +247,4 @@ async function main() {
   }
 }
 
-const cliFastPath = resolveCliFastPath(process.argv.slice(2), import.meta.url);
-if (cliFastPath.handled) {
-  if (cliFastPath.output) {
-    process.stdout.write(cliFastPath.output);
-  }
-  process.exit(cliFastPath.exitCode);
-}
-
-main();
+void main();

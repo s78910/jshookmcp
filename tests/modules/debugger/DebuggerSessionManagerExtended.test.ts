@@ -90,7 +90,9 @@ describe('DebuggerSessionManager - session lifecycle', () => {
     } as any;
 
     const sm = new DebuggerSessionManager(managerMock);
-    const customPath = join(workDir, 'custom', 'my-session.json');
+    const customDir = join(workDir, 'custom');
+    await mkdir(customDir, { recursive: true });
+    const customPath = join(customDir, 'my-session.json');
     const savedPath = await sm.saveSession(customPath);
 
     expect(savedPath).toContain('my-session.json');
@@ -124,7 +126,7 @@ describe('DebuggerSessionManager - session lifecycle', () => {
     const sm = new DebuggerSessionManager(managerMock);
 
     await expect(sm.saveSession('/etc/passwd/session.json')).rejects.toThrow(
-      'filePath must be within the current working directory or system temp dir'
+      'filePath must be within the current working directory or system temp dir',
     );
   });
 });
@@ -153,7 +155,7 @@ describe('DebuggerSessionManager - importSession', () => {
         timestamp: Date.now(),
         breakpoints: [],
         pauseOnExceptions: 'none',
-      })
+      }),
     ).rejects.toThrow('Debugger must be enabled');
   });
 
@@ -195,7 +197,7 @@ describe('DebuggerSessionManager - importSession', () => {
     });
 
     expect(loggerState.warn).toHaveBeenCalledWith(
-      expect.stringContaining('Session version mismatch: 2.0')
+      expect.stringContaining('Session version mismatch: 2.0'),
     );
   });
 
@@ -220,7 +222,7 @@ describe('DebuggerSessionManager - importSession', () => {
     expect(managerMock.setBreakpoint).not.toHaveBeenCalled();
     expect(loggerState.warn).toHaveBeenCalledWith(
       'Breakpoint has neither url nor scriptId, skipping',
-      expect.anything()
+      expect.anything(),
     );
   });
 
@@ -243,7 +245,7 @@ describe('DebuggerSessionManager - importSession', () => {
     expect(loggerState.error).toHaveBeenCalledWith(
       'Failed to restore breakpoint:',
       expect.any(Error),
-      expect.anything()
+      expect.anything(),
     );
   });
 
@@ -342,7 +344,7 @@ describe('DebuggerSessionManager - loadSessionFromFile', () => {
     const sm = new DebuggerSessionManager(managerMock);
 
     await expect(sm.loadSessionFromFile('/etc/shadow')).rejects.toThrow(
-      'filePath must be within the current working directory or system temp dir'
+      'filePath must be within the current working directory or system temp dir',
     );
   });
 });
@@ -374,7 +376,7 @@ describe('DebuggerSessionManager - listSavedSessions', () => {
     await mkdir(sessionsDir, { recursive: true });
     await writeFile(
       join(sessionsDir, 'session.json'),
-      JSON.stringify({ version: '1.0', timestamp: 1000, breakpoints: [] })
+      JSON.stringify({ version: '1.0', timestamp: 1000, breakpoints: [] }),
     );
     await writeFile(join(sessionsDir, 'readme.txt'), 'not a session');
     await writeFile(join(sessionsDir, 'backup.bak'), 'backup data');
@@ -393,7 +395,12 @@ describe('DebuggerSessionManager - listSavedSessions', () => {
     await writeFile(join(sessionsDir, 'bad.json'), '{invalid json');
     await writeFile(
       join(sessionsDir, 'good.json'),
-      JSON.stringify({ version: '1.0', timestamp: 5000, breakpoints: [], metadata: { id: 'good' } })
+      JSON.stringify({
+        version: '1.0',
+        timestamp: 5000,
+        breakpoints: [],
+        metadata: { id: 'good' },
+      }),
     );
 
     const managerMock = {} as any;
@@ -404,7 +411,7 @@ describe('DebuggerSessionManager - listSavedSessions', () => {
     expect(sessions[0]!.metadata).toEqual({ id: 'good' });
     expect(loggerState.warn).toHaveBeenCalledWith(
       expect.stringContaining('Failed to read session file'),
-      expect.anything()
+      expect.anything(),
     );
   });
 
@@ -418,7 +425,7 @@ describe('DebuggerSessionManager - listSavedSessions', () => {
         timestamp: 100,
         breakpoints: [],
         metadata: { id: 'oldest' },
-      })
+      }),
     );
     await writeFile(
       join(sessionsDir, 'second.json'),
@@ -427,7 +434,7 @@ describe('DebuggerSessionManager - listSavedSessions', () => {
         timestamp: 300,
         breakpoints: [],
         metadata: { id: 'newest' },
-      })
+      }),
     );
     await writeFile(
       join(sessionsDir, 'third.json'),
@@ -436,7 +443,7 @@ describe('DebuggerSessionManager - listSavedSessions', () => {
         timestamp: 200,
         breakpoints: [],
         metadata: { id: 'middle' },
-      })
+      }),
     );
 
     const managerMock = {} as any;
@@ -488,7 +495,9 @@ describe('DebuggerSessionManager - validateFilePath', () => {
     } as any;
 
     const sm = new DebuggerSessionManager(managerMock);
-    const nestedPath = join(workDir, 'sub', 'deep', 'session.json');
+    const nestedDir = join(workDir, 'sub', 'deep');
+    await mkdir(nestedDir, { recursive: true });
+    const nestedPath = join(nestedDir, 'session.json');
 
     const savedPath = await sm.saveSession(nestedPath);
 

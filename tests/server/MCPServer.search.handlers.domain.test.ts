@@ -16,10 +16,10 @@ const state = vi.hoisted(() => ({
     ];
     return builtin.filter((entry) => domains.includes(entry.domain)).map((entry) => entry.tool);
   }),
-  createToolHandlerMap: vi.fn((_: unknown, names?: Set<string>) =>
+  createToolHandlerMap: vi.fn((_: any, names?: Set<string>) =>
     Object.fromEntries(
-      [...(names ?? new Set<string>())].map((name) => [name, vi.fn(async () => ({ name }))])
-    )
+      [...(names ?? new Set<string>())].map((name) => [name, vi.fn(async () => ({ name }))]),
+    ),
   ),
   startDomainTtl: vi.fn(),
   logger: {
@@ -46,13 +46,16 @@ vi.mock('@server/ToolHandlerMap', () => ({
 
 vi.mock('@server/registry/index', () => ({
   getAllDomains: () => new Set(['browser', 'network']),
+  getAllKnownDomains: () => new Set(['browser', 'network']),
+  ensureDomainLoaded: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('@server/MCPServer.activation.ttl', () => ({
   startDomainTtl: state.startDomainTtl,
 }));
 
-vi.mock('@src/constants', () => ({
+vi.mock('@src/constants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@src/constants')>()),
   ACTIVATION_TTL_MINUTES: 45,
 }));
 
@@ -147,10 +150,10 @@ describe('MCPServer.search.handlers.domain', () => {
     expect(ctx.registerSingleTool).toHaveBeenCalledTimes(2);
     expect(state.createToolHandlerMap).toHaveBeenCalledWith(
       ctx.handlerDeps,
-      new Set(['page_navigate'])
+      new Set(['page_navigate']),
     );
     expect(ctx.router.addHandlers).toHaveBeenCalledWith(
-      expect.objectContaining({ page_navigate: expect.any(Function) })
+      expect.objectContaining({ page_navigate: expect.any(Function) }),
     );
     expect(ctx.router.addHandlers).toHaveBeenCalledWith({ browser_custom: extensionHandler });
     expect(state.startDomainTtl).toHaveBeenCalledWith(ctx, 'browser', 45, [
@@ -234,14 +237,14 @@ describe('MCPServer.search.handlers.domain', () => {
     });
 
     const response = parseResponse(
-      await handleActivateDomain(ctx, { domain: 'browser', ttlMinutes: 0 })
+      await handleActivateDomain(ctx, { domain: 'browser', ttlMinutes: 0 }),
     );
 
     expect(response.ttlMinutes).toBe('no expiry');
     expect(state.startDomainTtl).toHaveBeenCalledWith(ctx, 'browser', 0, ['page_navigate']);
     expect(state.logger.warn).toHaveBeenCalledWith(
       'sendToolListChanged failed:',
-      expect.any(Error)
+      expect.any(Error),
     );
   });
 });

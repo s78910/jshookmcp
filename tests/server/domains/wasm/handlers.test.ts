@@ -1,3 +1,4 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runMock = vi.fn();
@@ -15,7 +16,7 @@ vi.mock('@src/utils/artifacts', () => ({
 }));
 
 vi.mock('@src/modules/external/ToolRegistry', () => ({
-  ToolRegistry: class {},
+  ToolRegistry: vi.fn(),
 }));
 
 vi.mock('@src/modules/external/ExternalToolRunner', () => ({
@@ -25,10 +26,6 @@ vi.mock('@src/modules/external/ExternalToolRunner', () => ({
 }));
 
 import { WasmToolHandlers } from '@server/domains/wasm/handlers';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('WasmToolHandlers', () => {
   const page = {
@@ -47,7 +44,7 @@ describe('WasmToolHandlers', () => {
 
   it('returns wasm_dump error when no module is captured', async () => {
     page.evaluate.mockResolvedValueOnce({ error: 'No WASM modules captured' });
-    const body = parseJson(await handlers.handleWasmDump({ moduleIndex: 0 }));
+    const body = parseJson<any>(await handlers.handleWasmDump({ moduleIndex: 0 }));
     expect(body.success).toBe(false);
     expect(body.error).toContain('No WASM modules captured');
   });
@@ -62,7 +59,7 @@ describe('WasmToolHandlers', () => {
       })
       .mockResolvedValueOnce(null);
 
-    const body = parseJson(await handlers.handleWasmDump({ moduleIndex: 0 }));
+    const body = parseJson<any>(await handlers.handleWasmDump({ moduleIndex: 0 }));
     expect(body.success).toBe(true);
     expect(body.artifactPath).toContain('binary not available');
     expect(body.totalModules).toBe(1);
@@ -76,7 +73,7 @@ describe('WasmToolHandlers', () => {
       stdout: '',
       durationMs: 10,
     });
-    const body = parseJson(await handlers.handleWasmDisassemble({ inputPath: 'a.wasm' }));
+    const body = parseJson<any>(await handlers.handleWasmDisassemble({ inputPath: 'a.wasm' }));
     expect(body.success).toBe(false);
     expect(body.error).toContain('tool missing');
   });
@@ -94,7 +91,7 @@ describe('WasmToolHandlers', () => {
       durationMs: 25,
     });
 
-    const body = parseJson(await handlers.handleWasmDisassemble({ inputPath: 'a.wasm' }));
+    const body = parseJson<any>(await handlers.handleWasmDisassemble({ inputPath: 'a.wasm' }));
     expect(writeFileMock).toHaveBeenCalledWith('/tmp/out.wat', '(module)\n(func)', 'utf-8');
     expect(body.success).toBe(true);
     expect(body.artifactPath).toBe('artifacts/out.wat');
@@ -114,8 +111,8 @@ describe('WasmToolHandlers', () => {
     });
     statMock.mockResolvedValueOnce({ size: 200 }).mockResolvedValueOnce({ size: 100 });
 
-    const body = parseJson(
-      await handlers.handleWasmOptimize({ inputPath: 'in.wasm', level: 'O2' })
+    const body = parseJson<any>(
+      await handlers.handleWasmOptimize({ inputPath: 'in.wasm', level: 'O2' }),
     );
     expect(body.success).toBe(true);
     expect(body.inputSizeBytes).toBe(200);

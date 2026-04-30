@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { initRegistry } from '@server/registry/index';
+
+await initRegistry();
 
 function tool(
   name: string,
   description = `Description for ${name}`,
-  inputSchema: Record<string, unknown> = { type: 'object', properties: {} }
+  inputSchema: Record<string, unknown> = { type: 'object', properties: {} },
 ) {
   return { name, description, inputSchema };
 }
@@ -12,6 +15,7 @@ const mocks = vi.hoisted(() => {
   const logger = {
     info: vi.fn(),
   };
+  const ensureWorkflowsLoaded = vi.fn(async () => undefined);
 
   const builtinTools = [
     tool('browser_launch', 'Launch a browser'),
@@ -21,11 +25,25 @@ const mocks = vi.hoisted(() => {
     tool('page_click', 'Click an element'),
     tool('page_type', 'Type into an input'),
     tool('page_evaluate', 'Evaluate JavaScript'),
-    tool('network_enable', 'Enable request capture'),
+    tool('network_monitor', 'Enable request capture'),
     tool('network_get_requests', 'Inspect captured requests'),
+    tool('network_extract_auth', 'Extract auth credentials'),
+    tool('network_export_har', 'Export captured traffic as HAR'),
+    tool('network_replay_request', 'Replay a captured request'),
+    tool('debugger_lifecycle', 'Enable the debugger'),
+    tool('detect_crypto', 'Detect cryptographic code'),
+    tool('ai_hook_inject', 'Inject a runtime hook'),
+    tool('binary_decode', 'Decode binary data'),
+    tool('js_bundle_search', 'Search a JavaScript bundle'),
+    tool('sourcemap_discover', 'Discover a source map'),
+    tool('sourcemap_fetch_and_parse', 'Fetch and parse a source map'),
+    tool('sourcemap_reconstruct_tree', 'Reconstruct the source tree'),
+    tool('antidebug_detect_protections', 'Detect anti-debug protections'),
+    tool('antidebug_bypass_all', 'Apply anti-debug bypasses'),
     tool('get_token_budget_stats', 'Inspect token budget state'),
     tool('run_extension_workflow', 'Execute extension workflow'),
     tool('list_extension_workflows', 'List loaded extension workflows'),
+    tool('builtin_newline', '\n'),
   ];
 
   const domainMap = new Map<string, string>([
@@ -36,14 +54,28 @@ const mocks = vi.hoisted(() => {
     ['page_click', 'browser'],
     ['page_type', 'browser'],
     ['page_evaluate', 'browser'],
-    ['network_enable', 'network'],
+    ['network_monitor', 'network'],
     ['network_get_requests', 'network'],
+    ['network_extract_auth', 'network'],
+    ['network_export_har', 'network'],
+    ['network_replay_request', 'network'],
+    ['debugger_lifecycle', 'debugger'],
+    ['detect_crypto', 'core'],
+    ['ai_hook_inject', 'hooks'],
+    ['binary_decode', 'encoding'],
+    ['js_bundle_search', 'workflow'],
+    ['sourcemap_discover', 'sourcemap'],
+    ['sourcemap_fetch_and_parse', 'sourcemap'],
+    ['sourcemap_reconstruct_tree', 'sourcemap'],
+    ['antidebug_detect_protections', 'antidebug'],
+    ['antidebug_bypass_all', 'antidebug'],
     ['get_token_budget_stats', 'maintenance'],
     ['run_extension_workflow', 'workflow'],
     ['list_extension_workflows', 'workflow'],
   ]);
 
   return {
+    ensureWorkflowsLoaded,
     logger,
     builtinTools,
     domainMap,
@@ -65,15 +97,45 @@ vi.mock('@server/MCPServer.search.helpers', () => ({
       ...ctx.selectedTools.map((candidate: { name: string }) => candidate.name),
       ...ctx.activatedToolNames,
     ]),
+  getVisibleDomainsForTier: () => new Set<string>(),
+  getBaseTier: () => 'full' as const,
+}));
+
+vi.mock('@server/extensions/ExtensionManager', () => ({
+  ensureWorkflowsLoaded: mocks.ensureWorkflowsLoaded,
 }));
 
 import { describeTool, generateExampleArgs, routeToolRequest } from '@server/ToolRouter';
+import {
+  getToolDescription,
+  getToolDomainFromContext,
+  isToolActive,
+  getAvailableToolNames,
+  probeCapturedRequests,
+} from '../../src/server/ToolRouter.probe';
+import {
+  buildWorkflowToolSequence,
+  buildPresetToolSequence,
+  rerankResultsForContext,
+  getEffectivePrerequisites,
+} from '@server/ToolRouter.policy';
+import {
+  detectWorkflowIntent,
+  matchWorkflowRoute,
+  isBrowserOrNetworkTask,
+  isMaintenanceTask,
+} from '@server/ToolRouter.intent';
+// Import renderer functions directly to avoid circular dependency chain:
+// ToolRouter.ts → ToolRouter.renderer.ts → ToolRouter.probe.ts
+import { buildCallToolCommand } from '../../src/server/ToolRouter.renderer';
 
 function createCtx(overrides: Record<string, unknown> = {}) {
   return {
     selectedTools: [],
     activatedToolNames: new Set<string>(),
     extensionToolsByName: new Map(),
+    extensionWorkflowsById: new Map(),
+    extensionWorkflowRuntimeById: new Map(),
     metaToolsByName: new Map(),
     pageController: undefined,
     consoleMonitor: undefined,
@@ -84,6 +146,7 @@ function createCtx(overrides: Record<string, unknown> = {}) {
 describe('ToolRouter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.ensureWorkflowsLoaded.mockResolvedValue(undefined);
   });
 
   it('generates example arguments from required fields, enums, defaults, and primitive types', () => {
@@ -182,13 +245,16 @@ describe('ToolRouter', () => {
     const response = await routeToolRequest(
       { task: 'capture network traffic for this page', context: { autoActivate: false } },
       ctx,
-      searchEngine
+      searchEngine,
     );
 
+    expect(mocks.ensureWorkflowsLoaded).toHaveBeenCalledWith(ctx);
     expect(searchEngine.search).toHaveBeenCalledWith(
       'capture network traffic for this page',
       10,
-      new Set<string>()
+      new Set<string>(),
+      new Set<string>(),
+      'full',
     );
     expect(response.workflowHint).toContain('Network capture workflow');
     expect(response.recommendations[0]).toMatchObject({
@@ -197,14 +263,14 @@ describe('ToolRouter', () => {
       isActive: false,
     });
     expect(response.recommendations.map((item) => item.name)).not.toContain(
-      'get_token_budget_stats'
+      'get_token_budget_stats',
     );
     expect(response.nextActions[0]).toEqual({
       step: 1,
       action: 'activate',
       toolName: undefined,
       command:
-        'activate_tools with names: ["browser_launch", "browser_attach", "network_enable", "page_navigate", "network_get_requests"]',
+        'activate_tools with names: ["browser_launch", "browser_attach", "run_extension_workflow", "list_extension_workflows", "network_monitor"]',
       description: 'Activate 5 recommended tools',
     });
   });
@@ -241,13 +307,13 @@ describe('ToolRouter', () => {
     const response = await routeToolRequest(
       { task: 'capture network traffic for this page', context: { autoActivate: false } },
       ctx,
-      searchEngine
+      searchEngine,
     );
 
-    expect(response.recommendations).toHaveLength(4);
+    expect(response.recommendations).toHaveLength(5);
     expect(response.recommendations[0]!.name).toBe('network_get_requests');
     expect(response.recommendations[0]!.activationCommand).toBe(
-      'activate_tools with names: ["network_get_requests"]'
+      'activate_tools with names: ["network_get_requests"]',
     );
   });
 
@@ -275,11 +341,329 @@ describe('ToolRouter', () => {
     const response = await routeToolRequest(
       { task: 'inspect requests', context: { preferredDomain: 'network', autoActivate: false } },
       ctx,
-      searchEngine
+      searchEngine,
     );
 
     expect(response.recommendations).toHaveLength(2);
     expect(response.recommendations[0]!.name).toBe('network_get_requests');
+  });
+
+  it('returns preset-aware recommendations and next actions for signature locate tasks', async () => {
+    const ctx = createCtx({
+      extensionWorkflowsById: new Map([
+        [
+          'signature-locate',
+          {
+            id: 'signature-locate',
+            displayName: '签名定位 / Signature Locate',
+            description: 'Locate API request signing functions',
+            source: 'plugins/mission-pack#workflow:signature-locate',
+            route: {
+              kind: 'preset',
+              triggerPatterns: [
+                /sign(ature|ing)?\s*(locat|find|extract|定位|查找)/i,
+                /(api|request)\s*(sign|签名|加签)/i,
+                /(找|定位|逆向).*(签名|sign)/i,
+              ],
+              requiredDomains: ['network', 'debugger', 'hooks', 'core'],
+              priority: 95,
+              steps: [
+                {
+                  id: 'network',
+                  toolName: 'network_monitor',
+                  description: 'Enable request capture before reproducing the signed request flow',
+                  prerequisites: [],
+                },
+                {
+                  id: 'capture',
+                  toolName: 'network_get_requests',
+                  description:
+                    'Inspect captured requests to identify the signed endpoint, headers, and payload shape',
+                  prerequisites: ['network'],
+                },
+                {
+                  id: 'debugger',
+                  toolName: 'debugger_lifecycle',
+                  description:
+                    'Enable the debugger so the signing path can be paused and inspected live',
+                  prerequisites: ['capture'],
+                },
+                {
+                  id: 'locate',
+                  toolName: 'detect_crypto',
+                  description:
+                    'Locate cryptographic and signing-related code around the captured request flow',
+                  prerequisites: ['debugger'],
+                  parallel: true,
+                },
+                {
+                  id: 'hook',
+                  toolName: 'ai_hook_inject',
+                  description:
+                    'Inject a hook for the candidate signing function once the hook code is ready',
+                  prerequisites: ['locate'],
+                },
+              ],
+            },
+          },
+        ],
+      ]),
+      extensionWorkflowRuntimeById: new Map([
+        [
+          'signature-locate',
+          {
+            source: 'plugins/mission-pack#workflow:signature-locate',
+            route: {
+              kind: 'preset',
+              triggerPatterns: [
+                /sign(ature|ing)?\s*(locat|find|extract|定位|查找)/i,
+                /(api|request)\s*(sign|签名|加签)/i,
+                /(找|定位|逆向).*(签名|sign)/i,
+              ],
+              requiredDomains: ['network', 'debugger', 'hooks', 'core'],
+              priority: 95,
+              steps: [
+                {
+                  id: 'network',
+                  toolName: 'network_monitor',
+                  description: 'Enable request capture before reproducing the signed request flow',
+                  prerequisites: [],
+                },
+                {
+                  id: 'capture',
+                  toolName: 'network_get_requests',
+                  description:
+                    'Inspect captured requests to identify the signed endpoint, headers, and payload shape',
+                  prerequisites: ['network'],
+                },
+                {
+                  id: 'debugger',
+                  toolName: 'debugger_lifecycle',
+                  description:
+                    'Enable the debugger so the signing path can be paused and inspected live',
+                  prerequisites: ['capture'],
+                },
+                {
+                  id: 'locate',
+                  toolName: 'detect_crypto',
+                  description:
+                    'Locate cryptographic and signing-related code around the captured request flow',
+                  prerequisites: ['debugger'],
+                  parallel: true,
+                },
+                {
+                  id: 'hook',
+                  toolName: 'ai_hook_inject',
+                  description:
+                    'Inject a hook for the candidate signing function once the hook code is ready',
+                  prerequisites: ['locate'],
+                },
+              ],
+            },
+            workflow: {
+              kind: 'workflow-contract',
+              version: 1,
+              id: 'signature-locate',
+              displayName: '签名定位 / Signature Locate',
+              description: 'Locate API request signing functions',
+              route: {
+                kind: 'preset',
+                triggerPatterns: [
+                  /sign(ature|ing)?\s*(locat|find|extract|定位|查找)/i,
+                  /(api|request)\s*(sign|签名|加签)/i,
+                  /(找|定位|逆向).*(签名|sign)/i,
+                ],
+                requiredDomains: ['network', 'debugger', 'hooks', 'core'],
+                priority: 95,
+                steps: [
+                  {
+                    id: 'network',
+                    toolName: 'network_monitor',
+                    description:
+                      'Enable request capture before reproducing the signed request flow',
+                    prerequisites: [],
+                  },
+                  {
+                    id: 'capture',
+                    toolName: 'network_get_requests',
+                    description:
+                      'Inspect captured requests to identify the signed endpoint, headers, and payload shape',
+                    prerequisites: ['network'],
+                  },
+                  {
+                    id: 'debugger',
+                    toolName: 'debugger_lifecycle',
+                    description:
+                      'Enable the debugger so the signing path can be paused and inspected live',
+                    prerequisites: ['capture'],
+                  },
+                  {
+                    id: 'locate',
+                    toolName: 'detect_crypto',
+                    description:
+                      'Locate cryptographic and signing-related code around the captured request flow',
+                    prerequisites: ['debugger'],
+                    parallel: true,
+                  },
+                  {
+                    id: 'hook',
+                    toolName: 'ai_hook_inject',
+                    description:
+                      'Inject a hook for the candidate signing function once the hook code is ready',
+                    prerequisites: ['locate'],
+                  },
+                ],
+              },
+              build: () => ({ kind: 'sequence', id: 'root', steps: [] }),
+            },
+          },
+        ],
+      ]),
+    });
+    const searchEngine = {
+      search: vi.fn(() => [
+        {
+          name: 'get_token_budget_stats',
+          shortDescription: 'Inspect token budget state',
+          score: 1,
+          domain: 'maintenance',
+          isActive: false,
+        },
+      ]),
+    } as any;
+
+    const response = await routeToolRequest(
+      { task: '帮我定位这个 API 的签名函数', context: { autoActivate: false } },
+      ctx,
+      searchEngine,
+    );
+
+    expect(response.routeMatch?.id).toBe('signature-locate');
+    expect(response.recommendations).toHaveLength(7);
+    expect(response.recommendations[0]?.name).toBe('browser_launch');
+    expect(response.nextActions[0]).toEqual({
+      step: 1,
+      action: 'activate',
+      toolName: undefined,
+      command:
+        'activate_tools with names: ["browser_launch", "browser_attach", "network_monitor", "network_get_requests", "debugger_lifecycle", "detect_crypto", "ai_hook_inject"]',
+      description: 'Activate 7 preset tools for 签名定位 / Signature Locate',
+    });
+    expect(response.nextActions[1]).toEqual({
+      step: 2,
+      action: 'call',
+      toolName: 'browser_launch',
+      command: 'browser_launch',
+      exampleArgs: {},
+      description: 'Launch a browser session before executing the preset',
+    });
+    expect(response.nextActions[2]).toEqual({
+      step: 3,
+      action: 'call',
+      toolName: 'browser_attach',
+      command: 'browser_attach',
+      exampleArgs: {},
+      description: 'Attach preset tooling to the active browser session before capture begins',
+    });
+    expect(response.nextActions[3]?.toolName).toBe('network_monitor');
+    expect(response.workflowHint).toContain('Preset 签名定位 / Signature Locate');
+  });
+
+  it('routes executable workflow metadata to run_extension_workflow', async () => {
+    const ctx = createCtx({
+      extensionWorkflowsById: new Map([
+        [
+          'workflow.signing.capture.v1',
+          {
+            id: 'workflow.signing.capture.v1',
+            displayName: 'Signing Capture Workflow',
+            description: 'Run the signing capture workflow end-to-end',
+            source: 'plugins/mission-pack/workflow.ts',
+            route: {
+              kind: 'workflow',
+              triggerPatterns: [/run.*signing.*workflow/i, /签名.*工作流.*执行/i],
+              requiredDomains: ['workflow'],
+              priority: 92,
+              steps: [],
+            },
+          },
+        ],
+      ]),
+      extensionWorkflowRuntimeById: new Map([
+        [
+          'workflow.signing.capture.v1',
+          {
+            source: 'plugins/mission-pack/workflow.ts',
+            route: {
+              kind: 'workflow',
+              triggerPatterns: [/run.*signing.*workflow/i, /签名.*工作流.*执行/i],
+              requiredDomains: ['workflow'],
+              priority: 92,
+              steps: [],
+            },
+            workflow: {
+              kind: 'workflow-contract',
+              version: 1,
+              id: 'workflow.signing.capture.v1',
+              displayName: 'Signing Capture Workflow',
+              description: 'Run the signing capture workflow end-to-end',
+              route: {
+                kind: 'workflow',
+                triggerPatterns: [/run.*signing.*workflow/i, /签名.*工作流.*执行/i],
+                requiredDomains: ['workflow'],
+                priority: 92,
+                steps: [],
+              },
+              build: () => ({ kind: 'sequence', id: 'root', steps: [] }),
+            },
+          },
+        ],
+      ]),
+    });
+    const searchEngine = {
+      search: vi.fn(() => [
+        {
+          name: 'get_token_budget_stats',
+          shortDescription: 'Inspect token budget state',
+          score: 2,
+          domain: 'maintenance',
+          isActive: false,
+        },
+      ]),
+    } as any;
+
+    const response = await routeToolRequest(
+      { task: 'run signing workflow for me', context: { autoActivate: false } },
+      ctx,
+      searchEngine,
+    );
+
+    expect(response.routeMatch).toMatchObject({
+      kind: 'workflow',
+      id: 'workflow.signing.capture.v1',
+      name: 'Signing Capture Workflow',
+    });
+    expect(response.recommendations[0]?.name).toBe('run_extension_workflow');
+    expect(response.nextActions).toEqual([
+      {
+        step: 1,
+        action: 'activate',
+        toolName: 'run_extension_workflow',
+        command: 'activate_tools with names: ["run_extension_workflow"]',
+        description: 'Activate workflow runner for Signing Capture Workflow',
+      },
+      {
+        step: 2,
+        action: 'call',
+        toolName: 'run_extension_workflow',
+        command: 'run_extension_workflow',
+        exampleArgs: {
+          workflowId: 'workflow.signing.capture.v1',
+        },
+        description: 'Execute routed workflow Signing Capture Workflow',
+      },
+    ]);
+    expect(response.workflowHint).toContain('Workflow Signing Capture Workflow');
   });
 
   it('emits a direct call next action when the top recommendation is already active', async () => {
@@ -302,7 +686,7 @@ describe('ToolRouter', () => {
     const response = await routeToolRequest(
       { task: 'token budget report', context: { autoActivate: false } },
       ctx,
-      searchEngine
+      searchEngine,
     );
 
     expect(response.nextActions).toEqual([
@@ -342,7 +726,7 @@ describe('ToolRouter', () => {
     const response = await routeToolRequest(
       { task: 'cleanup cache and inspect token budget', context: { autoActivate: false } },
       ctx,
-      searchEngine
+      searchEngine,
     );
 
     expect(response.recommendations).toHaveLength(2);
@@ -369,13 +753,6 @@ describe('ToolRouter', () => {
     const searchEngine = {
       search: vi.fn(() => [
         {
-          name: 'network_get_requests',
-          shortDescription: 'Inspect captured requests',
-          score: 10,
-          domain: 'network',
-          isActive: false,
-        },
-        {
           name: 'page_navigate',
           shortDescription: 'Navigate to a page',
           score: 8,
@@ -386,21 +763,949 @@ describe('ToolRouter', () => {
     } as any;
 
     const response = await routeToolRequest(
-      { task: 'capture traffic', context: { autoActivate: false } },
+      { task: 'navigate to page', context: { autoActivate: false } },
       ctx,
-      searchEngine
+      searchEngine,
     );
 
-    const netRec = response.recommendations.find(r => r.name === 'network_get_requests');
-    const navRec = response.recommendations.find(r => r.name === 'page_navigate');
-
-    expect(netRec!.prerequisites).toBeDefined();
-    expect(netRec!.prerequisites!.some(p => p.fix.includes('Call network_enable'))).toBe(true);
-    expect(netRec!.prerequisites!.some(p => p.fix.includes('Call browser_launch'))).toBe(true);
-    expect(netRec!.prerequisites!.every(p => p.satisfied === false)).toBe(true);
-
+    const navRec = response.recommendations.find((r) => r.name === 'page_navigate');
+    expect(navRec).toBeDefined();
     expect(navRec!.prerequisites).toBeDefined();
-    expect(navRec!.prerequisites!.some(p => p.fix.includes('browser_launch'))).toBe(true);
-    expect(navRec!.prerequisites!.every(p => p.satisfied === false)).toBe(true);
+    expect(navRec!.prerequisites!.some((p) => p.fix.includes('browser_launch'))).toBe(true);
+    expect(navRec!.prerequisites!.every((p) => p.satisfied === false)).toBe(true);
+  });
+
+  describe('Edge Case Coverage', () => {
+    it('ToolRouter.renderer.ts: handles unknown property types', () => {
+      const example = generateExampleArgs({
+        type: 'object',
+        required: ['unknownProp'],
+        properties: {
+          unknownProp: { type: 'null' },
+        },
+      } as any);
+      // Fall through branches leaves it undefined in example
+      expect(example).toEqual({});
+    });
+
+    it('ToolRouter.intent.ts: skips workflow routes without metadata', async () => {
+      const ctx = createCtx({
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'no-route',
+            {
+              workflow: {
+                id: 'no-route',
+                name: 'Missing Route',
+              },
+              // explicitly no route property
+            },
+          ],
+        ]),
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      const response = await routeToolRequest({ task: 'foo' }, ctx, searchEngine);
+      // It should effectively ignore 'no-route' and return an empty recommendation
+      expect(response.recommendations).toHaveLength(0);
+    });
+
+    it('ToolRouter.probe.ts: probeNetworkEnabled handles fallback error', async () => {
+      const ctx = createCtx({
+        consoleMonitor: {
+          getNetworkStatus: undefined, // undefined to trigger fallback
+          isNetworkEnabled: vi.fn(() => {
+            throw new Error('fallback fails too');
+          }),
+        },
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      // Triggers getRoutingState -> probeNetworkEnabled
+      await routeToolRequest({ task: 'foo' }, ctx, searchEngine);
+      expect(ctx.consoleMonitor.isNetworkEnabled).toHaveBeenCalled();
+      // Should handle the error gracefully internally without throwing
+    });
+
+    it('ToolRouter.probe.ts: probeCapturedRequests handles limits fallback', async () => {
+      const ctx = createCtx({
+        consoleMonitor: {
+          getNetworkRequests: vi.fn((opts?: any) => {
+            if (opts && opts.limit) {
+              throw new Error('limit fails');
+            }
+            return [{ id: 'fallback' }];
+          }),
+        },
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      // Triggers getRoutingState -> probeCapturedRequests
+      await routeToolRequest({ task: 'foo' }, ctx, searchEngine);
+      expect(ctx.consoleMonitor.getNetworkRequests).toHaveBeenCalledTimes(2);
+    });
+
+    it('ToolRouter.probe.ts: probeCapturedRequests handles complete failure', async () => {
+      const ctx = createCtx({
+        consoleMonitor: {
+          getNetworkRequests: vi.fn(() => {
+            throw new Error('total failure');
+          }),
+        },
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      await routeToolRequest({ task: 'foo' }, ctx, searchEngine);
+      expect(ctx.consoleMonitor.getNetworkRequests).toHaveBeenCalled();
+    });
+
+    it('ToolRouter.policy.ts: buildWorkflowToolSequence handles network domain with inactive network', async () => {
+      const ctx = createCtx({
+        pageController: { getPage: vi.fn(async () => ({})) },
+        consoleMonitor: {
+          getNetworkStatus: vi.fn(() => ({ enabled: false })),
+        },
+      });
+      // The word "intercept" matches the network task pattern -> BROWSER_OR_NETWORK_TASK_PATTERN
+      const searchEngine = {
+        search: vi.fn(() => [
+          {
+            name: 'network_monitor',
+            shortDescription: 'Enable network',
+            score: 1,
+            domain: 'network',
+            isActive: false,
+          },
+        ]),
+      } as any;
+      const response = await routeToolRequest({ task: 'intercept network' }, ctx, searchEngine);
+      // Reranker boosts network_monitor
+      expect(response.recommendations[0]?.name).toBe('network_monitor');
+      expect(response.recommendations[0]?.score).toBeGreaterThan(1);
+    });
+
+    it('ToolRouter.policy.ts: buildPresetToolSequence skips unavailable tools or duplicates', async () => {
+      const ctx = createCtx({
+        extensionWorkflowsById: new Map([['test', { id: 'test' }]]),
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'test',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/test missing/i],
+                requiredDomains: [],
+                priority: 100,
+                steps: [
+                  { toolName: 'does_not_exist', description: 'missing tool', prerequisites: [] },
+                  { toolName: 'browser_launch', description: 'launch', prerequisites: [] },
+                  { toolName: 'browser_launch', description: 'dup', prerequisites: [] }, // duplicate
+                ],
+              },
+              workflow: { id: 'test', displayName: 'Test' },
+            },
+          ],
+        ]),
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      const response = await routeToolRequest({ task: 'test missing' }, ctx, searchEngine);
+      // Should not include does_not_exist, and should only include browser_launch once
+      const presetRecs = response.recommendations.filter((r) => r.domain === 'browser');
+      expect(presetRecs).toHaveLength(1);
+      expect(presetRecs[0]?.name).toBe('browser_launch');
+    });
+
+    it('ToolRouter.ts: deduplicates identical tool elements returned from search', async () => {
+      const ctx = createCtx();
+      const duplicateTool = {
+        name: 'test_duplicate_tool',
+        shortDescription: 'Navigate',
+        score: 10,
+        domain: 'browser',
+        isActive: false,
+      };
+      const searchEngine = {
+        search: vi.fn(() => [duplicateTool, duplicateTool]),
+      } as any;
+
+      const response = await routeToolRequest(
+        { task: 'unknown task triggers nothing' },
+        ctx,
+        searchEngine,
+      );
+      // It should strip the duplicate
+      const duplicateRecs = response.recommendations.filter(
+        (r) => r.name === 'test_duplicate_tool',
+      );
+      expect(duplicateRecs).toHaveLength(1);
+    });
+
+    it('ToolRouter.intent.ts: prioritizes higher priority routes over existing matches', async () => {
+      const ctx = createCtx({
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'low-priority',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/overlap/i],
+                requiredDomains: [],
+                priority: 10,
+                steps: [],
+              },
+              workflow: { id: 'low', name: 'Low' },
+            },
+          ],
+          [
+            'high-priority',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/overlap/i],
+                requiredDomains: [],
+                priority: 50,
+                steps: [],
+              },
+              workflow: { id: 'high', name: 'High' },
+            },
+          ],
+          [
+            'medium-priority',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/overlap/i],
+                requiredDomains: [],
+                priority: 25,
+                steps: [],
+              },
+              workflow: { id: 'medium', name: 'Medium' },
+            },
+          ],
+        ]),
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      const response = await routeToolRequest(
+        { task: 'trigger overlap pattern' },
+        ctx,
+        searchEngine,
+      );
+      expect(response.routeMatch?.id).toBe('high-priority');
+    });
+
+    it('ToolRouter.probe.ts: retrieves tool schema and description from metaToolsByName', () => {
+      const ctx = createCtx({
+        metaToolsByName: new Map([
+          [
+            'meta_tool',
+            {
+              name: 'meta_tool',
+              description: 'Meta Description',
+              inputSchema: { type: 'object', properties: { meta: { type: 'string' } } },
+            },
+          ],
+        ]),
+      });
+      const desc = describeTool('meta_tool', ctx);
+      expect(desc?.description).toBe('Meta Description');
+      expect(desc?.inputSchema).toEqual({
+        type: 'object',
+        properties: { meta: { type: 'string' } },
+      });
+    });
+
+    it('ToolRouter.probe.ts: getToolDescription returns default if tool has no description', () => {
+      const ctx = createCtx({
+        extensionToolsByName: new Map([
+          ['no_desc', { tool: { inputSchema: { type: 'object' } } } as any],
+        ]),
+      });
+      expect(describeTool('no_desc', ctx)?.description).toBe('No description available');
+    });
+
+    it('ToolRouter.probe.ts: getToolDescription string extraction fallback logic', () => {
+      const ctx = createCtx({
+        extensionToolsByName: new Map([
+          ['ext_empty', { tool: { description: '\n' } } as any],
+          ['ext_no_desc', { tool: {} } as any],
+        ]),
+        metaToolsByName: new Map([
+          ['meta_empty', { description: '\n' } as any],
+          ['meta_no_desc', {} as any],
+        ]),
+      });
+      // builtin missing description logic -> handled implicitly since builtinTools mock has descriptions, but let's test unknown.
+      expect(getToolDescription('unknown', ctx)).toBe('No description available');
+      // Empty string block (split('\n')[0] == '')
+      expect(getToolDescription('builtin_newline', ctx)).toBe('No description available');
+      expect(getToolDescription('ext_empty', ctx)).toBe('No description available');
+      expect(getToolDescription('meta_empty', ctx)).toBe('No description available');
+
+      // missing description
+      expect(getToolDescription('ext_no_desc', ctx)).toBe('No description available');
+      expect(getToolDescription('meta_no_desc', ctx)).toBe('No description available');
+    });
+
+    it('ToolRouter.policy.ts: buildWorkflowToolSequence handles non-network domains', () => {
+      const state = { hasActivePage: true, networkEnabled: true, capturedRequestCount: 0 } as any;
+      const available = new Set(['some_tool']);
+      const wf = { domain: 'browser', tools: ['some_tool'] } as any;
+      const seq = buildWorkflowToolSequence(wf, state, available);
+      expect(seq).toEqual(['some_tool']);
+    });
+
+    it('ToolRouter.probe.ts: getToolDescription handles empty description string on ext/meta tools', () => {
+      const ctx = createCtx({
+        extensionToolsByName: new Map([
+          ['ext_empty', { tool: { description: '', inputSchema: { type: 'object' } } } as any],
+        ]),
+        metaToolsByName: new Map([
+          [
+            'meta_empty',
+            { name: 'meta_empty', description: '', inputSchema: { type: 'object' } } as any,
+          ],
+        ]),
+      });
+      expect(describeTool('ext_empty', ctx)?.description).toBe('No description available');
+      expect(describeTool('meta_empty', ctx)?.description).toBe('No description available');
+    });
+
+    it('ToolRouter.probe.ts: getToolDomainFromContext resolves domains from builtin and extensions', () => {
+      const ctx = createCtx({
+        extensionToolsByName: new Map([
+          ['my_ext', { domain: 'custom' } as any],
+          ['my_ext_no_domain', {} as any],
+        ]),
+      });
+      expect(getToolDomainFromContext('browser_launch', ctx)).toBe('browser'); // builtin
+      expect(getToolDomainFromContext('my_ext', ctx)).toBe('custom'); // extension with domain
+      expect(getToolDomainFromContext('my_ext_no_domain', ctx)).toBeNull(); // extension without domain
+      expect(getToolDomainFromContext('unknown', ctx)).toBeNull(); // not found
+    });
+
+    it('ToolRouter.probe.ts: probeCapturedRequests handles non-array responses', () => {
+      // First try returns non-array
+      const ctx1 = createCtx({
+        consoleMonitor: { getNetworkRequests: vi.fn(() => ({})) } as any,
+      });
+      expect(probeCapturedRequests(ctx1)).toBe(0);
+
+      // Second try: first try throws, second try returns non-array
+      const ctx2 = createCtx({
+        consoleMonitor: {
+          getNetworkRequests: vi
+            .fn()
+            .mockImplementationOnce(() => {
+              throw new Error();
+            })
+            .mockImplementationOnce(() => ({})),
+        } as any,
+      });
+      expect(probeCapturedRequests(ctx2)).toBe(0);
+    });
+
+    it('ToolRouter.probe.ts: isToolActive returns true if tool is selected or activated', () => {
+      const ctx = createCtx({
+        selectedTools: [{ name: 'selected_tool' }] as any,
+        activatedToolNames: new Set(['activated_tool']),
+      });
+      expect(isToolActive('selected_tool', ctx)).toBe(true);
+      expect(isToolActive('activated_tool', ctx)).toBe(true);
+      expect(isToolActive('other', ctx)).toBe(false);
+    });
+
+    it('ToolRouter.probe.ts: getAvailableToolNames combines built-in and extension tools', () => {
+      const ctx = createCtx({
+        extensionToolsByName: new Map([['ext1', {} as any]]),
+      });
+      const available = getAvailableToolNames(ctx);
+      expect(available.has('browser_launch')).toBe(true);
+      expect(available.has('ext1')).toBe(true);
+    });
+
+    it('ToolRouter.ts: returns inactiveTools if nonMaintenanceTools is empty for a network task', async () => {
+      const ctx = createCtx({
+        pageController: { getPage: vi.fn(async () => ({})) },
+        consoleMonitor: {
+          getNetworkStatus: vi.fn(() => ({ enabled: true })),
+          getNetworkRequests: vi.fn(() => []),
+        },
+        activatedToolNames: new Set(['network_monitor', 'page_navigate', 'network_get_requests']), // ensure these don't pop up as inactive
+      });
+      const searchEngine = {
+        search: vi.fn(() => [
+          {
+            name: 'get_token_budget_stats',
+            shortDescription: 'Budget',
+            score: 1000,
+            domain: 'maintenance',
+            isActive: false, // inactive but it's a maintenance tool
+          },
+        ]),
+      } as any;
+      // Network task triggers BROWSER_OR_NETWORK_TASK_PATTERN
+      const response = await routeToolRequest(
+        {
+          task: 'capture traffic without tools',
+          context: { autoActivate: true, preferredDomain: 'maintenance' },
+        },
+        ctx,
+        searchEngine,
+      );
+      // Network task triggers BROWSER_OR_NETWORK_TASK_PATTERN — extension workflow tools from manifest
+      expect(response.nextActions[0]?.command).toContain('run_extension_workflow');
+    });
+
+    it('ToolRouter.ts: provides empty activation array if all preset tools are active', async () => {
+      const ctx = createCtx({
+        selectedTools: [{ name: 'browser_launch' }],
+        activatedToolNames: new Set(['browser_launch']),
+        extensionWorkflowsById: new Map([['test_preset', { id: 'test_preset' }]]),
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'test_preset',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/all active/i],
+                requiredDomains: [],
+                priority: 100,
+                steps: [{ toolName: 'browser_launch', description: 'launch', prerequisites: [] }],
+              },
+              workflow: { id: 'test_preset', displayName: 'Test Preset' },
+            },
+          ],
+        ]),
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      const response = await routeToolRequest({ task: 'all active preset' }, ctx, searchEngine);
+      // Since browser_launch is active, it shouldn't produce an "activate" step
+      const activateSteps = response.nextActions.filter((a) => a.action === 'activate');
+      expect(activateSteps).toHaveLength(0);
+    });
+
+    it('ToolRouter.ts: maps executable workflow when run_extension_workflow is already active', async () => {
+      const ctx = createCtx({
+        selectedTools: [{ name: 'run_extension_workflow' }],
+        activatedToolNames: new Set(['run_extension_workflow']),
+        extensionWorkflowsById: new Map([['workflow.a', { id: 'workflow.a' }]]),
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'workflow.a',
+            {
+              route: {
+                kind: 'workflow',
+                triggerPatterns: [/active workflow/i],
+                requiredDomains: [],
+                priority: 100,
+                steps: [],
+              },
+              workflow: { id: 'workflow.a', displayName: 'Workflow' },
+            },
+          ],
+        ]),
+      });
+      const searchEngine = { search: vi.fn(() => []) } as any;
+      const response = await routeToolRequest({ task: 'run active workflow' }, ctx, searchEngine);
+
+      const activateSteps = response.nextActions.filter((a) => a.action === 'activate');
+      expect(activateSteps).toHaveLength(0); // skip activation
+      expect(response.nextActions[0]?.command).toBe('run_extension_workflow');
+      expect(response.nextActions[0]?.exampleArgs).toEqual({ workflowId: 'workflow.a' });
+    });
+
+    it('ToolRouter.renderer.ts: malformed property payloads fall back to current example generation rules', () => {
+      const result = generateExampleArgs({
+        type: 'object',
+        required: ['enumFallback', 'copiedDefault', 'ignoredUnknown'],
+        properties: {
+          enumFallback: { type: 'string', enum: 'fast' as any },
+          copiedDefault: { default: { nested: true } },
+          ignoredUnknown: { type: 'mystery' },
+          optionalPrimitive: 42 as any,
+        },
+      } as any);
+
+      expect(result).toEqual({
+        enumFallback: '<enumFallback>',
+        copiedDefault: { nested: true },
+      });
+    });
+  });
+
+  // ── Additional Coverage Suites ──
+
+  describe('ToolRouter.renderer — generateExampleArgs uncovered branches', () => {
+    it('returns empty object for null-type property', () => {
+      expect(
+        generateExampleArgs({
+          type: 'object',
+          required: ['field'],
+          properties: { field: { type: 'null' } },
+        } as any),
+      ).toEqual({});
+    });
+
+    it('falls through to type branch when enum array is empty', () => {
+      // enum: [] is falsy, so Array.isArray check fails → hits the string type branch
+      expect(
+        generateExampleArgs({
+          type: 'object',
+          required: ['field'],
+          properties: { field: { type: 'string', enum: [] } },
+        } as any),
+      ).toEqual({ field: '<field>' });
+    });
+
+    it('preserves non-string default values before considering enum or primitive type fallbacks', () => {
+      expect(
+        generateExampleArgs({
+          type: 'object',
+          required: ['field'],
+          properties: { field: { type: 'string', default: 42 as any } },
+        } as any),
+      ).toEqual({ field: 42 });
+    });
+  });
+
+  describe('ToolRouter.renderer — buildCallToolCommand', () => {
+    it('generates command with empty args when schema is undefined', () => {
+      const cmd = buildCallToolCommand('some_tool', undefined as any);
+      expect(cmd).toBe('call_tool({ name: "some_tool", args: {} })');
+    });
+  });
+
+  describe('ToolRouter.renderer — malformed payload edge cases', () => {
+    it('skips unsupported required property types that do not map to a placeholder', () => {
+      const result = generateExampleArgs({
+        type: 'object',
+        required: ['field'],
+        properties: { field: { type: null as any, description: 'test' } },
+      } as any);
+      expect(result).toEqual({});
+    });
+
+    it('uses copied defaults even when default is null', () => {
+      const result = generateExampleArgs({
+        type: 'object',
+        required: ['field'],
+        properties: { field: { type: 'string', default: null as any } },
+      } as any);
+      expect(result).toEqual({ field: null });
+    });
+
+    it('falls back to string placeholders when enum payload is malformed', () => {
+      const result = generateExampleArgs({
+        type: 'object',
+        required: ['field'],
+        properties: { field: { type: 'string', enum: 'fast' as any } },
+      } as any);
+      expect(result).toEqual({ field: '<field>' });
+    });
+  });
+
+  describe('ToolRouter.policy — getEffectivePrerequisites', () => {
+    it('returns an object (may be empty when no manifests declare prerequisites)', () => {
+      const result = getEffectivePrerequisites();
+      expect(typeof result).toBe('object');
+    });
+  });
+
+  describe('ToolRouter.policy — buildWorkflowToolSequence edge cases', () => {
+    it('pushes network_monitor when page exists but network is disabled', () => {
+      const state = { hasActivePage: true, networkEnabled: false, capturedRequestCount: 0 };
+      const available = new Set([
+        'browser_launch',
+        'browser_attach',
+        'network_monitor',
+        'network_get_requests',
+      ]);
+      const wf = { domain: 'network', tools: [] } as any;
+      const seq = buildWorkflowToolSequence(wf, state, available);
+      expect(seq).toContain('network_monitor');
+    });
+
+    it('pushes network_get_requests once when page+network+captures (duplicate at end is no-op)', () => {
+      const state = { hasActivePage: true, networkEnabled: true, capturedRequestCount: 5 };
+      const available = new Set(['browser_launch', 'network_get_requests']);
+      const wf = { domain: 'network', tools: [] } as any;
+      const seq = buildWorkflowToolSequence(wf, state, available);
+      // First push: in the domain block (captures > 0). Second push at end: no-op due to includes guard.
+      expect(seq).toContain('network_get_requests');
+      expect(seq.filter((t) => t === 'network_get_requests').length).toBe(1);
+    });
+
+    it('does not push duplicate tools', () => {
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const available = new Set(['browser_launch', 'browser_attach']);
+      const wf = { domain: 'browser', tools: ['browser_launch', 'browser_attach'] } as any;
+      const seq = buildWorkflowToolSequence(wf, state, available);
+      expect(seq.filter((t) => t === 'browser_launch').length).toBe(1);
+    });
+  });
+
+  describe('ToolRouter.policy — buildPresetToolSequence edge cases', () => {
+    it('pushes bootstrap tools when browser session is required but no page', () => {
+      const match = {
+        workflow: {
+          id: 'test',
+          route: {
+            kind: 'preset',
+            requiredDomains: ['browser'],
+            steps: [],
+          },
+        },
+      } as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const available = new Set(['browser_launch', 'browser_attach']);
+      const result = buildPresetToolSequence(match, state, available);
+      expect(result.some((t) => t.name === 'browser_launch')).toBe(true);
+      expect(result.some((t) => t.name === 'browser_attach')).toBe(true);
+    });
+
+    it('skips bootstrap tools when no browser session is required', () => {
+      const match = {
+        workflow: {
+          id: 'test',
+          route: {
+            kind: 'preset',
+            requiredDomains: ['core'],
+            steps: [],
+          },
+        },
+      } as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const available = new Set(['browser_launch', 'browser_attach']);
+      const result = buildPresetToolSequence(match, state, available);
+      expect(result.some((t) => t.name === 'browser_launch')).toBe(false);
+    });
+
+    it('skips steps for unavailable tools', () => {
+      const match = {
+        workflow: {
+          id: 'test',
+          route: {
+            kind: 'preset',
+            requiredDomains: [],
+            steps: [
+              { toolName: 'unavailable_tool', description: 'unavailable', prerequisites: [] },
+            ],
+          },
+        },
+      } as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const available = new Set(['browser_launch']);
+      const result = buildPresetToolSequence(match, state, available);
+      expect(result.some((t) => t.name === 'unavailable_tool')).toBe(false);
+    });
+  });
+
+  describe('ToolRouter.policy — rerankResultsForContext uncovered branches', () => {
+    it('boosts browser_launch 1.4x when page does not exist in browser/network task', () => {
+      const results = [
+        { name: 'browser_launch', domain: 'browser', score: 1.0 },
+        { name: 'other', domain: 'browser', score: 0.9 },
+      ] as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const reranked = rerankResultsForContext(results, 'capture traffic', null, state);
+      const browserLaunch = reranked.find((r) => r.name === 'browser_launch')!;
+      expect(browserLaunch.score).toBeCloseTo(1.4, 2);
+    });
+
+    it('boosts browser_attach 1.2x when page does not exist', () => {
+      const results = [{ name: 'browser_attach', domain: 'browser', score: 1.0 }] as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const reranked = rerankResultsForContext(results, 'open browser', null, state);
+      expect(reranked[0]!.score).toBeCloseTo(1.2, 2);
+    });
+
+    it('boosts network_monitor 1.35x when page exists but network disabled', () => {
+      const results = [{ name: 'network_monitor', domain: 'network', score: 1.0 }] as any;
+      const state = { hasActivePage: true, networkEnabled: false, capturedRequestCount: 0 };
+      const reranked = rerankResultsForContext(results, 'capture network', null, state);
+      expect(reranked[0]!.score).toBeCloseTo(1.35, 2);
+    });
+
+    it('boosts network_get_requests 1.5x when page+network+captures exist', () => {
+      const results = [{ name: 'network_get_requests', domain: 'network', score: 1.0 }] as any;
+      const state = { hasActivePage: true, networkEnabled: true, capturedRequestCount: 3 };
+      const reranked = rerankResultsForContext(results, 'inspect requests', null, state);
+      expect(reranked[0]!.score).toBeCloseTo(1.5, 2);
+    });
+
+    it('does not apply boosts for non-browser/network tasks', () => {
+      const results = [{ name: 'browser_launch', domain: 'browser', score: 1.0 }] as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const reranked = rerankResultsForContext(results, 'token budget report', null, state);
+      expect(reranked[0]!.score).toBe(1.0);
+    });
+
+    it('suppresses maintenance tools 0.1x for browser/network tasks', () => {
+      const results = [
+        { name: 'get_token_budget_stats', domain: 'maintenance', score: 10 },
+        { name: 'page_navigate', domain: 'browser', score: 1 },
+      ] as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const reranked = rerankResultsForContext(results, 'capture traffic', null, state);
+      const maint = reranked.find((r) => r.name === 'get_token_budget_stats')!;
+      expect(maint.score).toBeCloseTo(1.0, 2);
+    });
+
+    it('does not suppress maintenance tools for maintenance tasks', () => {
+      const results = [{ name: 'get_token_budget_stats', domain: 'maintenance', score: 10 }] as any;
+      const state = { hasActivePage: false, networkEnabled: false, capturedRequestCount: 0 };
+      const reranked = rerankResultsForContext(results, 'check token budget', null, state);
+      expect(reranked[0]!.score).toBe(10);
+    });
+  });
+
+  describe('ToolRouter.intent — detectWorkflowIntent', () => {
+    it('returns null when no workflow rules match the query', () => {
+      const result = detectWorkflowIntent('zzzzzzz this is nonsense query xyz');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('ToolRouter.intent — matchWorkflowRoute edge cases', () => {
+    it('returns null when extensionWorkflowRuntimeById is empty', () => {
+      const ctx = createCtx({ extensionWorkflowRuntimeById: new Map() });
+      expect(matchWorkflowRoute('any query', ctx)).toBeNull();
+    });
+
+    it('skips workflow entries without a route', () => {
+      const ctx = createCtx({
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'no-route',
+            {
+              workflow: { id: 'no-route', displayName: 'No Route Workflow' },
+            },
+          ],
+        ]),
+      });
+      expect(matchWorkflowRoute('any query', ctx)).toBeNull();
+    });
+
+    it('skips patterns that do not match', () => {
+      const ctx = createCtx({
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'test-wf',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/^ONLY_MATCHES_EXACT$/],
+                requiredDomains: [],
+                priority: 100,
+                steps: [],
+              },
+              workflow: { id: 'test-wf', displayName: 'Test' },
+            },
+          ],
+        ]),
+      });
+      expect(matchWorkflowRoute('some other text', ctx)).toBeNull();
+    });
+
+    it('selects highest-priority route when multiple patterns match', () => {
+      const ctx = createCtx({
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'lower-priority',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/capture/i],
+                requiredDomains: [],
+                priority: 30,
+                steps: [],
+              },
+              workflow: { id: 'lower-priority', displayName: 'Lower' },
+            },
+          ],
+          [
+            'higher-priority',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/capture/i],
+                requiredDomains: [],
+                priority: 70,
+                steps: [],
+              },
+              workflow: { id: 'higher-priority', displayName: 'Higher' },
+            },
+          ],
+        ]),
+      });
+      const match = matchWorkflowRoute('capture network', ctx);
+      expect(match!.workflow.id).toBe('higher-priority');
+    });
+  });
+
+  describe('ToolRouter.intent — isBrowserOrNetworkTask edge cases', () => {
+    it('returns false when task is not browser/network and workflow is null', () => {
+      expect(isBrowserOrNetworkTask('token budget check', null)).toBe(false);
+    });
+
+    it('returns true for browser domain workflow regardless of task text', () => {
+      expect(
+        isBrowserOrNetworkTask('zzz', {
+          domain: 'browser',
+          patterns: [],
+          priority: 0,
+          tools: [],
+          hint: '',
+        } as any),
+      ).toBe(true);
+    });
+
+    it('returns true for network domain workflow regardless of task text', () => {
+      expect(
+        isBrowserOrNetworkTask('zzz', {
+          domain: 'network',
+          patterns: [],
+          priority: 0,
+          tools: [],
+          hint: '',
+        } as any),
+      ).toBe(true);
+    });
+  });
+
+  describe('ToolRouter.intent — isMaintenanceTask', () => {
+    it('returns false for non-maintenance query', () => {
+      expect(isMaintenanceTask('capture traffic')).toBe(false);
+    });
+  });
+
+  describe('ToolRouter.ts — routeToolRequest uncovered branches', () => {
+    it('skips activationCandidates when nonMaintenanceTools is empty and uses inactiveTools', async () => {
+      const ctx = createCtx({
+        pageController: { getPage: vi.fn(async () => ({})) },
+        consoleMonitor: {
+          getNetworkStatus: vi.fn(() => ({ enabled: false })),
+          getNetworkRequests: vi.fn(() => []),
+        },
+      });
+      const searchEngine = {
+        search: vi.fn(() => [
+          {
+            name: 'page_navigate',
+            shortDescription: 'Navigate',
+            score: 100,
+            domain: 'browser',
+            isActive: false,
+          },
+        ]),
+      } as any;
+
+      const response = await routeToolRequest(
+        { task: 'navigate to url', context: { autoActivate: false } },
+        ctx,
+        searchEngine,
+      );
+
+      // nonMaintenanceTools is empty (page_navigate is browser domain, not maintenance)
+      // So activationCandidates = inactiveTools = page_navigate
+      expect(response.nextActions[0]!.command).toContain('page_navigate');
+    });
+
+    it('provides empty recommendations when no patterns match and no search results', async () => {
+      const ctx = createCtx();
+      const searchEngine = {
+        search: vi.fn(() => []),
+      } as any;
+
+      const response = await routeToolRequest(
+        { task: 'xyz totally random task qqq', context: {} },
+        ctx,
+        searchEngine,
+      );
+
+      expect(response.recommendations).toHaveLength(0);
+      expect(response.nextActions).toHaveLength(0);
+      expect(response.workflowHint).toBeUndefined();
+    });
+
+    it('applies maxRecommendations cap while preserving preset tools', async () => {
+      const ctx = createCtx({
+        extensionWorkflowsById: new Map([['big_preset', { id: 'big_preset' }]]),
+        extensionWorkflowRuntimeById: new Map([
+          [
+            'big_preset',
+            {
+              route: {
+                kind: 'preset',
+                triggerPatterns: [/big preset/i],
+                requiredDomains: [],
+                priority: 100,
+                steps: [
+                  { toolName: 'browser_launch', description: 'launch', prerequisites: [] },
+                  { toolName: 'browser_attach', description: 'attach', prerequisites: [] },
+                  { toolName: 'page_navigate', description: 'navigate', prerequisites: [] },
+                ],
+              },
+              workflow: { id: 'big_preset', displayName: 'Big Preset' },
+            },
+          ],
+        ]),
+      });
+      const searchEngine = {
+        search: vi.fn(() => [
+          {
+            name: 'network_monitor',
+            shortDescription: 'net',
+            score: 10,
+            domain: 'network',
+            isActive: false,
+          },
+          {
+            name: 'page_evaluate',
+            shortDescription: 'eval',
+            score: 9,
+            domain: 'browser',
+            isActive: false,
+          },
+        ]),
+      } as any;
+
+      const response = await routeToolRequest(
+        { task: 'big preset workflow', context: { maxRecommendations: 2 } },
+        ctx,
+        searchEngine,
+      );
+
+      // maxRecommendations is capped at 3 (presetPlannedToolNames.size = 3)
+      expect(response.recommendations.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('applies preferredDomain boost and sorts correctly', async () => {
+      const ctx = createCtx();
+      const searchEngine = {
+        search: vi.fn(() => [
+          {
+            name: 'browser_tool',
+            shortDescription: 'Browser tool',
+            score: 1,
+            domain: 'browser',
+            isActive: false,
+          },
+          {
+            name: 'network_tool',
+            shortDescription: 'Network tool',
+            score: 2,
+            domain: 'network',
+            isActive: false,
+          },
+        ]),
+      } as any;
+
+      const response = await routeToolRequest(
+        { task: 'do something', context: { preferredDomain: 'browser' } },
+        ctx,
+        searchEngine,
+      );
+
+      // browser_tool score becomes 1 * 1.15 = 1.15, network_tool stays 2
+      expect(response.recommendations[0]!.name).toBe('network_tool');
+      expect(response.recommendations[1]!.name).toBe('browser_tool');
+    });
   });
 });

@@ -21,6 +21,7 @@ describe('ExtensionManager.roots', () => {
   it('parses comma separated roots and removes duplicates', () => {
     expect(parseRoots(undefined, ['fallback'])).toEqual(['fallback']);
     expect(parseRoots(' alpha, beta ,alpha,, ', ['fallback'])).toEqual(['alpha', 'beta']);
+    expect(parseRoots(' , ,, ', ['fallback'])).toEqual(['fallback']);
   });
 
   it('resolves relative paths, preserves absolute ones, deduplicates, and sorts', () => {
@@ -31,5 +32,13 @@ describe('ExtensionManager.roots', () => {
     expect(resolved.some((item) => item.endsWith(`${sep}a`))).toBe(true);
     expect(resolved.some((item) => item.endsWith(`${sep}b`))).toBe(true);
     expect(new Set(resolved).size).toBe(resolved.length);
+  });
+
+  it('anchors relative roots to the provided base directory instead of process cwd', () => {
+    const baseDir = resolve('/opt/jshook');
+    const resolved = resolveRoots(['plugins', 'workflows'], baseDir);
+
+    expect(resolved).toContain(resolve(baseDir, 'plugins'));
+    expect(resolved).toContain(resolve(baseDir, 'workflows'));
   });
 });

@@ -14,19 +14,13 @@ import type {
 import { logger } from '@utils/logger';
 import { JSVMP_DEOBFUSCATE_TIMEOUT_MS, JSVMP_MAX_ITERATIONS } from '@src/constants';
 import { ExecutionSandbox } from '@modules/security/ExecutionSandbox';
-import type { LLMService } from '@services/LLMService';
 import {
   restoreCustomVMBasic,
   restoreJSVMPCode,
 } from '@modules/deobfuscator/JSVMPDeobfuscator.restore';
 
 export class JSVMPDeobfuscator {
-  private llm?: LLMService;
   private readonly sandbox = new ExecutionSandbox();
-
-  constructor(llm?: LLMService) {
-    this.llm = llm;
-  }
 
   async deobfuscate(options: JSVMPDeobfuscatorOptions): Promise<JSVMPDeobfuscatorResult> {
     const startTime = Date.now();
@@ -72,7 +66,7 @@ export class JSVMPDeobfuscator {
         vmType,
         aggressive,
         timeout,
-        maxIterations
+        maxIterations,
       );
 
       const processingTime = Date.now() - startTime;
@@ -279,9 +273,8 @@ export class JSVMPDeobfuscator {
         plugins: ['jsx', 'typescript'],
       });
 
-      const self = this;
       traverse(ast, {
-        SwitchStatement(path) {
+        SwitchStatement: (path) => {
           if (path.node.cases.length === features.instructionCount) {
             path.node.cases.forEach((caseNode, index) => {
               const opcode = caseNode.test
@@ -292,7 +285,7 @@ export class JSVMPDeobfuscator {
                     : index
                 : index;
 
-              const type = self.inferInstructionType(caseNode);
+              const type = this.inferInstructionType(caseNode);
 
               instructions.push({
                 opcode,
@@ -387,7 +380,7 @@ export class JSVMPDeobfuscator {
     vmType: VMType,
     aggressive: boolean,
     _timeout: number,
-    _maxIterations: number
+    _maxIterations: number,
   ): Promise<{
     code: string;
     confidence: number;
@@ -397,12 +390,11 @@ export class JSVMPDeobfuscator {
     void this.restoreCustomVMBasic;
     return restoreJSVMPCode(
       {
-        llm: this.llm,
         sandbox: this.sandbox,
       },
       code,
       vmType,
-      aggressive
+      aggressive,
     );
   }
 
@@ -411,7 +403,7 @@ export class JSVMPDeobfuscator {
     code: string,
     aggressive: boolean,
     warnings: string[],
-    unresolvedParts: UnresolvedPart[]
+    unresolvedParts: UnresolvedPart[],
   ) {
     return restoreCustomVMBasic(code, aggressive, warnings, unresolvedParts);
   }

@@ -16,7 +16,7 @@ type SessionManagementDebuggerManager = Pick<
 function parseJson(response: { content: Array<{ text: string }> }): unknown {
   const firstContent = response.content[0];
   expect(firstContent).toBeDefined();
-  return JSON.parse(firstContent!.text) as unknown;
+  return JSON.parse(firstContent!.text) as any;
 }
 
 describe('SessionManagementHandlers', () => {
@@ -43,7 +43,7 @@ describe('SessionManagementHandlers', () => {
       SessionManagementDebuggerManager['listBreakpoints']
     >);
     debuggerManager.getPauseOnExceptionsState.mockReturnValue(
-      'all' as ReturnType<SessionManagementDebuggerManager['getPauseOnExceptionsState']>
+      'all' as ReturnType<SessionManagementDebuggerManager['getPauseOnExceptionsState']>,
     );
   });
 
@@ -51,11 +51,12 @@ describe('SessionManagementHandlers', () => {
     debuggerManager.saveSession.mockResolvedValueOnce('/tmp/session.json');
     const handlers = createHandlers();
 
-    const body = parseJson(
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(
       await handlers.handleSaveSession({
         filePath: '/tmp/session.json',
         metadata: { label: 'debug' },
-      })
+      }),
     );
 
     expect(debuggerManager.saveSession).toHaveBeenCalledWith('/tmp/session.json', {
@@ -73,7 +74,8 @@ describe('SessionManagementHandlers', () => {
     debuggerManager.saveSession.mockRejectedValueOnce(new Error('disk full'));
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleSaveSession({}));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(await handlers.handleSaveSession({}));
 
     expect(body).toEqual({
       success: false,
@@ -85,7 +87,10 @@ describe('SessionManagementHandlers', () => {
   it('loads a session from file when filePath is provided', async () => {
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleLoadSession({ filePath: '/tmp/session.json' }));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(
+      await handlers.handleLoadSession({ filePath: '/tmp/session.json' }),
+    );
 
     expect(debuggerManager.loadSessionFromFile).toHaveBeenCalledWith('/tmp/session.json');
     expect(debuggerManager.importSession).not.toHaveBeenCalled();
@@ -100,7 +105,10 @@ describe('SessionManagementHandlers', () => {
   it('loads a session from raw session data', async () => {
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleLoadSession({ sessionData: '{"breakpoints":[]}' }));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(
+      await handlers.handleLoadSession({ sessionData: '{"breakpoints":[]}' }),
+    );
 
     expect(debuggerManager.importSession).toHaveBeenCalledWith('{"breakpoints":[]}');
     expect(body).toMatchObject({ success: true });
@@ -109,7 +117,8 @@ describe('SessionManagementHandlers', () => {
   it('returns a structured error when load arguments are missing', async () => {
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleLoadSession({}));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(await handlers.handleLoadSession({}));
 
     expect(body).toEqual({
       success: false,
@@ -125,7 +134,10 @@ describe('SessionManagementHandlers', () => {
     } as unknown as ReturnType<SessionManagementDebuggerManager['exportSession']>);
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleExportSession({ metadata: { label: 'snapshot' } }));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(
+      await handlers.handleExportSession({ metadata: { label: 'snapshot' } }),
+    );
 
     expect(debuggerManager.exportSession).toHaveBeenCalledWith({
       label: 'snapshot',
@@ -150,7 +162,8 @@ describe('SessionManagementHandlers', () => {
     ]);
     const handlers = createHandlers();
 
-    const body = parseJson(await handlers.handleListSessions({}));
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(await handlers.handleListSessions({}));
 
     expect(body).toEqual({
       success: true,

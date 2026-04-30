@@ -4,7 +4,7 @@ export const analysisPhases: Phase[] = [
   {
     name: 'Encoding & Binary',
     concurrent: true,
-    group: 'compute',
+    group: 'compute-core',
     setup: [],
     tools: [
       'binary_detect_format',
@@ -15,13 +15,24 @@ export const analysisPhases: Phase[] = [
     ],
   },
   {
+    name: 'JSVMP & Pipeline Deobfuscation',
+    concurrent: true,
+    group: 'compute-core',
+    setup: [],
+    tools: [
+      'js_deobfuscate_jsvmp',
+      'js_deobfuscate_pipeline',
+      'js_analyze_vm',
+      'js_solve_constraints',
+    ],
+  },
+  {
     name: 'Analysis & Deobfuscation',
     concurrent: true,
-    group: 'compute',
+    group: 'compute-core',
     setup: [],
     tools: [
       'deobfuscate',
-      'advanced_deobfuscate',
       'webcrack_unpack',
       'understand_code',
       'detect_obfuscation',
@@ -30,24 +41,14 @@ export const analysisPhases: Phase[] = [
   },
   {
     name: 'Hooks',
-    group: 'compute',
+    group: 'compute-browser',
     setup: [],
-    tools: [
-      'manage_hooks',
-      'ai_hook_generate',
-      'ai_hook_inject',
-      'ai_hook_toggle',
-      'ai_hook_get_data',
-      'ai_hook_list',
-      'ai_hook_export',
-      'ai_hook_clear',
-      'hook_preset',
-    ],
+    tools: ['manage_hooks', 'ai_hook', 'hook_preset'],
   },
   {
     name: 'GraphQL',
     concurrent: true,
-    group: 'compute',
+    group: 'compute-core',
     setup: [],
     tools: [
       'graphql_introspect',
@@ -59,7 +60,7 @@ export const analysisPhases: Phase[] = [
   {
     name: 'Transform & Crypto',
     concurrent: true,
-    group: 'compute',
+    group: 'compute-core',
     setup: [],
     tools: [
       'ast_transform_preview',

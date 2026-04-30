@@ -1,3 +1,9 @@
+/**
+ * Legacy compatibility base for direct imports and focused unit tests.
+ *
+ * Current runtime wiring goes through handlers.impl.core.ts plus handlers/shared.ts,
+ * handlers/ws-handlers.ts, and handlers/sse-handlers.ts.
+ */
 import type { CodeCollector } from '@server/domains/shared/modules';
 import { RingBuffer } from '@utils/RingBuffer';
 
@@ -115,7 +121,7 @@ export class StreamingToolHandlersBase {
 
   protected parseNumberArg(
     value: unknown,
-    options: { defaultValue: number; min: number; max: number; integer?: boolean }
+    options: { defaultValue: number; min: number; max: number; integer?: boolean },
   ): number {
     let parsed: number | undefined;
     if (typeof value === 'number' && Number.isFinite(value)) {

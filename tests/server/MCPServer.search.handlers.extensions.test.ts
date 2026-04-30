@@ -42,8 +42,8 @@ describe('MCPServer.search.handlers.extensions', () => {
           addedTools: 2,
         },
         null,
-        2
-      )
+        2,
+      ),
     );
     expect(parseResponse(response)).toEqual({
       success: true,
@@ -70,8 +70,8 @@ describe('MCPServer.search.handlers.extensions', () => {
           plugins: ['workflow-kit'],
         },
         null,
-        2
-      )
+        2,
+      ),
     );
     expect(parseResponse(response)).toEqual({
       success: true,

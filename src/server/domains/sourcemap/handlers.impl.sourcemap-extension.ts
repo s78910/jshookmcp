@@ -1,10 +1,15 @@
 import type {
   CdpSessionLike,
   ExtensionTarget,
-  JsonRecord,
   TextToolResponse,
 } from '@server/domains/sourcemap/handlers.impl.sourcemap-parse-base';
 import { SourcemapToolHandlersCommon } from '@server/domains/sourcemap/handlers.impl.sourcemap-common';
+import {
+  attachToFlatTarget,
+  detachFromFlatTarget,
+  type FlatSessionParentLike,
+} from '@modules/browser/flat-target-session';
+import type { CDPSessionLike as BrowserCDPSessionLike } from '@modules/browser/CDPSessionLike';
 
 export class SourcemapToolHandlersExtension extends SourcemapToolHandlersCommon {
   async handleExtensionListInstalled(_args: Record<string, unknown>): Promise<TextToolResponse> {
@@ -33,9 +38,8 @@ export class SourcemapToolHandlersExtension extends SourcemapToolHandlersCommon 
     const returnByValue = this.parseBooleanArg(args.returnByValue, true);
 
     const page = await this.collector.getActivePage();
-    const session = (await page.createCDPSession()) as unknown as CdpSessionLike;
-
-    let attachedSessionId = '';
+    const session = (await page.createCDPSession()) as unknown as FlatSessionParentLike;
+    let attachedSession: BrowserCDPSessionLike | null = null;
 
     try {
       const targets = await this.getExtensionTargets(session, extensionId);
@@ -44,20 +48,9 @@ export class SourcemapToolHandlersExtension extends SourcemapToolHandlersCommon 
       }
 
       const preferred = this.pickPreferredExtensionTarget(targets);
-      const attachResult = this.asRecord(
-        await session.send('Target.attachToTarget', {
-          targetId: preferred.targetId,
-          flatten: true,
-        })
-      );
-      attachedSessionId = this.requiredStringArg(attachResult.sessionId, 'sessionId');
+      attachedSession = await attachToFlatTarget(session, preferred.targetId);
 
-      const evaluation = await this.evaluateInAttachedTarget(
-        session,
-        attachedSessionId,
-        code,
-        returnByValue
-      );
+      const evaluation = await this.evaluateInAttachedTarget(attachedSession, code, returnByValue);
 
       return this.json({
         extensionId,
@@ -72,10 +65,8 @@ export class SourcemapToolHandlersExtension extends SourcemapToolHandlersCommon 
     } catch (error) {
       return this.fail('extension_execute_in_context', error);
     } finally {
-      if (attachedSessionId) {
-        await this.trySend(session, 'Target.detachFromTarget', {
-          sessionId: attachedSessionId,
-        });
+      if (attachedSession) {
+        await detachFromFlatTarget(session, attachedSession).catch(() => undefined);
       }
       await this.safeDetach(session);
     }
@@ -83,7 +74,7 @@ export class SourcemapToolHandlersExtension extends SourcemapToolHandlersCommon 
 
   protected async getExtensionTargets(
     session: CdpSessionLike,
-    expectedExtensionId?: string
+    expectedExtensionId?: string,
   ): Promise<ExtensionTarget[]> {
     const response = this.asRecord(await session.send('Target.getTargets'));
     const targetInfos = Array.isArray(response.targetInfos) ? response.targetInfos : [];
@@ -148,95 +139,26 @@ export class SourcemapToolHandlersExtension extends SourcemapToolHandlersCommon 
 
   protected async evaluateInAttachedTarget(
     session: CdpSessionLike,
-    sessionId: string,
     code: string,
-    returnByValue: boolean
+    returnByValue: boolean,
   ): Promise<{ result: unknown; exceptionDetails: unknown }> {
-    if (!session.on) {
-      throw new Error('CDP session does not support event listeners');
-    }
-
-    const commandId = Date.now() % 1_000_000_000;
-    const commandMessage = JSON.stringify({
-      id: commandId,
-      method: 'Runtime.evaluate',
-      params: {
+    const response = this.asRecord(
+      await session.send('Runtime.evaluate', {
         expression: code,
         returnByValue,
         awaitPromise: true,
-      },
-    });
-
-    const responseMessage = await new Promise<JsonRecord>((resolvePromise, rejectPromise) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        rejectPromise(new Error('Runtime.evaluate timed out'));
-      }, 15_000);
-
-      const onMessage = (payload: unknown): void => {
-        const record = this.asRecord(payload);
-        const incomingSessionId = this.asString(record.sessionId);
-        if (incomingSessionId !== sessionId) {
-          return;
-        }
-
-        const rawMessage = this.asString(record.message);
-        if (!rawMessage) {
-          return;
-        }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(rawMessage);
-        } catch {
-          return;
-        }
-
-        const parsedRecord = this.asRecord(parsed);
-        const incomingId = parsedRecord.id;
-        if (incomingId !== commandId) {
-          return;
-        }
-
-        cleanup();
-        resolvePromise(parsedRecord);
-      };
-
-      const cleanup = (): void => {
-        clearTimeout(timeout);
-        session.off?.('Target.receivedMessageFromTarget', onMessage);
-      };
-
-      session.on?.('Target.receivedMessageFromTarget', onMessage);
-
-      session
-        .send('Target.sendMessageToTarget', {
-          sessionId,
-          message: commandMessage,
-        })
-        .catch((error) => {
-          cleanup();
-          rejectPromise(error);
-        });
-    });
-
-    const errorRecord = this.asRecord(responseMessage.error);
-    if (Object.keys(errorRecord).length > 0) {
-      const errorMessage =
-        this.asString(errorRecord.message) ??
-        this.asString(errorRecord.data) ??
-        'Runtime.evaluate failed';
-      throw new Error(errorMessage);
-    }
-
-    const resultEnvelope = this.asRecord(responseMessage.result);
-    const resultValue = resultEnvelope.result !== undefined ? resultEnvelope.result : null;
-    const exceptionDetails =
-      resultEnvelope.exceptionDetails !== undefined ? resultEnvelope.exceptionDetails : null;
+      }),
+    );
+    const resultEnvelope = this.asRecord(response.result);
 
     return {
-      result: resultValue,
-      exceptionDetails,
+      result:
+        returnByValue && resultEnvelope.value !== undefined
+          ? resultEnvelope.value
+          : Object.keys(resultEnvelope).length > 0
+            ? resultEnvelope
+            : null,
+      exceptionDetails: response.exceptionDetails !== undefined ? response.exceptionDetails : null,
     };
   }
 }

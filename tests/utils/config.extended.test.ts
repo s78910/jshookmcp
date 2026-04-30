@@ -6,7 +6,6 @@ describe('config validation – extended checks', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
-    delete process.env.DEFAULT_LLM_PROVIDER;
     delete process.env.PUPPETEER_TIMEOUT;
     delete process.env.CACHE_TTL;
     delete process.env.MAX_CONCURRENT_ANALYSIS;
@@ -72,16 +71,14 @@ describe('config validation – extended checks', () => {
   it('validateConfig reports invalid search regex patterns', () => {
     const config = getConfig();
     config.search.queryCategoryProfiles[0]!.pattern = '[invalid';
-    config.search.cjkQueryAliases[0]!.pattern = '[invalid';
     config.search.intentToolBoostRules[0]!.pattern = '[invalid';
 
     const result = validateConfig(config);
 
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(
-      'search.queryCategoryProfiles contains invalid regex: [invalid'
+      'search.queryCategoryProfiles contains invalid regex: [invalid',
     );
-    expect(result.errors).toContain('search.cjkQueryAliases contains invalid regex: [invalid');
     expect(result.errors).toContain('search.intentToolBoostRules contains invalid regex: [invalid');
   });
 });

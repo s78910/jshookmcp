@@ -26,7 +26,7 @@ pnpm run build
 pnpm run check
 ```
 
-**Engineering Protocol**: The environment is **TS-first** driven. `workflow.ts` functions as the sole authoritative AST entrypoint. The secondary `dist/workflow.js` compilation artifact is localized and structurally preferred by the runtime parser upon resolution collision.
+**Engineering Protocol**: The project remains **TS-first** and keeps `workflow.ts` as the source entrypoint; repositories should not commit `dist/workflow.js`. During installation, however, the local build step is expected to produce `dist/workflow.js`, and the installer should persist that compiled file as the runtime entry to avoid importing TypeScript directly from `node_modules`.
 
 ### 3. Graph Identity Allocation
 
@@ -145,8 +145,8 @@ Telemetric observation channels for distributed trace tracking and metric analys
 
 ### Safe Parallel Matrix (Non-Mutating)
 
-- `page_get_local_storage`
-- `page_get_cookies`
+- `page_local_storage` with `action: 'get'`
+- `page_cookies` with `action: 'get'`
 - `network_get_requests`
 - `page_get_all_links`
 - `console_get_logs`

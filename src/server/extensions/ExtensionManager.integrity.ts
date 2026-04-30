@@ -15,8 +15,8 @@ export function normalizeHex(value: string): string {
   return value.trim().toLowerCase().replace(/^0x/, '');
 }
 
-function isTruthyEnv(value: string | undefined): boolean {
-  return ['1', 'true'].includes((value ?? '').toLowerCase());
+function isTruthyEnv(value: string): boolean {
+  return ['1', 'true'].includes(value.toLowerCase());
 }
 
 export function isPluginSignatureRequired(): boolean {
@@ -42,20 +42,20 @@ export function parseDigestAllowlist(raw: string | undefined): Set<string> {
     value
       .split(',')
       .map((item) => normalizeHex(item))
-      .filter((item) => item.length > 0)
+      .filter((item) => item.length > 0),
   );
 }
 
 export async function verifyPluginIntegrity(
   plugin: ExtensionBuilder,
-  currentVersion: string
+  currentVersion: string,
 ): Promise<{ ok: boolean; errors: string[]; warnings: string[] }> {
   const errors: string[] = [];
   const warnings: string[] = [];
 
   if (!isCompatibleVersion(plugin.compatibleCoreRange, currentVersion)) {
     errors.push(
-      `Plugin ${plugin.id} incompatible with core ${currentVersion}; requires ${plugin.compatibleCoreRange}`
+      `Plugin ${plugin.id} incompatible with core ${currentVersion}; requires ${plugin.compatibleCoreRange}`,
     );
   }
 

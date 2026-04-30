@@ -1,7 +1,7 @@
 import type { Phase } from '@tests/e2e/helpers/types';
 
 export const debuggerPhases: Phase[] = [
-  { name: 'Debugger Enable', setup: [], tools: ['debugger_enable'] },
+  { name: 'Debugger Enable', setup: [], tools: ['debugger_lifecycle'] },
   {
     name: 'Scripts & Source',
     setup: [],
@@ -60,23 +60,21 @@ export const debuggerPhases: Phase[] = [
       await call('debugger_wait_for_paused', { timeout: 5000 });
     },
     tools: [
+      'debugger_pause',
       'debugger_wait_for_paused',
       'debugger_get_paused_state',
       'get_call_stack',
       'debugger_evaluate',
       'get_scope_variables_enhanced',
       'get_object_properties',
-      'debugger_step_over',
-      'debugger_step_out',
-      'debugger_step_into',
+      'debugger_step',
       'debugger_resume',
-      'debugger_evaluate_global',
     ],
   },
   {
     name: 'Debugger Session',
     concurrent: true,
     setup: [],
-    tools: ['debugger_save_session', 'debugger_list_sessions', 'debugger_export_session', 'debugger_load_session'],
+    tools: ['debugger_session'],
   },
 ];

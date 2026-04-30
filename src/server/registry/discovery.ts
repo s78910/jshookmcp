@@ -1,10 +1,7 @@
-// Runtime domain discovery - scans domains/STAR/manifest.js and loads them
-// via dynamic ESM import. Replaces the static 16-import array.
-import { readdir, stat } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Runtime domain discovery via static generated index
 import { logger } from '@utils/logger';
 import type { DomainManifest } from '@server/registry/contracts';
+import { generatedManifestLoaders, DOMAIN_PROFILE_MAP } from './generated-domains.js';
 
 // ── validation ──
 
@@ -32,79 +29,72 @@ function extractManifest(mod: unknown): DomainManifest | null {
   return null;
 }
 
-// ── path discovery ──
+// ── profile helpers ──
 
-async function discoverManifestPaths(): Promise<string[]> {
-  const domainsDir = fileURLToPath(new URL('../domains/', import.meta.url));
-  let entries: import('node:fs').Dirent[];
-  try {
-    entries = await readdir(domainsDir, { withFileTypes: true });
-  } catch (err) {
-    logger.error('[discovery] Cannot read domains directory:', err);
-    return [];
+/** Return the set of domain names that belong to a given profile tier. */
+export function getDomainsForProfile(profile: string): ReadonlySet<string> {
+  const result = new Set<string>();
+  for (const [domain, profiles] of Object.entries(DOMAIN_PROFILE_MAP)) {
+    if (profiles.includes(profile)) result.add(domain);
   }
-
-  const directories = entries.filter((e) => e.isDirectory());
-
-  // Probe all domain directories concurrently — each checks .js then .ts
-  const resolved = await Promise.all(
-    directories.map(async (entry) => {
-      for (const ext of ['manifest.js', 'manifest.ts']) {
-        const manifestPath = join(domainsDir, entry.name, ext);
-        try {
-          const s = await stat(manifestPath);
-          if (s.isFile()) return manifestPath;
-        } catch {
-          // Not found with this extension — try next
-        }
-      }
-      return null;
-    })
-  );
-
-  return resolved.filter((value): value is string => value !== null);
+  return result;
 }
 
-function toImportSpecifier(absPath: string): string {
-  const currentDir = dirname(fileURLToPath(import.meta.url));
-  const relPath = relative(currentDir, absPath).split(sep).join('/');
-  if (relPath.startsWith('.')) {
-    return relPath;
-  }
-  return `./${relPath}`;
+/** Return ALL known domain names from build-time metadata (no loading required). */
+export function getAllKnownDomainNames(): ReadonlySet<string> {
+  return new Set(Object.keys(DOMAIN_PROFILE_MAP));
 }
 
 // ── public API ──
 
-// Scan all domain subdirectories for manifest.js, dynamically import each,
-// validate the exported DomainManifest contract, and return all valid manifests.
-// A failing manifest is logged and skipped - it does NOT crash the server.
-export async function discoverDomainManifests(): Promise<DomainManifest[]> {
-  const files = await discoverManifestPaths();
+export interface DomainLoaderMeta {
+  readonly domain: string;
+  readonly depKey: string;
+  readonly profiles: readonly string[];
+  readonly secondaryDepKeys: readonly string[];
+  readonly load: () => Promise<unknown>;
+}
+
+/** Return the full loader metadata array (no loading). */
+export function getLoaderMetadata(): readonly DomainLoaderMeta[] {
+  return generatedManifestLoaders;
+}
+
+/**
+ * Load manifests for a specific set of domains.
+ * Skips domains that fail validation with a warning.
+ */
+export async function discoverDomainManifests(
+  domainsToLoad?: ReadonlySet<string>,
+): Promise<DomainManifest[]> {
   const manifests: DomainManifest[] = [];
   const seenDomains = new Set<string>();
   const seenDepKeys = new Set<string>();
 
-  for (const absPath of files) {
+  for (const { domain: domainName, load } of generatedManifestLoaders) {
+    if (domainsToLoad && !domainsToLoad.has(domainName)) continue;
+
     try {
-      // Use a relative module specifier so Vitest/Vite can transform TS manifests
-      // while production builds still resolve the emitted JS files correctly.
-      const mod: unknown = await import(toImportSpecifier(absPath));
+      const mod = await load();
       const manifest = extractManifest(mod);
       if (!manifest) {
-        logger.warn('[discovery] Skipping ' + absPath + ': no valid DomainManifest export');
+        logger.warn(`[discovery] Skipping domain "${domainName}": no valid DomainManifest export`);
         continue;
       }
 
       if (seenDomains.has(manifest.domain)) {
         logger.warn(
-          '[discovery] Duplicate domain "' + manifest.domain + '" in ' + absPath + ' - skipping'
+          '[discovery] Duplicate domain "' +
+            manifest.domain +
+            '" in generated manifests - skipping',
         );
         continue;
       }
       if (seenDepKeys.has(manifest.depKey)) {
         logger.warn(
-          '[discovery] Duplicate depKey "' + manifest.depKey + '" in ' + absPath + ' - skipping'
+          '[discovery] Duplicate depKey "' +
+            manifest.depKey +
+            '" in generated manifests - skipping',
         );
         continue;
       }
@@ -117,10 +107,10 @@ export async function discoverDomainManifests(): Promise<DomainManifest[]> {
           manifest.domain +
           '" (' +
           String(manifest.registrations.length) +
-          ' tools)'
+          ' tools)',
       );
     } catch (err) {
-      logger.error('[discovery] Failed to load manifest: ' + absPath, err);
+      logger.error(`[discovery] Failed to load domain "${domainName}"`, err);
       if (process.env.DISCOVERY_STRICT === 'true') {
         throw err;
       }
@@ -133,7 +123,36 @@ export async function discoverDomainManifests(): Promise<DomainManifest[]> {
       String(manifests.length) +
       ' domains, ' +
       String(totalTools) +
-      ' tools total'
+      ' tools total',
   );
   return manifests;
+}
+
+/**
+ * Load a single domain manifest by name.
+ * Returns null if the domain doesn't exist or fails validation.
+ */
+export async function loadSingleManifest(domainName: string): Promise<DomainManifest | null> {
+  const loader = generatedManifestLoaders.find((l) => l.domain === domainName);
+  if (!loader) return null;
+
+  try {
+    const mod = await loader.load();
+    const manifest = extractManifest(mod);
+    if (!manifest) {
+      logger.warn(`[discovery] Domain "${domainName}": no valid DomainManifest export`);
+      return null;
+    }
+    logger.info(
+      '[discovery] On-demand loaded domain "' +
+        manifest.domain +
+        '" (' +
+        String(manifest.registrations.length) +
+        ' tools)',
+    );
+    return manifest;
+  } catch (err) {
+    logger.error(`[discovery] Failed to load domain "${domainName}"`, err);
+    return null;
+  }
 }

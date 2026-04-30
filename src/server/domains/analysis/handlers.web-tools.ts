@@ -5,13 +5,15 @@ import type { ToolArgs, ToolResponse } from '@server/types';
 import { asJsonResponse, asErrorResponse } from '@server/domains/shared/response';
 import { argString, argBool, argNumber } from '@server/domains/shared/parse-args';
 
+const MAX_WEBPACK_MODULES = 100;
+
 export async function runWebpackEnumerate(
   collector: CodeCollector,
-  args: ToolArgs
+  args: ToolArgs,
 ): Promise<ToolResponse> {
   const searchKeyword = argString(args, 'searchKeyword', '');
   const forceRequireAll = argBool(args, 'forceRequireAll', !!searchKeyword);
-  const maxResults = argNumber(args, 'maxResults', 20);
+  const maxResults = Math.min(argNumber(args, 'maxResults', 20), MAX_WEBPACK_MODULES);
 
   try {
     const page = await collector.getActivePage();
@@ -28,7 +30,7 @@ export async function runWebpackEnumerate(
 
         // Collect all known module IDs from webpackChunk* / webpackJsonp* arrays
         const chunkKeys = Object.keys(w).filter(
-          (k) => k.startsWith('webpackChunk') || k.startsWith('webpackJsonp')
+          (k) => k.startsWith('webpackChunk') || k.startsWith('webpackJsonp'),
         );
 
         const moduleIdSet = new Set<string>();
@@ -60,7 +62,7 @@ export async function runWebpackEnumerate(
         if (!requireFn) {
           for (const key of chunkKeys) {
             const arr = w[key] as unknown as { m?: Record<string, unknown> };
-            if (arr && arr.m && typeof arr.m === 'object') {
+            if (arr?.m && typeof arr.m === 'object') {
               const mods = arr.m;
               requireFn = (id: string) => {
                 try {
@@ -120,11 +122,11 @@ export async function runWebpackEnumerate(
           matches,
         };
       },
-      { searchKeyword, forceRequireAll, maxResults }
+      { searchKeyword, forceRequireAll, maxResults },
     );
 
     logger.info(
-      `webpack_enumerate: found ${result.total} modules, ${result.matches.length} matches`
+      `webpack_enumerate: found ${result.total} modules, ${result.matches.length} matches`,
     );
     return asJsonResponse(result);
   } catch (error) {
@@ -134,7 +136,7 @@ export async function runWebpackEnumerate(
 
 export async function runSourceMapExtract(
   collector: CodeCollector,
-  args: ToolArgs
+  args: ToolArgs,
 ): Promise<ToolResponse> {
   const includeContent = argBool(args, 'includeContent', false);
   const filterPath = argString(args, 'filterPath', '');
@@ -183,7 +185,7 @@ export async function runSourceMapExtract(
               clearTimeout(t1);
             }
             const match = text.match(/\/\/# sourceMappingURL=([^\s]+)/);
-            if (!match || !match[1]) continue;
+            if (!match?.[1]) continue;
 
             let mapUrl = match[1].trim();
             if (mapUrl.startsWith('data:')) {
@@ -224,7 +226,7 @@ export async function runSourceMapExtract(
 
         return { total: files.length, files };
       },
-      { includeContent, filterPath, maxFiles }
+      { includeContent, filterPath, maxFiles },
     );
 
     logger.info(`source_map_extract: recovered ${result.total} source files`);

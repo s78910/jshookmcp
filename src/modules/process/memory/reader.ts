@@ -7,6 +7,11 @@ import { logger } from '@utils/logger';
 import { nativeMemoryManager } from '@native/NativeMemoryManager';
 import { isKoffiAvailable } from '@native/Win32API';
 import {
+  MEMORY_MAX_READ_BYTES,
+  MEMORY_READ_TIMEOUT_MS,
+  MEMORY_VMMAP_TIMEOUT_MS,
+} from '@src/constants';
+import {
   execAsync,
   executePowerShellScript,
   type Platform,
@@ -14,12 +19,13 @@ import {
   type MemoryProtectionInfo,
 } from '@modules/process/memory/types';
 
-// ── Windows ──
+/** Strict hex address pattern — rejects embedded shell metacharacters. */
+const HEX_ADDR = /^(?:0x)?[0-9a-fA-F]{1,16}$/;
 
 async function readMemoryWindows(
   pid: number,
   address: number,
-  size: number
+  size: number,
 ): Promise<MemoryReadResult> {
   try {
     const psScript = `
@@ -98,21 +104,71 @@ async function readMemoryWindows(
 
 // ── Linux ──
 
+let _linuxProvider: import('@native/platform/PlatformMemoryAPI.js').PlatformMemoryAPI | null = null;
+let _linuxProviderChecked = false;
+
+async function getLinuxProvider(): Promise<
+  import('@native/platform/PlatformMemoryAPI.js').PlatformMemoryAPI | null
+> {
+  if (_linuxProviderChecked) return _linuxProvider;
+  try {
+    const { createPlatformProvider } = await import('@native/platform/factory.js');
+    const provider = createPlatformProvider();
+    const avail = await provider.checkAvailability();
+    if (avail.available) {
+      _linuxProvider = provider;
+    }
+  } catch {
+    // provider not available on this platform
+  }
+  _linuxProviderChecked = true;
+  return _linuxProvider;
+}
+
+/** @internal Reset cached provider for test isolation */
+export function _resetLinuxProviderCache(): void {
+  _linuxProvider = null;
+  _linuxProviderChecked = false;
+}
+
+function bufferToHex(data: Buffer, bytesRead: number): string {
+  return data.subarray(0, bytesRead).toString('hex').toUpperCase().replace(/../g, '$& ');
+}
+
 async function readMemoryLinux(
   pid: number,
   address: number,
-  size: number
+  size: number,
 ): Promise<MemoryReadResult> {
+  // ── Native fast-path: direct /proc/pid/mem read (no sudo needed for same-user processes) ──
+  try {
+    const provider = await getLinuxProvider();
+    if (provider) {
+      const handle = provider.openProcess(pid, false);
+      try {
+        const result = provider.readMemory(handle, BigInt(address), size);
+        logger.debug('Native Linux memory read succeeded');
+        return { success: true, data: bufferToHex(result.data, result.bytesRead).trim() };
+      } finally {
+        provider.closeProcess(handle);
+      }
+    }
+  } catch (nativeErr) {
+    logger.debug('Native Linux read failed, falling back to dd:', nativeErr);
+  }
+
+  // ── Fallback: dd via /proc/pid/mem (may require ptrace or root) ──
   try {
     const { stdout } = await execAsync(
-      `sudo dd if=/proc/${pid}/mem bs=1 skip=${address} count=${size} 2>/dev/null | xxd -p | tr -d '\\n' || echo ""`,
-      { maxBuffer: 1024 * 1024 * 10, timeout: 10000 }
+      `dd if=/proc/${pid}/mem bs=1 skip=${address} count=${size} 2>/dev/null | xxd -p | tr -d '\\n' || echo ""`,
+      { maxBuffer: 1024 * 1024 * 10, timeout: MEMORY_READ_TIMEOUT_MS },
     );
 
     if (!stdout.trim()) {
       return {
         success: false,
-        error: 'Failed to read memory. Requires root privileges or ptrace access.',
+        error:
+          'Failed to read memory. Requires ptrace access or root. Check kernel.yama.ptrace_scope if access denied.',
       };
     }
 
@@ -130,7 +186,7 @@ async function readMemoryLinux(
     logger.error('Linux memory read failed:', error);
     return {
       success: false,
-      error: 'Memory read failed. Run as root or use ptrace.',
+      error: 'Memory read failed. Requires ptrace access or root (check kernel.yama.ptrace_scope).',
     };
   }
 }
@@ -141,16 +197,39 @@ async function readMemoryMac(
   pid: number,
   address: number,
   size: number,
-  checkProtectionFn: (pid: number, address: string) => Promise<MemoryProtectionInfo>
+  checkProtectionFn: (pid: number, address: string) => Promise<MemoryProtectionInfo>,
 ): Promise<MemoryReadResult> {
   if (address === 0) {
     return { success: false, error: 'Invalid address: null pointer (0x0)' };
   }
-  const MAX_READ_SIZE = 16 * 1024 * 1024;
-  if (size <= 0 || size > MAX_READ_SIZE) {
-    return { success: false, error: `Invalid size: must be 1–${MAX_READ_SIZE} bytes` };
+  if (size <= 0 || size > MEMORY_MAX_READ_BYTES) {
+    return { success: false, error: `Invalid size: must be 1–${MEMORY_MAX_READ_BYTES} bytes` };
   }
   const addrHex = `0x${address.toString(16)}`;
+
+  // ── Native fast-path: task_for_pid + mach_vm_read_overwrite (zero-pause) ──
+  try {
+    const { createPlatformProvider } = await import('@native/platform/factory.js');
+    const provider = createPlatformProvider();
+    const avail = await provider.checkAvailability();
+    if (avail.available) {
+      const handle = provider.openProcess(pid, false);
+      try {
+        const result = provider.readMemory(handle, BigInt(address), size);
+        const hex = Array.from(result.data.subarray(0, result.bytesRead))
+          .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
+          .join(' ');
+        logger.debug('Native Mach memory read succeeded (zero-pause)');
+        return { success: true, data: hex };
+      } finally {
+        provider.closeProcess(handle);
+      }
+    }
+  } catch (nativeErr) {
+    logger.debug('Native Mach read failed, falling back to lldb:', nativeErr);
+  }
+
+  // ── Fallback: lldb subprocess (pauses target briefly) ──
   const prot = await checkProtectionFn(pid, addrHex);
   if (!prot.success) {
     return { success: false, error: `Cannot verify memory region: ${prot.error}` };
@@ -166,7 +245,7 @@ async function readMemoryMac(
   try {
     const { stdout } = await execAsync(
       `lldb --batch -p ${pid} -o "memory read --outfile ${tmpFile} --binary ${addrHex} -c ${size}" -o "process detach"`,
-      { timeout: 15000, maxBuffer: 1024 * 1024 * 10 }
+      { timeout: MEMORY_VMMAP_TIMEOUT_MS, maxBuffer: 1024 * 1024 * 10 },
     );
     if (!stdout.includes('bytes written')) {
       const errLine = stdout.split('\n').find((l) => l.includes('error:')) ?? stdout;
@@ -191,12 +270,21 @@ export async function readMemory(
   pid: number,
   address: string,
   size: number,
-  checkProtectionFn: (pid: number, address: string) => Promise<MemoryProtectionInfo>
+  checkProtectionFn: (pid: number, address: string) => Promise<MemoryProtectionInfo>,
 ): Promise<MemoryReadResult> {
   try {
+    if (!HEX_ADDR.test(address)) {
+      return { success: false, error: 'Invalid address format. Use hex like "0x12345678"' };
+    }
     const addrNum = parseInt(address, 16);
     if (isNaN(addrNum)) {
       return { success: false, error: 'Invalid address format. Use hex like "0x12345678"' };
+    }
+    if (size <= 0 || size > MEMORY_MAX_READ_BYTES) {
+      return {
+        success: false,
+        error: `Read size must be 1–${MEMORY_MAX_READ_BYTES} bytes (${(MEMORY_MAX_READ_BYTES / 1024 / 1024).toFixed(0)} MB)`,
+      };
     }
 
     // Try native FFI first on Windows (10-100x faster)

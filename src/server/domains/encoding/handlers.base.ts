@@ -246,8 +246,15 @@ export class EncodingHandlersBase {
 
       const resolved = resolve(filePath);
       const real = await realpath(resolved);
-      const allowedRoots = [tmpdir(), homedir(), process.cwd()].map((p) =>
-        isAbsolute(p) ? p : resolve(p)
+      const allowedRoots = await Promise.all(
+        [tmpdir(), homedir(), process.cwd()].map(async (p) => {
+          const absolute = isAbsolute(p) ? p : resolve(p);
+          try {
+            return await realpath(absolute);
+          } catch {
+            return absolute;
+          }
+        }),
       );
       const isAllowed = allowedRoots.some((root) => real.startsWith(root));
       if (!isAllowed) {
@@ -425,7 +432,7 @@ export class EncodingHandlersBase {
   protected detectEncodingSignals(
     source: DetectSource,
     data: string | undefined,
-    buffer: Buffer
+    buffer: Buffer,
   ): string[] {
     const encodings = new Set<string>();
 
@@ -456,7 +463,7 @@ export class EncodingHandlersBase {
       return 0;
     }
 
-    const freq = new Array<number>(256).fill(0);
+    const freq: number[] = Array.from({ length: 256 }, () => 0);
     for (const value of buffer.values()) {
       freq[value]! += 1;
     }
@@ -478,7 +485,7 @@ export class EncodingHandlersBase {
       return [];
     }
 
-    const freq = new Array<number>(256).fill(0);
+    const freq: number[] = Array.from({ length: 256 }, () => 0);
     for (const value of buffer.values()) {
       freq[value]! += 1;
     }
@@ -502,7 +509,7 @@ export class EncodingHandlersBase {
 
   protected calculateBlockEntropies(
     buffer: Buffer,
-    blockSize: number
+    blockSize: number,
   ): Array<{ index: number; start: number; end: number; entropy: number }> {
     if (buffer.length === 0) {
       return [];

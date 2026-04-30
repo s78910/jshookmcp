@@ -132,7 +132,7 @@ describe('PatternDetector additional coverage', () => {
       const reqWithKeywords = makeRequest({ url: 'https://example.com/api/login/token' });
       const reqWithout = makeRequest({ url: 'https://example.com/static/image' });
       expect(calculateRequestPriority(reqWithKeywords)).toBeGreaterThan(
-        calculateRequestPriority(reqWithout)
+        calculateRequestPriority(reqWithout),
       );
     });
 
@@ -140,7 +140,7 @@ describe('PatternDetector additional coverage', () => {
       const withPost = makeRequest({ url: 'https://example.com/', postData: 'data=1' });
       const withoutPost = makeRequest({ url: 'https://example.com/' });
       expect(calculateRequestPriority(withPost)).toBeGreaterThan(
-        calculateRequestPriority(withoutPost)
+        calculateRequestPriority(withoutPost),
       );
     });
 
@@ -158,7 +158,7 @@ describe('PatternDetector additional coverage', () => {
         makeRequest({ url: 'https://example.com/api/login' }),
       ];
       const filtered = filterCriticalRequests(requests);
-      expect(filtered.some((r) => r.url.includes('google-analytics.com'))).toBe(false);
+      expect(filtered.some((r) => new URL(r.url).hostname === 'google-analytics.com')).toBe(false);
     });
 
     it('filters out static resources', () => {
@@ -546,7 +546,7 @@ describe('PatternDetector additional coverage', () => {
 
     it('limits results to 20', () => {
       const requests = Array.from({ length: 30 }, (_, i) =>
-        makeRequest({ url: `https://example.com/api/resource${i}`, requestId: `r${i}` })
+        makeRequest({ url: `https://example.com/api/resource${i}`, requestId: `r${i}` }),
       );
       const apis = extractSuspiciousAPIs(requests);
       expect(apis.length).toBeLessThanOrEqual(20);

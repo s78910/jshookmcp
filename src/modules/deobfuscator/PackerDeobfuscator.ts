@@ -67,10 +67,10 @@ export class PackerDeobfuscator {
 
   private async unpack(code: string): Promise<string> {
     const match = code.match(
-      /eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*{([\s\S]*?)}\s*\((.*?)\)\s*\)/
+      /eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*{([\s\S]*?)}\s*\((.*?)\)\s*\)/,
     );
 
-    if (!match || !match[2]) {
+    if (!match?.[2]) {
       return code;
     }
 

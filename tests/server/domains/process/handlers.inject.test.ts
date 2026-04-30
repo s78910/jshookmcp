@@ -3,10 +3,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({
   injectDll: vi.fn(),
   injectShellcode: vi.fn(),
-  checkDebugPort: vi.fn(),
-  enumerateModules: vi.fn(),
   recordMemoryAudit: vi.fn(),
   connect: vi.fn(),
+  connectPlaywrightCdpFallback: vi.fn(),
   browserPages: vi.fn(),
   browserDisconnect: vi.fn(),
   pageEvaluate: vi.fn(),
@@ -24,8 +23,6 @@ vi.mock(import('@server/domains/shared/modules'), async (importOriginal) => {
     MemoryManager: class {
       injectDll = state.injectDll;
       injectShellcode = state.injectShellcode;
-      checkDebugPort = state.checkDebugPort;
-      enumerateModules = state.enumerateModules;
     } as unknown as typeof actual.MemoryManager,
   };
 });
@@ -35,7 +32,7 @@ vi.mock(import('@src/modules/process/memory/AuditTrail'), async (importOriginal)
   return {
     ...actual,
     MemoryAuditTrail: class {
-      record(entry: unknown) {
+      record(entry: any) {
         state.recordMemoryAudit(entry);
       }
 
@@ -65,6 +62,11 @@ vi.mock('rebrowser-puppeteer-core', () => ({
   default: {
     connect: (...args: any[]) => state.connect(...args),
   },
+  connect: (...args: any[]) => state.connect(...args),
+}));
+
+vi.mock('@modules/collector/playwright-cdp-fallback', () => ({
+  connectPlaywrightCdpFallback: (...args: any[]) => state.connectPlaywrightCdpFallback(...args),
 }));
 
 // Mock constants module with configurable ENABLE_INJECTION_TOOLS
@@ -83,7 +85,7 @@ import { ProcessToolHandlersRuntime } from '@server/domains/process/handlers.imp
 
 const originalFetch = global.fetch;
 
-function jsonResponse(body: unknown, init?: { ok?: boolean; status?: number }) {
+function jsonResponse(body: any, init?: { ok?: boolean; status?: number }) {
   return {
     ok: init?.ok ?? true,
     status: init?.status ?? 200,
@@ -114,6 +116,10 @@ describe('handlers.impl.core.runtime.inject', () => {
       pages: state.browserPages,
       disconnect: state.browserDisconnect,
     });
+    state.connectPlaywrightCdpFallback.mockResolvedValue({
+      pages: state.browserPages,
+      disconnect: state.browserDisconnect,
+    });
     state.browserPages.mockResolvedValue([]);
     state.browserDisconnect.mockResolvedValue(undefined);
     state.pageEvaluate.mockReset();
@@ -136,7 +142,7 @@ describe('handlers.impl.core.runtime.inject', () => {
           pid: 1234,
           address: 'C:\\test.dll',
           result: 'failure',
-        })
+        }),
       );
     });
 
@@ -159,7 +165,7 @@ describe('handlers.impl.core.runtime.inject', () => {
           pid: 1234,
           size: 3, // 3 bytes from '909090'
           result: 'failure',
-        })
+        }),
       );
     });
 
@@ -177,7 +183,7 @@ describe('handlers.impl.core.runtime.inject', () => {
       expect(state.recordMemoryAudit).toHaveBeenCalledWith(
         expect.objectContaining({
           size: 3,
-        })
+        }),
       );
     });
 
@@ -190,7 +196,7 @@ describe('handlers.impl.core.runtime.inject', () => {
         expect.objectContaining({
           pid: null,
           address: 'C:\\test.dll',
-        })
+        }),
       );
     });
 
@@ -203,7 +209,7 @@ describe('handlers.impl.core.runtime.inject', () => {
         expect.objectContaining({
           pid: 1234,
           size: null,
-        })
+        }),
       );
     });
   });
@@ -228,7 +234,7 @@ describe('handlers.impl.core.runtime.inject', () => {
           pid: 1234,
           address: 'C:\\test.dll',
           result: 'success',
-        })
+        }),
       );
     });
 
@@ -244,7 +250,7 @@ describe('handlers.impl.core.runtime.inject', () => {
         expect.objectContaining({
           result: 'failure',
           error: 'Access denied',
-        })
+        }),
       );
     });
 
@@ -260,7 +266,7 @@ describe('handlers.impl.core.runtime.inject', () => {
         expect.objectContaining({
           result: 'failure',
           error: 'Unexpected error',
-        })
+        }),
       );
     });
 
@@ -282,7 +288,7 @@ describe('handlers.impl.core.runtime.inject', () => {
           operation: 'inject_shellcode',
           size: 2,
           result: 'success',
-        })
+        }),
       );
     });
 
@@ -292,54 +298,6 @@ describe('handlers.impl.core.runtime.inject', () => {
       await handler.handleInjectShellcode({ pid: 1234, shellcode: '9090' });
 
       expect(state.injectShellcode).toHaveBeenCalledWith(1234, '9090', 'hex');
-    });
-  });
-
-  describe('checkDebugPort', () => {
-    it('returns result from memoryManager', async () => {
-      state.checkDebugPort.mockResolvedValue({ success: true, isDebugged: false });
-
-      const result = await handler.handleCheckDebugPort({ pid: 1234 });
-      const response = JSON.parse(result.content[0]!.text);
-
-      expect(response.success).toBe(true);
-      expect(response.isDebugged).toBe(false);
-    });
-
-    it('handles errors', async () => {
-      state.checkDebugPort.mockRejectedValue(new Error('Check failed'));
-
-      const result = await handler.handleCheckDebugPort({ pid: 1234 });
-      const response = JSON.parse(result.content[0]!.text);
-
-      expect(response.success).toBe(false);
-      expect(response.error).toBe('Check failed');
-    });
-  });
-
-  describe('enumerateModules', () => {
-    it('returns modules from memoryManager', async () => {
-      state.enumerateModules.mockResolvedValue({
-        success: true,
-        modules: [{ name: 'kernel32.dll', baseAddress: '0x7FFE0000', size: 0x1000 }],
-      });
-
-      const result = await handler.handleEnumerateModules({ pid: 1234 });
-      const response = JSON.parse(result.content[0]!.text);
-
-      expect(response.success).toBe(true);
-      expect(response.modules).toHaveLength(1);
-      expect(response.modules[0].name).toBe('kernel32.dll');
-    });
-
-    it('handles errors', async () => {
-      state.enumerateModules.mockRejectedValue(new Error('Enumeration failed'));
-
-      const result = await handler.handleEnumerateModules({ pid: 1234 });
-      const response = JSON.parse(result.content[0]!.text);
-
-      expect(response.success).toBe(false);
-      expect(response.error).toBe('Enumeration failed');
     });
   });
 
@@ -372,7 +330,7 @@ describe('handlers.impl.core.runtime.inject', () => {
             type: 'page',
             webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/page-2',
           },
-        ])
+        ]),
       );
       global.fetch = fetchMock as typeof fetch;
 
@@ -387,7 +345,7 @@ describe('handlers.impl.core.runtime.inject', () => {
         expect.objectContaining({
           title: 'Settings',
           url: 'https://app.local/settings',
-        })
+        }),
       );
       expect(state.connect).not.toHaveBeenCalled();
     });
@@ -425,7 +383,7 @@ describe('handlers.impl.core.runtime.inject', () => {
             url: 'https://app.local/home',
             type: 'page',
           },
-        ])
+        ]),
       ) as typeof fetch;
 
       const result = await handler.handleElectronAttach({
@@ -450,12 +408,12 @@ describe('handlers.impl.core.runtime.inject', () => {
             type: 'page',
             webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/page-1',
           },
-        ])
+        ]),
       );
       fetchMock.mockResolvedValueOnce(
         jsonResponse({
           webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/browser/browser-id',
-        })
+        }),
       );
       global.fetch = fetchMock as typeof fetch;
       state.browserPages.mockResolvedValue([createBrowserPage('https://app.local/dashboard')]);
@@ -474,7 +432,7 @@ describe('handlers.impl.core.runtime.inject', () => {
         expect.objectContaining({
           success: true,
           result: { value: 2 },
-        })
+        }),
       );
     });
 
@@ -489,7 +447,7 @@ describe('handlers.impl.core.runtime.inject', () => {
             type: 'page',
             webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/page-1',
           },
-        ])
+        ]),
       );
       fetchMock.mockRejectedValueOnce(new Error('version endpoint unavailable'));
       global.fetch = fetchMock as typeof fetch;
@@ -528,7 +486,7 @@ describe('handlers.impl.core.runtime.inject', () => {
             type: 'page',
             webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/page-1',
           },
-        ])
+        ]),
       ) as typeof fetch;
       state.browserPages.mockResolvedValue([]);
 
@@ -554,9 +512,10 @@ describe('handlers.impl.core.runtime.inject', () => {
             type: 'page',
             webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/page-1',
           },
-        ])
+        ]),
       ) as typeof fetch;
       state.connect.mockRejectedValue({ code: 'E_BROKEN' });
+      state.connectPlaywrightCdpFallback.mockRejectedValue({ code: 'E_FALLBACK' });
 
       const result = await handler.handleElectronAttach({
         port: 9229,
@@ -567,6 +526,46 @@ describe('handlers.impl.core.runtime.inject', () => {
 
       expect(response.success).toBe(false);
       expect(response.error).toContain('"code": "E_BROKEN"');
+      expect(response.error).toContain('"code": "E_FALLBACK"');
+    });
+
+    it('falls back to Playwright compatibility mode when rebrowser connect fails during evaluate', async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse([
+          {
+            id: 'page-1',
+            title: 'Main Window',
+            url: 'https://app.local/dashboard',
+            type: 'page',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/page/page-1',
+          },
+        ]),
+      );
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          webSocketDebuggerUrl: 'ws://127.0.0.1:9229/devtools/browser/browser-id',
+        }),
+      );
+      global.fetch = fetchMock as typeof fetch;
+      state.connect.mockRejectedValue(new Error('Target closed during CDP handshake'));
+      state.browserPages.mockResolvedValue([createBrowserPage('https://app.local/dashboard')]);
+      state.pageEvaluate.mockResolvedValue({ ok: true, result: { fallback: true } });
+
+      const result = await handler.handleElectronAttach({ port: 9229, evaluate: '1 + 1' });
+      const response = JSON.parse(result.content[0]!.text);
+
+      expect(state.connectPlaywrightCdpFallback).toHaveBeenCalledWith(
+        'ws://127.0.0.1:9229/devtools/browser/browser-id',
+        expect.any(Number),
+      );
+      expect(state.browserDisconnect).toHaveBeenCalledTimes(1);
+      expect(response).toEqual(
+        expect.objectContaining({
+          success: true,
+          result: { fallback: true },
+        }),
+      );
     });
   });
 });

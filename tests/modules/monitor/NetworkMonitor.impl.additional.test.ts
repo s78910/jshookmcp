@@ -28,7 +28,7 @@ import { NetworkMonitor } from '@modules/monitor/NetworkMonitor.impl';
 
 function createMockSession() {
   const listeners = new Map<string, Set<(payload: any) => void>>();
-  const send = vi.fn(async (..._args: unknown[]) => ({}));
+  const send = vi.fn(async (..._args: any[]) => ({}));
   const on = vi.fn((event: string, handler: (payload: any) => void) => {
     const group = listeners.get(event) ?? new Set<(payload: any) => void>();
     group.add(handler);
@@ -67,7 +67,7 @@ describe('NetworkMonitor.impl – additional coverage', () => {
         expect.objectContaining({
           maxTotalBufferSize: 10000000,
           maxResourceBufferSize: 5000000,
-        })
+        }),
       );
       expect(monitor.isEnabled()).toBe(true);
     });

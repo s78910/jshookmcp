@@ -3,11 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const classMocks = vi.hoisted(() => {
   const createManagerClass = () =>
     class {
-      public session: unknown;
+      public session: any;
       public close = vi.fn().mockResolvedValue(undefined);
       public clearAll = vi.fn();
 
-      constructor(session: unknown) {
+      constructor(session: any) {
         this.session = session;
       }
     };
@@ -30,8 +30,6 @@ const classMocks = vi.hoisted(() => {
       public loadSessionFromFile = vi.fn().mockResolvedValue(undefined);
       public importSession = vi.fn().mockResolvedValue(undefined);
       public listSavedSessions = vi.fn().mockResolvedValue([]);
-
-      constructor(_manager: unknown) {}
     },
   };
 });
@@ -63,21 +61,21 @@ vi.mock('@modules/debugger/DebuggerSessionManager', () => ({
 import { DebuggerManager } from '@modules/debugger/DebuggerManager.impl.core.class';
 
 function createCDPSession() {
-  const listeners = new Map<string, Set<(payload?: unknown) => void>>();
+  const listeners = new Map<string, Set<(payload?: any) => void>>();
 
   return {
     session: {
       send: vi.fn().mockResolvedValue({}),
-      on: vi.fn((event: string, handler: (payload?: unknown) => void) => {
+      on: vi.fn((event: string, handler: (payload?: any) => void) => {
         const set = listeners.get(event) ?? new Set();
         set.add(handler);
         listeners.set(event, set);
       }),
-      off: vi.fn((event: string, handler: (payload?: unknown) => void) => {
+      off: vi.fn((event: string, handler: (payload?: any) => void) => {
         listeners.get(event)?.delete(handler);
       }),
       detach: vi.fn().mockResolvedValue(undefined),
-      emit(event: string, payload?: unknown) {
+      emit(event: string, payload?: any) {
         listeners.get(event)?.forEach((handler) => handler(payload));
       },
     },
@@ -231,7 +229,7 @@ describe('DebuggerManager core class internals', () => {
       (manager as any).normalizeBreakpointResolvedParams({
         breakpointId: 5,
         location: { scriptId: 'script-1' },
-      })
+      }),
     ).toEqual({
       breakpointId: '',
       location: { scriptId: 'script-1' },

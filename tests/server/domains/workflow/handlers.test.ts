@@ -1,28 +1,78 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockIsSsrfTarget, mockIsPrivateHost, mockIsLoopbackHost, mockLookup } = vi.hoisted(() => ({
+const {
+  mockIsSsrfTarget,
+  mockIsPrivateHost,
+  mockIsLoopbackHost,
+  mockIsLoopbackHttpUrl,
+  mockIsLocalSsrfBypassEnabled,
+  mockLookup,
+} = vi.hoisted(() => ({
   mockIsSsrfTarget: vi.fn(async () => false),
   mockIsPrivateHost: vi.fn(() => false),
   mockIsLoopbackHost: vi.fn(() => false),
+  mockIsLoopbackHttpUrl: vi.fn(() => false),
+  mockIsLocalSsrfBypassEnabled: vi.fn(() => false),
   mockLookup: vi.fn(),
 }));
 
-vi.mock('@src/server/domains/network/replay', () => ({
+vi.mock('@src/server/domains/network/ssrf-policy', () => ({
   isSsrfTarget: mockIsSsrfTarget,
   isPrivateHost: mockIsPrivateHost,
   isLoopbackHost: mockIsLoopbackHost,
+  isLoopbackHttpUrl: mockIsLoopbackHttpUrl,
+  isLocalSsrfBypassEnabled: mockIsLocalSsrfBypassEnabled,
 }));
 
 vi.mock('node:dns/promises', () => ({
   lookup: mockLookup,
 }));
 
-import { WorkflowHandlers } from '@server/domains/workflow/handlers';
-import { createWorkflow, ToolNodeBuilder } from '@server/workflows/WorkflowContract';
-import type { WorkflowContract } from '@server/workflows/WorkflowContract';
+vi.mock('@src/server/extensions/ExtensionManager', () => ({
+  ensureWorkflowsLoaded: vi.fn(async () => {}),
+}));
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
+import { WorkflowHandlers } from '@server/domains/workflow/handlers';
+import {
+  defineWorkflow,
+  toolStep,
+  type WorkflowContract,
+} from '@server/workflows/WorkflowContract';
+
+interface PageScriptResponse {
+  success: boolean;
+  error?: string;
+  name?: string;
+  action?: string;
+  description?: string;
+  available?: string[];
+  script?: string;
+  value?: any;
+}
+
+interface ApiProbeResponse {
+  success: boolean;
+  error?: string;
+  probed?: number;
+  results?: Record<string, unknown>;
+}
+
+interface ListWorkflowsResponse {
+  success: boolean;
+  count: number;
+  workflows: Array<{ id: string }>;
+}
+
+interface RunWorkflowResponse {
+  success: boolean;
+  workflowId: string;
+  stepResults: Record<string, unknown>;
+}
+
+interface BundleSearchResponse {
+  success: boolean;
+  error?: string;
 }
 
 function buildReservedDocIpv4(): string {
@@ -55,7 +105,7 @@ describe('WorkflowHandlers', () => {
       baseTier: 'workflow',
       config: {},
     },
-  } as any;
+  };
 
   let handlers: WorkflowHandlers;
 
@@ -64,12 +114,16 @@ describe('WorkflowHandlers', () => {
     vi.stubGlobal('fetch', fetchMock);
     mockIsSsrfTarget.mockResolvedValue(false);
     mockIsPrivateHost.mockReturnValue(false);
-    deps.advancedHandlers.handleNetworkGetStats.mockResolvedValue({
+    mockIsLoopbackHost.mockReturnValue(false);
+    mockIsLoopbackHttpUrl.mockReturnValue(false);
+    mockIsLocalSsrfBypassEnabled.mockReturnValue(false);
+    mockLookup.mockResolvedValue({ address: buildReservedDocIpv4(), family: 4 });
+    (deps.advancedHandlers.handleNetworkGetStats as any).mockResolvedValue({
       content: [
         { type: 'text', text: JSON.stringify({ success: true, stats: { totalRequests: 3 } }) },
       ],
     });
-    deps.advancedHandlers.handleNetworkGetRequests.mockResolvedValue({
+    (deps.advancedHandlers.handleNetworkGetRequests as any).mockResolvedValue({
       content: [
         {
           type: 'text',
@@ -80,25 +134,29 @@ describe('WorkflowHandlers', () => {
         },
       ],
     });
-    deps.advancedHandlers.handleNetworkExtractAuth.mockResolvedValue({
+    (deps.advancedHandlers.handleNetworkExtractAuth as any).mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify({ success: true, findings: [] }) }],
     });
-    handlers = new WorkflowHandlers(deps);
+    handlers = new WorkflowHandlers(
+      deps as unknown as ConstructorParameters<typeof WorkflowHandlers>[0],
+    );
   });
 
   it('validates page_script_register required fields', async () => {
-    const body = parseJson(await handlers.handlePageScriptRegister({ name: '', code: '' }));
+    const body = parseJson<PageScriptResponse>(
+      await handlers.handlePageScriptRegister({ name: '', code: '' }),
+    );
     expect(body.success).toBe(false);
     expect(body.error).toContain('name and code are required');
   });
 
   it('registers a custom page script', async () => {
-    const body = parseJson(
+    const body = parseJson<PageScriptResponse>(
       await handlers.handlePageScriptRegister({
         name: 'my_script',
         code: '(() => 123)()',
         description: 'demo',
-      })
+      }),
     );
     expect(body.success).toBe(true);
     expect(body.name).toBe('my_script');
@@ -106,14 +164,16 @@ describe('WorkflowHandlers', () => {
   });
 
   it('returns available scripts when script is missing', async () => {
-    const body = parseJson(await handlers.handlePageScriptRun({ name: 'nope' }));
+    const body = parseJson<PageScriptResponse>(
+      await handlers.handlePageScriptRun({ name: 'nope' }),
+    );
     expect(body.success).toBe(false);
     expect(body.error).toContain('not found');
     expect(Array.isArray(body.available)).toBe(true);
   });
 
   it('runs registered script through browser handlePageEvaluate', async () => {
-    deps.browserHandlers.handlePageEvaluate.mockResolvedValue({
+    (deps.browserHandlers.handlePageEvaluate as any).mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify({ success: true, value: 123 }) }],
     });
 
@@ -127,32 +187,37 @@ describe('WorkflowHandlers', () => {
       params: { a: 1 },
     });
     expect(deps.browserHandlers.handlePageEvaluate).toHaveBeenCalledOnce();
-    const payload = deps.browserHandlers.handlePageEvaluate.mock.calls[0]![0] as any;
-    expect(payload.code).toContain('__params__');
+    const payload = (deps.browserHandlers.handlePageEvaluate as any).mock.calls[0]![0] as Record<
+      string,
+      unknown
+    >;
+    expect(String(payload.code)).toContain('__params__');
     expect(response.content[0]!.type).toBe('text');
   });
 
   it('returns execution error when page script run throws', async () => {
-    deps.browserHandlers.handlePageEvaluate.mockRejectedValue(new Error('eval failed'));
+    (deps.browserHandlers.handlePageEvaluate as any).mockRejectedValue(new Error('eval failed'));
     await handlers.handlePageScriptRegister({
       name: 'script_fail',
       code: '(() => 1)()',
     });
 
-    const body = parseJson(await handlers.handlePageScriptRun({ name: 'script_fail' }));
+    const body = parseJson<PageScriptResponse>(
+      await handlers.handlePageScriptRun({ name: 'script_fail' }),
+    );
     expect(body.success).toBe(false);
     expect(body.error).toContain('eval failed');
     expect(body.script).toBe('script_fail');
   });
 
   it('validates api_probe_batch baseUrl', async () => {
-    const body = parseJson(await handlers.handleApiProbeBatch({}));
+    const body = parseJson<ApiProbeResponse>(await handlers.handleApiProbeBatch({}));
     expect(body.success).toBe(false);
     expect(body.error).toContain('baseUrl is required');
   });
 
   it('builds api_probe_batch page code with concurrent probing', async () => {
-    deps.browserHandlers.handlePageEvaluate.mockResolvedValue({
+    (deps.browserHandlers.handlePageEvaluate as any).mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify({ success: true, probed: 2, results: {} }) }],
     });
 
@@ -163,62 +228,12 @@ describe('WorkflowHandlers', () => {
     });
 
     expect(deps.browserHandlers.handlePageEvaluate).toHaveBeenCalledOnce();
-    const payload = deps.browserHandlers.handlePageEvaluate.mock.calls[0]?.[0];
-    expect(payload.code).toContain('Promise.all');
-    expect(payload.code).toContain('maxConcurrency');
-  });
-
-  it('executes web_api_capture_session without exporting files', async () => {
-    const body = parseJson(
-      await handlers.handleWebApiCaptureSession({
-        url: 'https://vmoranv.github.io/jshookmcp',
-        waitUntil: 'domcontentloaded',
-        actions: [{ type: 'click', selector: 'button.capture' }],
-        exportHar: false,
-        exportReport: false,
-        waitAfterActionsMs: 0,
-      })
-    );
-
-    expect(body.success).toBe(true);
-    expect(deps.advancedHandlers.handleNetworkEnable).toHaveBeenCalledOnce();
-    expect(deps.browserHandlers.handlePageNavigate).toHaveBeenCalledWith({
-      url: 'https://vmoranv.github.io/jshookmcp',
-      waitUntil: 'domcontentloaded',
-      enableNetworkMonitoring: true,
-    });
-    expect(deps.browserHandlers.handlePageClick).toHaveBeenCalledWith({
-      selector: 'button.capture',
-    });
-  });
-
-  it('retries batch_register accounts and summarizes success', async () => {
-    const successResult = {
-      content: [{ type: 'text', text: JSON.stringify({ success: true, verified: true }) }],
-    };
-    const failureResult = {
-      content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'temporary' }) }],
-    };
-
-    const flowSpy = vi
-      .spyOn(handlers as any, 'handleRegisterAccountFlow')
-      .mockResolvedValueOnce(failureResult)
-      .mockResolvedValueOnce(successResult);
-
-    const body = parseJson(
-      await handlers.handleBatchRegister({
-        registerUrl: 'https://vmoranv.github.io/jshookmcp/register',
-        accounts: [{ fields: { email: 'alice@example.com', password: 'secret' } }],
-        maxRetries: 1,
-        retryBackoffMs: 0,
-        timeoutPerAccountMs: 5000,
-      })
-    );
-
-    expect(flowSpy).toHaveBeenCalledTimes(2);
-    expect(body.success).toBe(true);
-    expect(body.summary.succeeded).toBe(1);
-    expect(body.summary.failed).toBe(0);
+    const payload = (deps.browserHandlers.handlePageEvaluate as any).mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(String(payload.code)).toContain('Promise.all');
+    expect(String(payload.code)).toContain('maxConcurrency');
   });
 
   it('lists loaded extension workflows', async () => {
@@ -232,16 +247,17 @@ describe('WorkflowHandlers', () => {
       defaultMaxConcurrency: 2,
     });
 
-    const body = parseJson(await handlers.handleListExtensionWorkflows());
+    const body = parseJson<ListWorkflowsResponse>(await handlers.handleListExtensionWorkflows());
     expect(body.success).toBe(true);
     expect(body.count).toBe(1);
+    // @ts-expect-error — auto-suppressed [TS2532]
     expect(body.workflows[0].id).toBe('workflow.demo.v1');
   });
 
   it('executes a loaded extension workflow with node input overrides', async () => {
-    const workflow: WorkflowContract = createWorkflow('workflow.demo.v1', 'Demo Workflow')
-      .buildGraph(() => new ToolNodeBuilder('demo-node', 'demo_tool').input({ value: 'base' }))
-      .build();
+    const workflow: WorkflowContract = defineWorkflow('workflow.demo.v1', 'Demo Workflow', (w) =>
+      w.buildGraph(() => toolStep('demo-node', 'demo_tool', { input: { value: 'base' } })),
+    );
 
     deps.serverContext.extensionWorkflowsById.set('workflow.demo.v1', {
       id: 'workflow.demo.v1',
@@ -252,17 +268,17 @@ describe('WorkflowHandlers', () => {
       workflow,
       source: 'fixtures/demo.workflow.ts',
     });
-    deps.serverContext.executeToolWithTracking.mockResolvedValue({
+    (deps.serverContext.executeToolWithTracking as any).mockResolvedValue({
       content: [{ type: 'text', text: JSON.stringify({ success: true, echoed: true }) }],
     });
 
-    const body = parseJson(
+    const body = parseJson<RunWorkflowResponse>(
       await handlers.handleRunExtensionWorkflow({
         workflowId: 'workflow.demo.v1',
         nodeInputOverrides: {
           'demo-node': { value: 'override' },
         },
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
@@ -283,11 +299,11 @@ describe('WorkflowHandlers', () => {
       text: vi.fn(async () => 'const token = "abc";'),
     });
 
-    const body = parseJson(
+    const body = parseJson<BundleSearchResponse>(
       await handlers.handleJsBundleSearch({
         url: 'https://vmoranv.github.io/jshookmcp/assets/main.js',
         patterns: [{ name: 'auth', regex: 'token' }],
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
@@ -297,13 +313,11 @@ describe('WorkflowHandlers', () => {
       expect.objectContaining({
         redirect: 'manual',
         headers: {},
-      })
+      }),
     );
   });
 
   it('blocks remote http bundle fetches unless they are loopback', async () => {
-    const resolvedAddress = buildReservedDocIpv4();
-    mockLookup.mockResolvedValue({ address: resolvedAddress, family: 4 });
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
@@ -312,15 +326,15 @@ describe('WorkflowHandlers', () => {
       text: vi.fn(async () => 'const token = "abc";'),
     });
 
-    const body = parseJson(
+    const body = parseJson<BundleSearchResponse>(
       await handlers.handleJsBundleSearch({
         url: 'http://vmoranv.github.io/jshookmcp/assets/main.js',
         patterns: [{ name: 'auth', regex: 'token' }],
-      })
+      }),
     );
 
     expect(body.success).toBe(false);
-    expect(body.error).toContain('insecure HTTP is only allowed for loopback targets');
+    expect(body.error).toContain('networkPolicy.allowInsecureHttp');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

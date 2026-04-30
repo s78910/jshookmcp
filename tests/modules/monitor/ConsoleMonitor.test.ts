@@ -26,7 +26,7 @@ vi.mock('@src/modules/monitor/NetworkMonitor', () => {
   networkState.ctor = ctorSpy;
 
   class NetworkMonitor {
-    session: unknown;
+    session: any;
     enabled = false;
     enable = vi.fn(async () => {
       this.enabled = true;
@@ -62,7 +62,7 @@ vi.mock('@src/modules/monitor/NetworkMonitor', () => {
     getXHRRequests = vi.fn(async () => [{ id: 'xhr-1' }]);
     getFetchRequests = vi.fn(async () => [{ id: 'fetch-1' }]);
 
-    constructor(session: unknown) {
+    constructor(session: any) {
       ctorSpy(session);
       this.session = session;
       networkState.instances.push(this);
@@ -77,7 +77,7 @@ vi.mock('@src/modules/monitor/PlaywrightNetworkMonitor', () => {
   playwrightNetworkState.ctor = ctorSpy;
 
   class PlaywrightNetworkMonitor {
-    page: unknown;
+    page: any;
     enabled = false;
     enable = vi.fn(async () => {
       this.enabled = true;
@@ -112,14 +112,14 @@ vi.mock('@src/modules/monitor/PlaywrightNetworkMonitor', () => {
     injectFetchInterceptor = vi.fn(async () => {});
     getXHRRequests = vi.fn(async () => []);
     getFetchRequests = vi.fn(async () => []);
-    setPage = vi.fn((page: unknown) => {
+    setPage = vi.fn((page: any) => {
       this.page = page;
       if (!page) {
         this.enabled = false;
       }
     });
 
-    constructor(page: unknown) {
+    constructor(page: any) {
       ctorSpy(page);
       this.page = page;
       playwrightNetworkState.instances.push(this);
@@ -133,7 +133,7 @@ import { ConsoleMonitor } from '@modules/monitor/ConsoleMonitor';
 
 function createMockSession() {
   const listeners = new Map<string, Set<(payload: any) => void>>();
-  const send = vi.fn(async (..._args: unknown[]) => ({}));
+  const send = vi.fn(async (..._args: any[]) => ({}));
   const on = vi.fn((event: string, handler: (payload: any) => void) => {
     const group = listeners.get(event) ?? new Set<(payload: any) => void>();
     group.add(handler);
@@ -234,7 +234,7 @@ describe('ConsoleMonitor', () => {
           return { exceptionDetails: { text: 'boom' } };
         }
         return {};
-      }
+      },
     );
 
     const collector = createCollectorWithSessions(session);
@@ -258,6 +258,54 @@ describe('ConsoleMonitor', () => {
     expect(collector.getActivePage).toHaveBeenCalledTimes(2);
     expect(second.send).toHaveBeenCalledWith('Runtime.enable', {});
     expect(second.send).toHaveBeenCalledWith('Console.enable', {});
+  });
+
+  it('marks monitoring stale after a context switch and lazily rebinds on the next enable', async () => {
+    const first = createMockSession();
+    const second = createMockSession();
+    const collector = createCollectorWithSessions(first.session, second.session);
+    const monitor = new ConsoleMonitor(collector as any);
+
+    await monitor.enable({ enableNetwork: true });
+    expect(monitor.isNetworkEnabled()).toBe(true);
+
+    monitor.markContextChanged();
+
+    expect(monitor.isSessionActive()).toBe(false);
+    expect(monitor.isNetworkEnabled()).toBe(false);
+    expect(monitor.getLogs()).toEqual([]);
+    expect(monitor.getNetworkRequests()).toEqual([]);
+
+    await monitor.enable({ enableNetwork: true });
+
+    expect(first.session.detach).toHaveBeenCalledTimes(1);
+    expect(collector.getActivePage).toHaveBeenCalledTimes(2);
+    expect(second.send).toHaveBeenCalledWith('Runtime.enable', {});
+    expect(second.send).toHaveBeenCalledWith('Console.enable', {});
+  });
+
+  it('auto-rebinds on execute after a context switch', async () => {
+    const first = createMockSession();
+    const second = createMockSession();
+    (second.send as ReturnType<typeof vi.fn>).mockImplementation(
+      async (method: string, params?: { expression?: string }) => {
+        if (method === 'Runtime.enable' || method === 'Console.enable') return {};
+        if (method === 'Runtime.evaluate' && params?.expression === 'ok') {
+          return { result: { value: 7 } };
+        }
+        return {};
+      },
+    );
+
+    const collector = createCollectorWithSessions(first.session, second.session);
+    const monitor = new ConsoleMonitor(collector as any);
+
+    await monitor.enable();
+    monitor.markContextChanged();
+
+    await expect(monitor.execute('ok')).resolves.toBe(7);
+    expect(first.session.detach).toHaveBeenCalledTimes(1);
+    expect(collector.getActivePage).toHaveBeenCalledTimes(2);
   });
 
   it('supports Playwright mode with console/error capture and network delegation', async () => {

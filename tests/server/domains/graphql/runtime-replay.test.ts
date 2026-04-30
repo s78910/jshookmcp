@@ -1,3 +1,4 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const isSsrfTargetMock = vi.fn(async () => false);
@@ -9,16 +10,13 @@ vi.mock('@src/server/domains/network/replay', () => ({
 import { GraphQLToolHandlersRuntime } from '@server/domains/graphql/handlers.impl.core.runtime.replay';
 import type { BrowserFetchResult } from '@server/domains/graphql/handlers.impl.core.runtime.shared';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0]!.text);
-}
-
 describe('GraphQLToolHandlersRuntime (replay)', () => {
   const page = {
     evaluate: vi.fn(),
     evaluateOnNewDocument: vi.fn(),
     setRequestInterception: vi.fn(),
     on: vi.fn(),
+    url: vi.fn(() => 'https://example.com/app'),
   };
   const collector = {
     getActivePage: vi.fn(async () => page),
@@ -39,7 +37,7 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       const response = await handlers.handleGraphqlReplay({
         query: 'query { ok }',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: endpoint');
     });
@@ -49,7 +47,7 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: '   ',
         query: 'query { ok }',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: endpoint');
     });
@@ -58,7 +56,7 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       const response = await handlers.handleGraphqlReplay({
         endpoint: 'https://example.com/graphql',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: query');
     });
@@ -68,7 +66,7 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: 'https://example.com/graphql',
         query: '   ',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: query');
     });
@@ -78,7 +76,7 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: 'https://example.com/graphql',
         query: 42,
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Missing required argument: query');
     });
@@ -92,7 +90,7 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: 'not-valid',
         query: 'query { ok }',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Invalid endpoint URL');
     });
@@ -103,9 +101,32 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: 'http://169.254.169.254/graphql',
         query: 'query { ok }',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Blocked');
+    });
+
+    it('allows same-origin private endpoints in browser mode', async () => {
+      isSsrfTargetMock.mockResolvedValueOnce(true);
+      page.url.mockReturnValueOnce('http://127.0.0.1/app');
+      page.evaluate.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        responseText: '',
+        responseJson: { data: { ok: true } },
+        responseHeaders: { 'content-type': 'application/json' },
+      });
+
+      const response = await handlers.handleGraphqlReplay({
+        endpoint: 'http://127.0.0.1/graphql',
+        query: 'query { ok }',
+        useBrowser: true,
+      });
+      const body = parseJson<any>(response);
+
+      expect((response as any).isError).toBeUndefined();
+      expect(body.success).toBe(true);
     });
   });
 
@@ -123,11 +144,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query GetUser { user { name } }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.success).toBe(true);
@@ -153,13 +175,14 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: 'https://example.com/graphql',
         query: 'query GetUser($id: ID!) { user(id: $id) { name } }',
         variables: { id: '123' },
+        useBrowser: true,
       });
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
           variables: { id: '123' },
-        })
+        }),
       );
     });
 
@@ -177,13 +200,14 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       await handlers.handleGraphqlReplay({
         endpoint: 'https://example.com/graphql',
         query: 'query { ok }',
+        useBrowser: true,
       });
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
           variables: {},
-        })
+        }),
       );
     });
 
@@ -198,19 +222,20 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query GetUser { user { name } }',
           operationName: 'GetUser',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
           operationName: 'GetUser',
-        })
+        }),
       );
       expect(body.operationName).toBe('GetUser');
     });
@@ -226,12 +251,13 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
           operationName: '   ',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.operationName).toBeNull();
@@ -252,13 +278,14 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
         endpoint: 'https://example.com/graphql',
         query: 'query { ok }',
         headers: { Authorization: 'Bearer xyz' },
+        useBrowser: true,
       });
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
         expect.objectContaining({
           headers: { Authorization: 'Bearer xyz' },
-        })
+        }),
       );
     });
   });
@@ -277,11 +304,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.responseFormat).toBe('text');
@@ -305,11 +333,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.responseTruncated).toBe(true);
@@ -328,11 +357,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.responseTruncated).toBe(true);
@@ -354,11 +384,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.success).toBe(false);
@@ -371,8 +402,9 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       const response = await handlers.handleGraphqlReplay({
         endpoint: 'https://example.com/graphql',
         query: 'query { ok }',
+        useBrowser: true,
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toBe('Browser disconnected');
     });
@@ -387,11 +419,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.responseHeaders).toEqual({});
@@ -412,11 +445,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(body.endpoint).toBe('https://example.com/graphql');
@@ -435,11 +469,12 @@ describe('GraphQLToolHandlersRuntime (replay)', () => {
       };
       page.evaluate.mockResolvedValueOnce(browserResult);
 
-      const body = parseJson(
+      const body = parseJson<any>(
         await handlers.handleGraphqlReplay({
           endpoint: 'https://example.com/graphql',
           query: 'query { ok }',
-        })
+          useBrowser: true,
+        }),
       );
 
       expect(typeof body.responseLength).toBe('number');

@@ -13,7 +13,7 @@ export function isKoffiAvailable(): boolean {
 
 export function parsePattern(
   pattern: string,
-  patternType: NativePatternType
+  patternType: NativePatternType,
 ): { patternBytes: number[]; mask: number[] } {
   const patternBytes: number[] = [];
   const mask: number[] = [];
@@ -77,6 +77,53 @@ export function parsePattern(
       const strBuf = Buffer.from(pattern, 'utf8');
       patternBytes.push(...strBuf);
       mask.push(...strBuf.map(() => 1));
+      break;
+    }
+    case 'byte': {
+      const byteVal = parseInt(pattern) & 0xff;
+      patternBytes.push(byteVal);
+      mask.push(1);
+      break;
+    }
+    case 'int8': {
+      const int8Val = parseInt(pattern);
+      const buf8 = Buffer.allocUnsafe(1);
+      buf8.writeInt8(int8Val, 0);
+      patternBytes.push(...buf8);
+      mask.push(1);
+      break;
+    }
+    case 'int16': {
+      const int16Val = parseInt(pattern);
+      const buf16s = Buffer.allocUnsafe(2);
+      buf16s.writeInt16LE(int16Val, 0);
+      patternBytes.push(...buf16s);
+      mask.push(1, 1);
+      break;
+    }
+    case 'uint16': {
+      const uint16Val = parseInt(pattern);
+      const buf16u = Buffer.allocUnsafe(2);
+      buf16u.writeUInt16LE(uint16Val, 0);
+      patternBytes.push(...buf16u);
+      mask.push(1, 1);
+      break;
+    }
+    case 'uint32': {
+      const uint32Val = parseInt(pattern) >>> 0;
+      const buf32u = Buffer.allocUnsafe(4);
+      buf32u.writeUInt32LE(uint32Val, 0);
+      patternBytes.push(...buf32u);
+      mask.push(1, 1, 1, 1);
+      break;
+    }
+    case 'uint64':
+    case 'pointer': {
+      const uint64Val = BigInt(pattern);
+      const buf64u = Buffer.allocUnsafe(8);
+      buf64u.writeBigUInt64LE(uint64Val, 0);
+      patternBytes.push(...buf64u);
+      mask.push(1, 1, 1, 1, 1, 1, 1, 1);
       break;
     }
   }

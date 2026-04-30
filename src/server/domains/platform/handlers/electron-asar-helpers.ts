@@ -7,6 +7,15 @@ import {
   type AsarFileEntry,
   type ParsedAsar,
 } from '@server/domains/platform/handlers/platform-utils';
+
+function trimTrailingNulls(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0) {
+    end -= 1;
+  }
+  return end === value.length ? value : value.slice(0, end);
+}
+
 export function flattenAsarEntries(headerNode: Record<string, unknown>): AsarFileEntry[] {
   if (!isRecord(headerNode.files)) {
     return [];
@@ -58,7 +67,7 @@ export function flattenAsarEntries(headerNode: Record<string, unknown>): AsarFil
 export function isAsarDataOffsetValid(
   files: AsarFileEntry[],
   dataOffset: number,
-  totalSize: number
+  totalSize: number,
 ): boolean {
   const samples = files.filter((entry) => !entry.unpacked).slice(0, 32);
 
@@ -85,7 +94,7 @@ export function parseAsarBuffer(asarBuffer: Buffer): ParsedAsar {
 
   const headerStart = 16;
   const lengthCandidates = Array.from(
-    new Set([headerContentSize, headerStringSize, headerSize - 8, headerSize])
+    new Set([headerContentSize, headerStringSize, headerSize - 8, headerSize]),
   ).filter((value) => value > 0 && headerStart + value <= asarBuffer.length);
 
   let headerObject: Record<string, unknown> | null = null;
@@ -94,23 +103,37 @@ export function parseAsarBuffer(asarBuffer: Buffer): ParsedAsar {
   for (const candidateLength of lengthCandidates) {
     const headerText = asarBuffer
       .subarray(headerStart, headerStart + candidateLength)
-      .toString('utf-8')
-      .replace(/\0+$/g, '')
-      .trim();
+      .toString('utf-8');
+    const normalizedHeaderText = trimTrailingNulls(headerText).trim();
 
-    if (headerText.length === 0) {
+    if (normalizedHeaderText.length === 0) {
       continue;
     }
 
     try {
-      const parsed = JSON.parse(headerText) as unknown;
+      const parsed = JSON.parse(normalizedHeaderText) as unknown;
       if (isRecord(parsed)) {
         headerObject = parsed;
         headerLength = candidateLength;
         break;
       }
     } catch {
-      // try next candidate
+      // Some ASAR files have non-null trailing padding after JSON.
+      // Fall back to truncating at the last closing brace.
+      const lastBrace = normalizedHeaderText.lastIndexOf('}');
+      if (lastBrace > 0) {
+        try {
+          const trimmed = normalizedHeaderText.substring(0, lastBrace + 1);
+          const parsed = JSON.parse(trimmed) as unknown;
+          if (isRecord(parsed)) {
+            headerObject = parsed;
+            headerLength = candidateLength;
+            break;
+          }
+        } catch {
+          // try next candidate
+        }
+      }
     }
   }
 
@@ -128,7 +151,7 @@ export function parseAsarBuffer(asarBuffer: Buffer): ParsedAsar {
       8 + headerSize,
       headerStart + headerContentSize + padding,
       headerStart + headerStringSize + padding,
-    ])
+    ]),
   ).filter((value) => value >= 0 && value <= asarBuffer.length);
 
   let dataOffset = offsetCandidates[0] ?? headerStart + headerLength;
@@ -152,7 +175,7 @@ export function parseAsarBuffer(asarBuffer: Buffer): ParsedAsar {
 export function readAsarEntryBuffer(
   asarBuffer: Buffer,
   parsedAsar: ParsedAsar,
-  entryPath: string
+  entryPath: string,
 ): Buffer | undefined {
   const normalizedEntryPath = sanitizeArchiveRelativePath(entryPath);
   if (normalizedEntryPath.length === 0) {
@@ -180,7 +203,7 @@ export function readAsarEntryBuffer(
 export function readAsarEntryText(
   asarBuffer: Buffer,
   parsedAsar: ParsedAsar,
-  entryPath: string
+  entryPath: string,
 ): string | undefined {
   const data = readAsarEntryBuffer(asarBuffer, parsedAsar, entryPath);
   return data ? data.toString('utf-8') : undefined;
@@ -231,5 +254,5 @@ export async function findFilesystemPreloadScripts(rootDir: string): Promise<str
     }
   });
 
-  return Array.from(matches).sort().slice(0, 100);
+  return Array.from(matches).toSorted().slice(0, 100);
 }

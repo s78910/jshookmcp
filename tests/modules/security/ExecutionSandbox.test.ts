@@ -9,7 +9,7 @@ const sandboxState = vi.hoisted(() => {
 
     constructor(
       public readonly script: string,
-      public readonly options: Record<string, unknown>
+      public readonly options: Record<string, unknown>,
     ) {}
 
     on(event: string, callback: Listener) {
@@ -50,7 +50,7 @@ vi.mock('node:worker_threads', () => ({
 }));
 
 vi.mock('@src/utils/concurrency', () => ({
-  cpuLimit: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
+  cpuLimit: vi.fn(async (fn: () => Promise<any> | unknown) => fn()),
 }));
 
 import { cpuLimit } from '@utils/concurrency';

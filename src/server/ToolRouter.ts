@@ -1,20 +1,38 @@
 /**
- * Tool Router - One-stop routing layer for tool discovery, activation, and execution.
+ * ToolRouter — Thin orchestrator for tool routing.
  *
- * Compresses the multi-step "search -> activate -> call" protocol into 1-2 tool calls.
- * Implements workflow-first heuristics and safety guardrails.
+ * Delegates to 4 focused sub-modules:
+ *   ToolRouter.intent    — intent classification and workflow detection
+ *   ToolRouter.probe    — runtime state probing and tool accessors
+ *   ToolRouter.policy   — routing policy, reranking, and sequence builders
+ *   ToolRouter.renderer — command rendering and example-arg generation
+ *
+ * Only the orchestration logic and public types live here.
  */
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '@utils/logger';
-import { allTools, getToolDomain } from '@server/ToolCatalog';
-import type { MCPServerContext } from '@server/MCPServer.context';
-import { getActiveToolNames } from '@server/MCPServer.search.helpers';
-import { normalizeToolName } from '@server/MCPServer.search.validation';
-import { ToolSearchEngine } from '@server/ToolSearch';
-import type { ToolSearchResult } from '@server/ToolSearch';
+import { type ToolSearchEngine, type ToolSearchResult } from '@server/ToolSearch';
+import { ensureWorkflowsLoaded } from '@server/extensions/ExtensionManager';
+import {
+  getActiveToolNames,
+  getBaseTier,
+  getVisibleDomainsForTier,
+} from '@server/MCPServer.search.helpers';
 
-// ── Types ──
+// ── Types (re-exported from sub-modules for backward compatibility) ──
+
+import type { WorkflowRule, RoutedWorkflowMatch } from '@server/ToolRouter.intent';
+import type { RoutingState } from '@server/ToolRouter.probe';
+
+// Sub-module re-exports (public API surface)
+
+export type { WorkflowRule, RoutedWorkflowMatch };
+export type { RoutingState };
+
+// ── Request / Response types ──
+
+import type { WorkflowRouteMetadata } from '@server/workflows/WorkflowContract';
 
 export interface RouterRequest {
   /** Natural language description of the task */
@@ -61,6 +79,25 @@ export interface RouterResponse {
   }>;
   /** Workflow hint */
   workflowHint?: string;
+  /** Routed workflow preset matched for the task, if any */
+  routeMatch?: {
+    kind: WorkflowRouteMetadata['kind'];
+    id: string;
+    name: string;
+    description: string;
+    confidence: number;
+    matchedPattern: string;
+    requiredDomains: string[];
+    steps: Array<{
+      id: string;
+      toolName: string;
+      domain: string | null;
+      description: string;
+      prerequisites: string[];
+      parallel?: boolean;
+      isActive: boolean;
+    }>;
+  };
   /** Whether auto-activation was performed */
   autoActivated?: boolean;
   /** Canonical tool names auto-activated by the handler */
@@ -69,358 +106,90 @@ export interface RouterResponse {
   callToolHint?: string;
 }
 
-// ── Workflow Detection Rules ──
+// ── Sub-module imports ──
 
-interface WorkflowRule {
-  patterns: RegExp[];
-  domain: string;
-  priority: number;
-  tools: string[];
-  hint: string;
-}
+import {
+  detectWorkflowIntent,
+  matchWorkflowRoute,
+  isBrowserOrNetworkTask,
+  isMaintenanceTask,
+} from '@server/ToolRouter.intent';
 
-interface RoutingState {
-  hasActivePage: boolean;
-  networkEnabled: boolean;
-  capturedRequestCount: number;
-}
+import {
+  getAvailableToolNames,
+  getRoutingState,
+  isToolActive,
+  getToolDomainFromContext,
+  getToolInputSchema,
+} from '@server/ToolRouter.probe';
 
-const WORKFLOW_RULES: WorkflowRule[] = [
-  {
-    patterns: [
-      /(capture|intercept|monitor|hook).*(network|request|response|api|traffic)/i,
-      /(抓包|拦截|监控|hook).*(网络|请求|响应|api|流量)/i,
-    ],
-    domain: 'network',
-    priority: 100,
-    tools: ['web_api_capture_session', 'network_enable', 'page_navigate', 'network_get_requests'],
-    hint: 'Network capture workflow: bootstrap browser/page state -> enable capture -> navigate or act -> inspect captured requests',
-  },
-  {
-    patterns: [
-      /(browser|page|navigate|screenshot|click|type|scrape)/i,
-      /(浏览器|页面|导航|截图|点击|输入|爬取)/i,
-    ],
-    domain: 'browser',
-    priority: 90,
-    tools: ['page_navigate', 'page_screenshot', 'page_click', 'page_type', 'page_evaluate'],
-    hint: 'Browser automation workflow: bootstrap browser/page state -> navigate -> interact -> extract data',
-  },
-  {
-    patterns: [
-      /(deobfuscate|deobfusc|beautify|analyze).*(javascript|js|script|code)/i,
-      /(反混淆|美化|分析).*(javascript|js|脚本|代码)/i,
-    ],
-    domain: 'core',
-    priority: 85,
-    tools: ['deobfuscate', 'advanced_deobfuscate', 'extract_function_tree'],
-    hint: 'JavaScript analysis workflow: collect -> deobfuscate -> inspect function tree',
-  },
-  {
-    patterns: [/(workflow|extension|run)/i, /(工作流|扩展|运行)/i],
-    domain: 'workflow',
-    priority: 95,
-    tools: ['run_extension_workflow', 'list_extension_workflows'],
-    hint: 'Extension workflow: list available workflows -> run the best matching workflow',
-  },
-];
+import {
+  getEffectivePrerequisites,
+  buildWorkflowToolSequence,
+  buildPresetRecommendations,
+  buildWorkflowRouteRecommendation,
+  buildRouteMatchMetadata,
+  rerankResultsForContext,
+} from '@server/ToolRouter.policy';
 
-const BROWSER_OR_NETWORK_TASK_PATTERN =
-  /(browser|page|navigate|click|type|screenshot|scrape|network|request|response|api|traffic|hook|capture|intercept|monitor|浏览器|页面|导航|点击|输入|截图|爬取|网络|请求|响应|接口|流量|抓包|拦截|监控)/i;
-const MAINTENANCE_TASK_PATTERN =
-  /(token budget|cache|artifact|extension|plugin|reload|doctor|cleanup|memory|profile|tool list|令牌预算|缓存|工件|扩展|插件|重载|环境诊断|清理|内存|配置)/i;
+import { buildCallToolCommand, generateExampleArgs } from '@server/ToolRouter.renderer';
 
-// ── Prerequisite Map (STS2 P5) ──
-
-interface PrerequisiteEntry {
-  condition: string;
-  check: (state: RoutingState) => boolean;
-  fix: string;
-}
-
-/**
- * Declarative prerequisite map — tools that require specific state before use.
- * route_tool injects these hints into recommendations so the client knows
- * what to set up first (e.g., "launch browser before navigating").
- */
-const PREREQUISITE_MAP: Record<string, PrerequisiteEntry[]> = {
-  page_navigate:    [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_click:       [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_type:        [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_screenshot:  [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_evaluate:    [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_hover:       [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_scroll:      [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_back:        [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_forward:     [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  page_reload:      [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  dom_get_structure: [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  dom_query_selector: [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  network_get_requests: [
-    { condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' },
-    { condition: 'Network monitoring must be enabled', check: (s) => s.networkEnabled, fix: 'Call network_enable first' },
-  ],
-  network_get_response_body: [
-    { condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' },
-    { condition: 'Network monitoring must be enabled', check: (s) => s.networkEnabled, fix: 'Call network_enable first' },
-  ],
-  network_extract_auth: [
-    { condition: 'Network monitoring must be enabled', check: (s) => s.networkEnabled, fix: 'Call network_enable first' },
-  ],
-  debugger_enable: [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-  breakpoint_set:   [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch and debugger_enable first' }],
-  collect_code:     [{ condition: 'Browser must be launched', check: (s) => s.hasActivePage, fix: 'Call browser_launch or browser_attach first' }],
-};
-
-// ── Helper Functions ──
-
-function detectWorkflowIntent(query: string): WorkflowRule | null {
-  const matches: WorkflowRule[] = [];
-  for (const rule of WORKFLOW_RULES) {
-    for (const pattern of rule.patterns) {
-      if (pattern.test(query)) {
-        matches.push(rule);
-        break;
-      }
-    }
-  }
-  if (matches.length === 0) return null;
-  matches.sort((a, b) => b.priority - a.priority);
-  return matches[0]!;
-}
-
-function getToolInputSchema(
-  toolName: string,
-  ctx: MCPServerContext
-): Tool['inputSchema'] | undefined {
-  const canonicalName = normalizeToolName(toolName);
-
-  const builtInTool = allTools.find((tool) => tool.name === canonicalName);
-  if (builtInTool) {
-    return builtInTool.inputSchema;
-  }
-
-  const extTool = ctx.extensionToolsByName.get(canonicalName);
-  if (extTool) {
-    return extTool.tool.inputSchema;
-  }
-
-  const metaTool = ctx.metaToolsByName.get(canonicalName);
-  if (metaTool) {
-    return metaTool.inputSchema;
-  }
-
-  return undefined;
-}
-
-function getToolDescription(toolName: string, ctx: MCPServerContext): string {
-  const canonicalName = normalizeToolName(toolName);
-
-  const builtInTool = allTools.find((tool) => tool.name === canonicalName);
-  if (builtInTool?.description) {
-    return builtInTool.description.split('\n')[0] || 'No description available';
-  }
-
-  const extTool = ctx.extensionToolsByName.get(canonicalName);
-  if (extTool?.tool?.description) {
-    return extTool.tool.description.split('\n')[0] || 'No description available';
-  }
-
-  const metaTool = ctx.metaToolsByName.get(canonicalName);
-  if (metaTool?.description) {
-    return metaTool.description.split('\n')[0] || 'No description available';
-  }
-
-  return 'No description available';
-}
-
-function isActive(toolName: string, ctx: MCPServerContext): boolean {
-  const canonicalName = normalizeToolName(toolName);
-  const activeTools = new Set([
-    ...ctx.selectedTools.map((tool) => tool.name),
-    ...ctx.activatedToolNames,
-  ]);
-  return activeTools.has(canonicalName);
-}
-
-function getAvailableToolNames(ctx: MCPServerContext): Set<string> {
-  return new Set([...allTools.map((tool) => tool.name), ...ctx.extensionToolsByName.keys()]);
-}
-
-async function getRoutingState(ctx: MCPServerContext): Promise<RoutingState> {
-  let hasActivePage = false;
-  if (ctx.pageController && typeof ctx.pageController.getPage === 'function') {
-    try {
-      hasActivePage = Boolean(await ctx.pageController.getPage());
-    } catch {
-      hasActivePage = false;
-    }
-  }
-
-  let networkEnabled = false;
-  let capturedRequestCount = 0;
-  if (ctx.consoleMonitor) {
-    try {
-      if (typeof ctx.consoleMonitor.getNetworkStatus === 'function') {
-        networkEnabled = Boolean(ctx.consoleMonitor.getNetworkStatus().enabled);
-      } else if (typeof ctx.consoleMonitor.isNetworkEnabled === 'function') {
-        networkEnabled = Boolean(ctx.consoleMonitor.isNetworkEnabled());
-      }
-    } catch {
-      networkEnabled = false;
-    }
-
-    try {
-      if (typeof ctx.consoleMonitor.getNetworkRequests === 'function') {
-        const requests = ctx.consoleMonitor.getNetworkRequests({ limit: 1 });
-        if (Array.isArray(requests)) {
-          capturedRequestCount = requests.length;
-        }
-      }
-    } catch {
-      try {
-        if (typeof ctx.consoleMonitor.getNetworkRequests === 'function') {
-          const requests = ctx.consoleMonitor.getNetworkRequests();
-          if (Array.isArray(requests)) {
-            capturedRequestCount = requests.length;
-          }
-        }
-      } catch {
-        capturedRequestCount = 0;
-      }
-    }
-  }
-
-  return {
-    hasActivePage,
-    networkEnabled,
-    capturedRequestCount,
-  };
-}
-
-function buildWorkflowToolSequence(
-  workflow: WorkflowRule,
-  state: RoutingState,
-  availableToolNames: Set<string>
-): string[] {
-  const sequence: string[] = [];
-  const pushIfAvailable = (toolName: string) => {
-    if (availableToolNames.has(toolName) && !sequence.includes(toolName)) {
-      sequence.push(toolName);
-    }
-  };
-
-  if ((workflow.domain === 'browser' || workflow.domain === 'network') && !state.hasActivePage) {
-    pushIfAvailable('browser_launch');
-    pushIfAvailable('browser_attach');
-  }
-
-  if (workflow.domain === 'network') {
-    if (state.hasActivePage && !state.networkEnabled) {
-      pushIfAvailable('network_enable');
-    }
-    if (state.hasActivePage && state.networkEnabled && state.capturedRequestCount > 0) {
-      pushIfAvailable('network_get_requests');
-    }
-  }
-
-  for (const toolName of workflow.tools) {
-    pushIfAvailable(toolName);
-  }
-
-  if (workflow.domain === 'network' && state.hasActivePage && state.networkEnabled) {
-    pushIfAvailable('network_get_requests');
-  }
-
-  return sequence;
-}
-
-function isBrowserOrNetworkTask(task: string, workflow: WorkflowRule | null): boolean {
-  return (
-    workflow?.domain === 'browser' ||
-    workflow?.domain === 'network' ||
-    BROWSER_OR_NETWORK_TASK_PATTERN.test(task)
-  );
-}
-
-function isMaintenanceTask(task: string): boolean {
-  return MAINTENANCE_TASK_PATTERN.test(task);
-}
-
-function rerankResultsForContext(
-  results: ToolSearchResult[],
-  task: string,
-  workflow: WorkflowRule | null,
-  state: RoutingState
-): ToolSearchResult[] {
-  const browserOrNetworkTask = isBrowserOrNetworkTask(task, workflow);
-  const maintenanceTask = isMaintenanceTask(task);
-
-  const reranked = results.map((result) => {
-    let score = result.score;
-
-    if (browserOrNetworkTask && !maintenanceTask && result.domain === 'maintenance') {
-      score *= 0.1;
-    }
-
-    if (browserOrNetworkTask) {
-      if (!state.hasActivePage && result.name === 'browser_launch') {
-        score *= 1.4;
-      }
-      if (!state.hasActivePage && result.name === 'browser_attach') {
-        score *= 1.2;
-      }
-      if (state.hasActivePage && !state.networkEnabled && result.name === 'network_enable') {
-        score *= 1.35;
-      }
-      if (
-        state.hasActivePage &&
-        state.networkEnabled &&
-        state.capturedRequestCount > 0 &&
-        result.name === 'network_get_requests'
-      ) {
-        score *= 1.5;
-      }
-    }
-
-    return {
-      ...result,
-      score,
-    };
-  });
-
-  reranked.sort((a, b) => b.score - a.score);
-  return reranked;
-}
-
-// ── Main Router Function ──
+// ── Main Router Orchestrator ──
 
 export async function routeToolRequest(
   request: RouterRequest,
-  ctx: MCPServerContext,
-  searchEngine: ToolSearchEngine
+  ctx: import('@server/MCPServer.context').MCPServerContext,
+  searchEngine: ToolSearchEngine,
 ): Promise<RouterResponse> {
   const { task, context = {} } = request;
   const maxRecommendations = context.maxRecommendations || 5;
 
   logger.info('[ToolRouter] Routing request', { task, context });
 
+  await ensureWorkflowsLoaded(ctx);
   const workflow = detectWorkflowIntent(task);
   const activeNames = getActiveToolNames(ctx);
+  const visibleDomains = getVisibleDomainsForTier(ctx);
   const routingState = await getRoutingState(ctx);
   const availableToolNames = getAvailableToolNames(ctx);
+  const routeMatch = matchWorkflowRoute(task, ctx);
+  let presetPlannedToolNames: Set<string> | null = null;
 
-  const searchResults = searchEngine.search(task, maxRecommendations * 2, activeNames);
+  const searchResults = await searchEngine.search(
+    task,
+    maxRecommendations * 2,
+    activeNames,
+    visibleDomains,
+    getBaseTier(ctx),
+  );
 
   let finalResults: ToolSearchResult[] = [];
-  if (workflow) {
+  if (routeMatch?.workflow.route.kind === 'preset') {
+    const presetTools = buildPresetRecommendations(
+      routeMatch,
+      routingState,
+      ctx,
+      availableToolNames,
+    );
+    presetPlannedToolNames = new Set(presetTools.map((tool) => tool.name));
+    const presetNames = new Set(presetTools.map((tool) => tool.name));
+    const otherResults = searchResults.filter((result) => !presetNames.has(result.name));
+    finalResults = [...presetTools, ...otherResults];
+  } else if (routeMatch?.workflow.route.kind === 'workflow') {
+    const workflowResult = buildWorkflowRouteRecommendation(routeMatch, ctx);
+    const otherResults = searchResults.filter((result) => result.name !== workflowResult.name);
+    finalResults = [workflowResult, ...otherResults];
+  } else if (workflow) {
     const workflowSequence = buildWorkflowToolSequence(workflow, routingState, availableToolNames);
     const workflowTools = workflowSequence.map((name, index) => ({
       name,
-      domain: getToolDomain(name) ?? ctx.extensionToolsByName.get(name)?.domain ?? null,
-      shortDescription: getToolDescription(name, ctx),
+      domain: getToolDomainFromContext(name, ctx),
+      shortDescription:
+        searchResults.find((r) => r.name === name)?.shortDescription ??
+        ctx.extensionToolsByName.get(name)?.tool.description ??
+        '',
       score: workflow.priority - index * 0.01,
-      isActive: isActive(name, ctx),
+      isActive: isToolActive(name, ctx),
     }));
 
     const workflowNames = new Set(workflowSequence);
@@ -452,11 +221,13 @@ export async function routeToolRequest(
     finalResults.sort((a, b) => b.score - a.score);
   }
 
-  finalResults = finalResults.slice(0, maxRecommendations);
+  const recommendationLimit = Math.max(maxRecommendations, presetPlannedToolNames?.size ?? 0);
+  finalResults = finalResults.slice(0, recommendationLimit);
+  const routeMatchMetadata = routeMatch ? buildRouteMatchMetadata(routeMatch, ctx) : undefined;
 
   const recommendations = finalResults.map((result) => {
     const schema = getToolInputSchema(result.name, ctx);
-    const toolIsActive = isActive(result.name, ctx);
+    const toolIsActive = isToolActive(result.name, ctx);
 
     const recommendation: RouterResponse['recommendations'][0] = {
       name: result.name,
@@ -472,8 +243,7 @@ export async function routeToolRequest(
       recommendation.activationCommand = `activate_tools with names: ["${result.name}"]`;
     }
 
-    // Inject prerequisite hints (STS2 P5)
-    const prereqs = PREREQUISITE_MAP[result.name];
+    const prereqs = getEffectivePrerequisites()[result.name];
     if (prereqs && prereqs.length > 0) {
       recommendation.prerequisites = prereqs.map((p) => ({
         condition: p.condition,
@@ -486,17 +256,94 @@ export async function routeToolRequest(
   });
 
   const nextActions: RouterResponse['nextActions'] = [];
-  const inactiveTools = recommendations.filter((recommendation) => !recommendation.isActive);
+  const presetRecommendations = presetPlannedToolNames
+    ? recommendations.filter((recommendation) => presetPlannedToolNames.has(recommendation.name))
+    : [];
+  const inactiveTools = (
+    presetRecommendations.length > 0 ? presetRecommendations : recommendations
+  ).filter((recommendation) => !recommendation.isActive);
+
   const activationCandidates = (() => {
-    if (!isBrowserOrNetworkTask(task, workflow) || isMaintenanceTask(task)) {
+    if (
+      presetRecommendations.length > 0 ||
+      !isBrowserOrNetworkTask(task, workflow) ||
+      isMaintenanceTask(task)
+    ) {
       return inactiveTools;
     }
-
     const nonMaintenanceTools = inactiveTools.filter((tool) => tool.domain !== 'maintenance');
     return nonMaintenanceTools.length > 0 ? nonMaintenanceTools : inactiveTools;
   })();
 
-  if (recommendations.length > 0 && recommendations[0]?.isActive) {
+  if (routeMatchMetadata?.kind === 'preset' && presetRecommendations.length > 0) {
+    let stepNumber = 1;
+    if (activationCandidates.length > 0) {
+      nextActions.push({
+        step: stepNumber++,
+        action: 'activate',
+        toolName: activationCandidates.length === 1 ? activationCandidates[0]!.name : undefined,
+        command: `activate_tools with names: [${activationCandidates.map((tool) => `"${tool.name}"`).join(', ')}]`,
+        description: `Activate ${activationCandidates.length} preset tool${activationCandidates.length === 1 ? '' : 's'} for ${routeMatchMetadata!.name}`,
+      });
+    }
+
+    const bootstrapRecommendations = recommendations.filter(
+      (recommendation) =>
+        recommendation.name === 'browser_launch' || recommendation.name === 'browser_attach',
+    );
+    for (const bootstrap of bootstrapRecommendations) {
+      nextActions.push({
+        step: stepNumber++,
+        action: 'call',
+        toolName: bootstrap.name,
+        command: bootstrap.name,
+        exampleArgs: generateExampleArgs(bootstrap.inputSchema),
+        description: bootstrap.description,
+      });
+    }
+
+    for (const step of routeMatchMetadata!.steps) {
+      const recommendation = presetRecommendations.find((item) => item.name === step.toolName);
+      nextActions.push({
+        step: stepNumber++,
+        action: 'call',
+        toolName: step.toolName,
+        command: step.toolName,
+        exampleArgs: generateExampleArgs(
+          recommendation?.inputSchema ??
+            getToolInputSchema(step.toolName, ctx) ?? { type: 'object' },
+        ),
+        description: `${step.id}: ${step.description}`,
+      });
+    }
+  } else if (routeMatchMetadata?.kind === 'workflow') {
+    const workflowRecommendation = recommendations.find(
+      (recommendation) => recommendation.name === 'run_extension_workflow',
+    )!;
+
+    let stepNumber = 1;
+    if (!workflowRecommendation.isActive) {
+      nextActions.push({
+        step: stepNumber++,
+        action: 'activate',
+        toolName: workflowRecommendation.name,
+        command: `activate_tools with names: ["${workflowRecommendation.name}"]`,
+        description: `Activate workflow runner for ${routeMatchMetadata.name}`,
+      });
+    }
+
+    nextActions.push({
+      step: stepNumber,
+      action: 'call',
+      toolName: 'run_extension_workflow',
+      command: 'run_extension_workflow',
+      exampleArgs: {
+        ...generateExampleArgs(workflowRecommendation.inputSchema!),
+        workflowId: routeMatchMetadata.id,
+      },
+      description: `Execute routed workflow ${routeMatchMetadata.name}`,
+    });
+  } else if (recommendations.length > 0 && recommendations[0]?.isActive) {
     nextActions.push({
       step: 1,
       action: 'call',
@@ -527,70 +374,18 @@ export async function routeToolRequest(
   return {
     recommendations,
     nextActions,
-    workflowHint: workflow?.hint,
+    workflowHint: routeMatchMetadata
+      ? `${routeMatchMetadata.kind === 'preset' ? 'Preset' : 'Workflow'} ${routeMatchMetadata.name}: ${routeMatchMetadata.description}`
+      : workflow?.hint,
+    routeMatch: routeMatchMetadata,
     autoActivated: false,
   };
 }
 
-// ── Call Tool Command Builder ──
+// ── Re-exported sub-module utilities (backward compatibility) ──
 
-export function buildCallToolCommand(toolName: string, schema: Tool['inputSchema']): string {
-  return `call_tool({ name: "${toolName}", args: ${JSON.stringify(generateExampleArgs(schema))} })`;
-}
-
-// ── Example Args Generator ──
-
-export function generateExampleArgs(schema: Tool['inputSchema']): Record<string, unknown> {
-  if (!schema || schema.type !== 'object' || !schema.properties) {
-    return {};
-  }
-
-  const example: Record<string, unknown> = {};
-  const required = new Set<string>(
-    Array.isArray(schema.required) ? (schema.required as string[]) : []
-  );
-
-  for (const [key, prop] of Object.entries(schema.properties as Record<string, unknown>)) {
-    const propSchema = prop as Record<string, unknown>;
-    if (!required.has(key) && propSchema.default === undefined) {
-      continue;
-    }
-
-    if (propSchema.default !== undefined) {
-      example[key] = propSchema.default;
-    } else if (propSchema.enum && Array.isArray(propSchema.enum) && propSchema.enum.length > 0) {
-      example[key] = propSchema.enum[0];
-    } else if (propSchema.type === 'string') {
-      example[key] = `<${key}>`;
-    } else if (propSchema.type === 'number' || propSchema.type === 'integer') {
-      example[key] = 0;
-    } else if (propSchema.type === 'boolean') {
-      example[key] = false;
-    } else if (propSchema.type === 'array') {
-      example[key] = [];
-    } else if (propSchema.type === 'object') {
-      example[key] = {};
-    }
-  }
-
-  return example;
-}
-
-// ── Describe Tool Utility ──
-
-export function describeTool(
-  toolName: string,
-  ctx: MCPServerContext
-): { name: string; description: string; inputSchema: Tool['inputSchema'] } | null {
-  const canonicalName = normalizeToolName(toolName);
-  const schema = getToolInputSchema(canonicalName, ctx);
-  if (!schema) {
-    return null;
-  }
-
-  return {
-    name: canonicalName,
-    description: getToolDescription(canonicalName, ctx),
-    inputSchema: schema,
-  };
-}
+export {
+  buildCallToolCommand,
+  describeTool,
+  generateExampleArgs,
+} from '@server/ToolRouter.renderer';

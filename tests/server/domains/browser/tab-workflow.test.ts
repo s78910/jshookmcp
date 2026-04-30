@@ -1,10 +1,8 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TabWorkflowHandlers } from '@server/domains/browser/handlers/tab-workflow';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 function createPage(overrides: Record<string, unknown> = {}) {
   return {
@@ -19,7 +17,7 @@ function createPage(overrides: Record<string, unknown> = {}) {
 
 describe('TabWorkflowHandlers', () => {
   let activeDriver: 'chrome' | 'camoufox';
-  let camoufoxPage: unknown;
+  let camoufoxPage: any;
   let pageController: { getBrowser: ReturnType<typeof vi.fn> };
   let registry: Record<string, any>;
   let handlers: TabWorkflowHandlers;
@@ -60,7 +58,9 @@ describe('TabWorkflowHandlers', () => {
   });
 
   it('returns an error for unknown actions', async () => {
-    const body = parseJson(await handlers.handleTabWorkflow({ action: 'not-real' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleTabWorkflow({ action: 'not-real' }),
+    );
 
     expect(body.success).toBe(false);
     expect(body.error).toContain('Unknown action');
@@ -77,7 +77,9 @@ describe('TabWorkflowHandlers', () => {
     });
     registry.getSharedContextMap.mockReturnValueOnce({ token: 'abc' });
 
-    const body = parseJson(await handlers.handleTabWorkflow({ action: 'list' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleTabWorkflow({ action: 'list' }),
+    );
 
     expect(registry.getCurrentTabInfo).toHaveBeenCalledWith('chrome');
     expect(body.success).toBe(true);
@@ -86,7 +88,9 @@ describe('TabWorkflowHandlers', () => {
   });
 
   it('clears shared state for the clear action', async () => {
-    const body = parseJson(await handlers.handleTabWorkflow({ action: 'clear' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handleTabWorkflow({ action: 'clear' }),
+    );
 
     expect(registry.clear).toHaveBeenCalledOnce();
     expect(body.success).toBe(true);
@@ -109,12 +113,12 @@ describe('TabWorkflowHandlers', () => {
     pageController.getBrowser.mockResolvedValueOnce(browser);
     registry.bindAliasByIndex.mockReturnValueOnce('tab-2');
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'alias_bind',
         alias: 'inbox',
         index: '1',
-      })
+      }),
     );
 
     expect(browser.pages).toHaveBeenCalledOnce();
@@ -123,7 +127,7 @@ describe('TabWorkflowHandlers', () => {
       [
         { index: 0, url: 'https://a.test', title: 'A' },
         { index: 1, url: 'https://b.test', title: 'B' },
-      ]
+      ],
     );
     expect(registry.bindAliasByIndex).toHaveBeenCalledWith('inbox', 1);
     expect(body.success).toBe(true);
@@ -140,23 +144,22 @@ describe('TabWorkflowHandlers', () => {
       url: vi.fn(() => 'https://mail.test'),
       title: vi.fn(async () => 'Inbox'),
     });
-    let currentPage: any;
     const context = {
       newPage: vi.fn(async () => newPage),
       pages: vi.fn(() => [currentPage, newPage]),
     };
-    currentPage = createPage({
+    const currentPage: any = createPage({
       context: vi.fn(() => context),
     });
     camoufoxPage = currentPage;
     registry.registerPage.mockReturnValueOnce('tab-9');
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'alias_open',
         alias: 'mail',
         url: 'https://mail.test',
-      })
+      }),
     );
 
     expect(context.newPage).toHaveBeenCalledOnce();
@@ -180,12 +183,12 @@ describe('TabWorkflowHandlers', () => {
     registry.resolveAlias.mockReturnValueOnce('tab-4');
     registry.getPageById.mockReturnValueOnce(page);
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'navigate',
         alias: 'mail',
         url: 'https://next.test',
-      })
+      }),
     );
 
     expect(page.goto).toHaveBeenCalledWith('https://next.test', {
@@ -200,12 +203,12 @@ describe('TabWorkflowHandlers', () => {
     registry.resolveAlias.mockReturnValueOnce('tab-1');
     registry.getPageById.mockReturnValueOnce(page);
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'wait_for',
         alias: 'verify',
         selector: '#otp',
-      })
+      }),
     );
 
     expect(page.waitForSelector).toHaveBeenCalledWith('#otp', {
@@ -216,12 +219,12 @@ describe('TabWorkflowHandlers', () => {
   });
 
   it('stores and retrieves values in shared context', async () => {
-    let body = parseJson(
+    let body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'context_set',
         key: 'token',
         value: 'abc',
-      })
+      }),
     );
 
     expect(registry.setSharedContext).toHaveBeenCalledWith('token', 'abc');
@@ -230,11 +233,11 @@ describe('TabWorkflowHandlers', () => {
 
     registry.getSharedContext.mockReturnValueOnce({ value: 'abc', found: true });
 
-    body = parseJson(
+    body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'context_get',
         key: 'token',
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
@@ -249,13 +252,13 @@ describe('TabWorkflowHandlers', () => {
     registry.resolveAlias.mockReturnValueOnce('tab-8');
     registry.getPageById.mockReturnValueOnce(page);
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleTabWorkflow({
         action: 'transfer',
         fromAlias: 'mail',
         key: 'otp',
         expression: 'window.__otp',
-      })
+      }),
     );
 
     expect(page.evaluate).toHaveBeenCalledWith('window.__otp');

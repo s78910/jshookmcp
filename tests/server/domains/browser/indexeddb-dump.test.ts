@@ -1,13 +1,11 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { IndexedDBDumpHandlers } from '@server/domains/browser/handlers/indexeddb-dump';
 
-type EvaluateFn = (pageFunction: unknown, ...args: unknown[]) => Promise<unknown>;
-type GetActivePageFn = () => Promise<unknown>;
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
+type EvaluateFn = (pageFunction: any, ...args: any[]) => Promise<any>;
+type GetActivePageFn = () => Promise<any>;
 
 describe('IndexedDBDumpHandlers', () => {
   let page: { evaluate: Mock<EvaluateFn> };
@@ -30,7 +28,7 @@ describe('IndexedDBDumpHandlers', () => {
       },
     });
 
-    const body = parseJson(await handlers.handleIndexedDBDump({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleIndexedDBDump({}));
 
     expect(getActivePage).toHaveBeenCalledOnce();
     expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
@@ -39,6 +37,7 @@ describe('IndexedDBDumpHandlers', () => {
       maxRecords: 100,
     });
     expect(body).toEqual({
+      success: true,
       appDb: {
         users: [{ id: 1, name: 'alice' }],
       },
@@ -52,12 +51,12 @@ describe('IndexedDBDumpHandlers', () => {
       },
     });
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleIndexedDBDump({
         database: 'analyticsDb',
         store: 'events',
         maxRecords: 10,
-      })
+      }),
     );
 
     expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
@@ -71,10 +70,10 @@ describe('IndexedDBDumpHandlers', () => {
   it('returns an error payload when the dump fails', async () => {
     page.evaluate.mockRejectedValueOnce(new Error('indexeddb failed'));
 
-    const body = parseJson(
+    const body = parseJson<BrowserStatusResponse>(
       await handlers.handleIndexedDBDump({
         database: 'appDb',
-      })
+      }),
     );
 
     expect(body.success).toBe(false);

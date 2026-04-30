@@ -1,22 +1,40 @@
 import type { PageController } from '@server/domains/shared/modules';
+import type { FrameResolveOptions } from '@modules/collector/PageController';
 import { argString, argNumber, argStringArray } from '@server/domains/shared/parse-args';
+import { R } from '@server/domains/shared/ResponseBuilder';
+import type { ToolResponse } from '@server/domains/shared/ResponseBuilder';
 
 interface CamoufoxKeyboardLike {
   press(key: string): Promise<void>;
 }
 
-interface CamoufoxPageLike {
+interface CamoufoxInteractionContextLike {
   click(
     selector: string,
-    options?: { button?: 'left' | 'right' | 'middle'; clickCount?: number; delay?: number }
+    options?: { button?: 'left' | 'right' | 'middle'; clickCount?: number; delay?: number },
   ): Promise<void>;
   fill(selector: string, value: string): Promise<void>;
   hover(selector: string): Promise<void>;
   selectOption(selector: string, values: string | string[]): Promise<unknown>;
+}
+
+interface CamoufoxFrameElementLike {
+  contentFrame(): Promise<CamoufoxInteractionContextLike | null>;
+}
+
+interface CamoufoxFrameLike extends CamoufoxInteractionContextLike {
+  url(): string;
+}
+
+interface CamoufoxPageLike extends CamoufoxInteractionContextLike {
   evaluate<Arg, Result>(
     pageFunction: (arg: Arg) => Result | Promise<Result>,
-    arg: Arg
+    arg: Arg,
   ): Promise<Result>;
+  $(selector: string): Promise<CamoufoxFrameElementLike | null>;
+  waitForSelector(selector: string, options?: { timeout?: number }): Promise<unknown>;
+  frames(): CamoufoxFrameLike[];
+  mainFrame(): CamoufoxFrameLike;
   keyboard: CamoufoxKeyboardLike;
 }
 
@@ -38,7 +56,7 @@ export class PageInteractionHandlers {
 
   private parseNumberArg(
     value: unknown,
-    options: { defaultValue?: number; min?: number; max?: number; integer?: boolean } = {}
+    options: { defaultValue?: number; min?: number; max?: number; integer?: boolean } = {},
   ): number | undefined {
     let parsed: number | undefined;
 
@@ -83,321 +101,249 @@ export class PageInteractionHandlers {
     return 'left';
   }
 
-  async handlePageClick(args: Record<string, unknown>) {
-    const selector = argString(args, 'selector', '');
-    const button = this.parseMouseButton(args.button);
-    const clickCount = this.parseNumberArg(args.clickCount, {
-      defaultValue: 1,
-      min: 1,
-      max: 10,
-      integer: true,
-    });
-    const delay = this.parseNumberArg(args.delay, {
-      min: 0,
-      max: 60000,
-      integer: true,
-    });
-
-    if (!selector || typeof selector !== 'string' || selector.trim().length === 0) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: false,
-                message: 'selector parameter is required',
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+  private async getCamoufoxInteractionContext(
+    frameOptions?: FrameResolveOptions,
+  ): Promise<CamoufoxInteractionContextLike> {
+    const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
+    if (!frameOptions?.frameUrl && !frameOptions?.frameSelector) {
+      return page;
     }
+    return (await this.deps.pageController.resolveFrame(
+      page as any,
+      frameOptions,
+    )) as unknown as CamoufoxInteractionContextLike;
+  }
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      await page.click(selector, { button, clickCount, delay });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              { success: true, driver: 'camoufox', message: `Clicked: ${selector}` },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-
+  async handlePageClick(args: Record<string, unknown>): Promise<ToolResponse> {
     try {
-      await this.deps.pageController.click(selector, { button, clickCount, delay });
-    } catch (error: unknown) {
-      const msg = this.toErrorMessage(error);
-      if (
-        msg.includes('detached') ||
-        msg.includes('timed out') ||
-        msg.includes('Execution context was destroyed') ||
-        msg.includes('callFunctionOn') ||
-        msg.includes('Target closed')
-      ) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  success: true,
-                  message: `Clicked ${selector} - navigation triggered`,
-                  navigated: true,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+      const selector = argString(args, 'selector', '');
+      const button = this.parseMouseButton(args.button);
+      const clickCount = this.parseNumberArg(args.clickCount, {
+        defaultValue: 1,
+        min: 1,
+        max: 10,
+        integer: true,
+      });
+      const delay = this.parseNumberArg(args.delay, {
+        min: 0,
+        max: 60000,
+        integer: true,
+      });
+      const frameUrl = argString(args, 'frameUrl');
+      const frameSelector = argString(args, 'frameSelector');
+      const frameOptions: FrameResolveOptions | undefined =
+        frameUrl || frameSelector
+          ? { frameUrl: frameUrl || undefined, frameSelector: frameSelector || undefined }
+          : undefined;
+
+      if (!selector || typeof selector !== 'string' || selector.trim().length === 0) {
+        return R.fail('selector parameter is required').build();
       }
-      throw error;
-    }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: `Clicked: ${selector}`,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const context = await this.getCamoufoxInteractionContext(frameOptions);
+        await context.click(selector, { button, clickCount, delay });
+        return R.ok().build({
+          driver: 'camoufox',
+          message: `Clicked: ${selector}`,
+          ...(frameOptions ? { frame: frameOptions } : {}),
+        });
+      }
+
+      try {
+        if (frameOptions) {
+          await this.deps.pageController.click(
+            selector,
+            { button, clickCount, delay },
+            frameOptions,
+          );
+        } else {
+          await this.deps.pageController.click(selector, { button, clickCount, delay });
+        }
+      } catch (error: unknown) {
+        const msg = this.toErrorMessage(error);
+        if (
+          msg.includes('detached') ||
+          msg.includes('timed out') ||
+          msg.includes('Execution context was destroyed') ||
+          msg.includes('callFunctionOn') ||
+          msg.includes('Target closed')
+        ) {
+          return R.ok().build({
+            message: `Clicked ${selector} - navigation triggered`,
+            navigated: true,
+            ...(frameOptions ? { frame: frameOptions } : {}),
+          });
+        }
+        throw error;
+      }
+
+      return R.ok().build({
+        message: `Clicked: ${selector}`,
+        ...(frameOptions ? { frame: frameOptions } : {}),
+      });
+    } catch (e) {
+      return R.fail(e).build();
+    }
   }
 
-  async handlePageType(args: Record<string, unknown>) {
-    const selector = argString(args, 'selector', '');
-    const text = argString(args, 'text', '');
-    const delay = argNumber(args, 'delay');
+  async handlePageType(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const selector = argString(args, 'selector', '');
+      const text = argString(args, 'text', '');
+      const delay = argNumber(args, 'delay');
+      const frameUrl = argString(args, 'frameUrl');
+      const frameSelector = argString(args, 'frameSelector');
+      const frameOptions: FrameResolveOptions | undefined =
+        frameUrl || frameSelector
+          ? { frameUrl: frameUrl || undefined, frameSelector: frameSelector || undefined }
+          : undefined;
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      await page.fill(selector, text);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              { success: true, driver: 'camoufox', message: `Typed into ${selector}` },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const context = await this.getCamoufoxInteractionContext(frameOptions);
+        await context.fill(selector, text);
+        return R.ok().build({
+          driver: 'camoufox',
+          message: `Typed into ${selector}`,
+          ...(frameOptions ? { frame: frameOptions } : {}),
+        });
+      }
+
+      if (frameOptions) {
+        await this.deps.pageController.type(selector, text, { delay }, frameOptions);
+      } else {
+        await this.deps.pageController.type(selector, text, { delay });
+      }
+
+      return R.ok().build({
+        message: `Typed into ${selector}`,
+        ...(frameOptions ? { frame: frameOptions } : {}),
+      });
+    } catch (e) {
+      return R.fail(e).build();
     }
-
-    await this.deps.pageController.type(selector, text, { delay });
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: `Typed into ${selector}`,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
   }
 
-  async handlePageSelect(args: Record<string, unknown>) {
-    const selector = argString(args, 'selector', '');
-    const values = argStringArray(args, 'values');
+  async handlePageSelect(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const selector = argString(args, 'selector', '');
+      const values = argStringArray(args, 'values');
+      const frameUrl = argString(args, 'frameUrl');
+      const frameSelector = argString(args, 'frameSelector');
+      const frameOptions: FrameResolveOptions | undefined =
+        frameUrl || frameSelector
+          ? { frameUrl: frameUrl || undefined, frameSelector: frameSelector || undefined }
+          : undefined;
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      await page.selectOption(selector, values);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                driver: 'camoufox',
-                message: `Selected in ${selector}: ${values.join(', ')}`,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const context = await this.getCamoufoxInteractionContext(frameOptions);
+        await context.selectOption(selector, values);
+        return R.ok().build({
+          driver: 'camoufox',
+          message: `Selected in ${selector}: ${values.join(', ')}`,
+          ...(frameOptions ? { frame: frameOptions } : {}),
+        });
+      }
+
+      if (frameOptions) {
+        await this.deps.pageController.select(selector, values, frameOptions);
+      } else {
+        await this.deps.pageController.select(selector, values);
+      }
+
+      return R.ok().build({
+        message: `Selected in ${selector}: ${values.join(', ')}`,
+        ...(frameOptions ? { frame: frameOptions } : {}),
+      });
+    } catch (e) {
+      return R.fail(e).build();
     }
-
-    await this.deps.pageController.select(selector, ...values);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: `Selected in ${selector}: ${values.join(', ')}`,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
   }
 
-  async handlePageHover(args: Record<string, unknown>) {
-    const selector = argString(args, 'selector', '');
+  async handlePageHover(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const selector = argString(args, 'selector', '');
+      const frameUrl = argString(args, 'frameUrl');
+      const frameSelector = argString(args, 'frameSelector');
+      const frameOptions: FrameResolveOptions | undefined =
+        frameUrl || frameSelector
+          ? { frameUrl: frameUrl || undefined, frameSelector: frameSelector || undefined }
+          : undefined;
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      await page.hover(selector);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                driver: 'camoufox',
-                message: `Hovered: ${selector}`,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const context = await this.getCamoufoxInteractionContext(frameOptions);
+        await context.hover(selector);
+        return R.ok().build({
+          driver: 'camoufox',
+          message: `Hovered: ${selector}`,
+          ...(frameOptions ? { frame: frameOptions } : {}),
+        });
+      }
+
+      if (frameOptions) {
+        await this.deps.pageController.hover(selector, frameOptions);
+      } else {
+        await this.deps.pageController.hover(selector);
+      }
+
+      return R.ok().build({
+        message: `Hovered: ${selector}`,
+        ...(frameOptions ? { frame: frameOptions } : {}),
+      });
+    } catch (e) {
+      return R.fail(e).build();
     }
-
-    await this.deps.pageController.hover(selector);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: `Hovered: ${selector}`,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
   }
 
-  async handlePageScroll(args: Record<string, unknown>) {
-    const x = argNumber(args, 'x', 0);
-    const y = argNumber(args, 'y', 0);
+  async handlePageScroll(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const x = argNumber(args, 'x', 0);
+      const y = argNumber(args, 'y', 0);
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      await page.evaluate(
-        (position: { x?: number; y?: number }) => {
-          window.scrollTo(position.x || 0, position.y || 0);
-        },
-        { x, y }
-      );
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                driver: 'camoufox',
-                message: `Scrolled to: x=${x || 0}, y=${y || 0}`,
-              },
-              null,
-              2
-            ),
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
+        await page.evaluate(
+          (position: { x?: number; y?: number }) => {
+            window.scrollTo(position.x || 0, position.y || 0);
           },
-        ],
-      };
+          { x, y },
+        );
+        return R.ok().build({
+          driver: 'camoufox',
+          message: `Scrolled to: x=${x || 0}, y=${y || 0}`,
+        });
+      }
+
+      await this.deps.pageController.scroll({ x, y });
+
+      return R.ok().build({
+        message: `Scrolled to: x=${x || 0}, y=${y || 0}`,
+      });
+    } catch (e) {
+      return R.fail(e).build();
     }
-
-    await this.deps.pageController.scroll({ x, y });
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: `Scrolled to: x=${x || 0}, y=${y || 0}`,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
   }
 
-  async handlePagePressKey(args: Record<string, unknown>) {
-    const key = argString(args, 'key', '');
+  async handlePagePressKey(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const key = argString(args, 'key', '');
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      await page.keyboard.press(key);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                driver: 'camoufox',
-                key,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
+        await page.keyboard.press(key);
+        return R.ok().build({
+          driver: 'camoufox',
+          key,
+        });
+      }
+
+      await this.deps.pageController.pressKey(key);
+
+      return R.ok().build({
+        key,
+      });
+    } catch (e) {
+      return R.fail(e).build();
     }
-
-    await this.deps.pageController.pressKey(key);
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              key,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
   }
 }

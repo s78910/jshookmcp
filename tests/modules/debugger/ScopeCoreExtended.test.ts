@@ -106,7 +106,7 @@ describe('getScopeVariablesCore - call frame lookup', () => {
     const ctx = makePausedCtx();
 
     await expect(getScopeVariablesCore(ctx, { callFrameId: 'cf-missing' })).rejects.toThrow(
-      'Call frame not found: cf-missing'
+      'Call frame not found: cf-missing',
     );
   });
 
@@ -184,7 +184,7 @@ describe('getScopeVariablesCore - scope error handling', () => {
     ctx.cdpSession.send.mockRejectedValueOnce(new Error('Fatal scope error'));
 
     await expect(getScopeVariablesCore(ctx, { skipErrors: false })).rejects.toThrow(
-      'Fatal scope error'
+      'Fatal scope error',
     );
   });
 
@@ -308,7 +308,7 @@ describe('getScopeVariablesCore - nested object properties', () => {
     // The debug log comes from getObjectPropertiesCore's internal catch
     expect(loggerState.debug).toHaveBeenCalledWith(
       expect.stringContaining('Failed to get object properties for obj-data'),
-      expect.anything()
+      expect.anything(),
     );
   });
 
@@ -413,14 +413,14 @@ describe('getObjectPropertiesByIdCore', () => {
   it('throws when objectId is empty string', async () => {
     const ctx = { enabled: true, cdpSession: { send: vi.fn() } } as any;
     await expect(getObjectPropertiesByIdCore(ctx, '')).rejects.toThrow(
-      'objectId parameter is required'
+      'objectId parameter is required',
     );
   });
 
   it('throws when objectId is not a string', async () => {
     const ctx = { enabled: true, cdpSession: { send: vi.fn() } } as any;
     await expect(getObjectPropertiesByIdCore(ctx, 123 as any)).rejects.toThrow(
-      'objectId parameter is required'
+      'objectId parameter is required',
     );
   });
 
@@ -465,7 +465,7 @@ describe('getObjectPropertiesByIdCore', () => {
     const ctx = { enabled: true, cdpSession: { send } } as any;
 
     await expect(getObjectPropertiesByIdCore(ctx, 'obj-x')).rejects.toThrow(
-      'Object handle is expired or invalid'
+      'Object handle is expired or invalid',
     );
   });
 
@@ -476,7 +476,7 @@ describe('getObjectPropertiesByIdCore', () => {
     const ctx = { enabled: true, cdpSession: { send } } as any;
 
     await expect(getObjectPropertiesByIdCore(ctx, 'obj-y')).rejects.toThrow(
-      'Object handle is expired or invalid'
+      'Object handle is expired or invalid',
     );
   });
 
@@ -558,7 +558,7 @@ describe('getObjectPropertiesCore', () => {
     expect(result).toEqual([]);
     expect(loggerState.debug).toHaveBeenCalledWith(
       expect.stringContaining('Failed to get object properties'),
-      expect.anything()
+      expect.anything(),
     );
   });
 

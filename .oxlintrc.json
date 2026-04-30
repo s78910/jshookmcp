@@ -1,0 +1,17 @@
+{
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "off",
+    "nursery": "off"
+  },
+  "rules": {
+    "no-unused-vars": "error",
+    "prefer-const": "error",
+    "eqeqeq": "error",
+    "no-constant-condition": "error",
+    "unicorn/require-post-message-target-origin": "off"
+  },
+  "plugins": ["unicorn", "import", "typescript"],
+  "ignorePatterns": ["dist/**", "node_modules/**"]
+}

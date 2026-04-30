@@ -99,7 +99,7 @@ describe('ScriptManager', () => {
       if (method === 'Debugger.getScriptSource') {
         return new Promise((resolve) => {
           pendingResolvers.push(() =>
-            resolve({ scriptSource: `const id = "${params?.scriptId}";` })
+            resolve({ scriptSource: `const id = "${params?.scriptId}";` }),
           );
         });
       }
@@ -125,7 +125,7 @@ describe('ScriptManager', () => {
     await Promise.resolve();
 
     expect(
-      cdp.send.mock.calls.filter(([method]) => method === 'Debugger.getScriptSource')
+      cdp.send.mock.calls.filter(([method]) => method === 'Debugger.getScriptSource'),
     ).toHaveLength(3);
 
     pendingResolvers.splice(0).forEach((resolve) => resolve());

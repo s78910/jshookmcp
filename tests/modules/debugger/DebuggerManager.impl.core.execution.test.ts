@@ -59,7 +59,7 @@ describe('DebuggerManager execution core helpers', () => {
 
   it('reports pause state and evaluates expressions on a paused call frame', async () => {
     const send = vi.fn(async (method: string) =>
-      method === 'Debugger.evaluateOnCallFrame' ? { result: { value: 42 } } : {}
+      method === 'Debugger.evaluateOnCallFrame' ? { result: { value: 42 } } : {},
     );
     const pausedState = {
       reason: 'other',
@@ -81,7 +81,7 @@ describe('DebuggerManager execution core helpers', () => {
       evaluateOnCallFrameCore(ctx, {
         callFrameId: 'cf-1',
         expression: '21 * 2',
-      })
+      }),
     ).resolves.toEqual({ value: 42 });
   });
 
@@ -103,7 +103,61 @@ describe('DebuggerManager execution core helpers', () => {
       evaluateOnCallFrameCore(ctx, {
         callFrameId: 'cf-1',
         expression: 'x',
-      })
+      }),
     ).rejects.toBeInstanceOf(PrerequisiteError);
+  });
+
+  it('gracefully ignores resume errors that indicate the debugger is not paused', async () => {
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Debugger.resume') {
+        throw new Error('not paused');
+      }
+      return {};
+    });
+    const ctx: any = {
+      enabled: true,
+      cdpSession: { send },
+      pauseOnExceptionsState: 'none',
+      pausedState: null,
+      pausedResolvers: [],
+    };
+
+    await expect(resumeCore(ctx)).resolves.toBeUndefined();
+    expect(send).toHaveBeenCalledWith('Debugger.resume');
+    expect(loggerState.warn).toHaveBeenCalled();
+  });
+
+  it('resolves when a paused event arrives and times out when it does not', async () => {
+    const ctx: any = {
+      enabled: true,
+      cdpSession: { send: vi.fn(async () => ({})) },
+      pauseOnExceptionsState: 'none',
+      pausedState: null,
+      pausedResolvers: [],
+    };
+
+    const waiting = waitForPausedCore(ctx, 20);
+    expect(ctx.pausedResolvers).toHaveLength(1);
+
+    const pausedState = {
+      reason: 'other',
+      callFrames: [{ callFrameId: 'cf-2' }],
+      timestamp: 2,
+    };
+    ctx.pausedResolvers[0](pausedState);
+
+    await expect(waiting).resolves.toBe(pausedState);
+
+    const timeoutCtx: any = {
+      enabled: true,
+      cdpSession: { send: vi.fn(async () => ({})) },
+      pauseOnExceptionsState: 'none',
+      pausedState: null,
+      pausedResolvers: [],
+    };
+
+    await expect(waitForPausedCore(timeoutCtx, 1)).rejects.toThrow(
+      'Timeout waiting for paused event',
+    );
   });
 });

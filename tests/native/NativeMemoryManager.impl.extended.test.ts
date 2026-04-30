@@ -1,6 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const state = vi.hoisted(() => ({
+  // Platform provider mock
+  mockProvider: {
+    platform: 'win32' as const,
+    openProcess: vi.fn(),
+    closeProcess: vi.fn(),
+    readMemory: vi.fn(),
+    writeMemory: vi.fn(),
+    queryRegion: vi.fn(),
+    changeProtection: vi.fn(),
+    allocateMemory: vi.fn(),
+    freeMemory: vi.fn(),
+    enumerateModules: vi.fn(),
+    checkAvailability: vi.fn(),
+  },
+  // Win32-only APIs (for injection/debug tests)
   PAGE: {
     NOACCESS: 0x01,
     READONLY: 0x02,
@@ -16,29 +31,15 @@ const state = vi.hoisted(() => ({
     RESERVE: 0x2000,
     FREE: 0x10000,
   },
-  MEM_TYPE: {
-    IMAGE: 0x1000000,
-    MAPPED: 0x40000,
-    PRIVATE: 0x20000,
-  },
   exec: vi.fn(),
   execAsync: vi.fn(),
   openProcessForMemory: vi.fn(),
   CloseHandle: vi.fn(),
-  ReadProcessMemory: vi.fn(),
   WriteProcessMemory: vi.fn(),
-  VirtualQueryEx: vi.fn(),
-  VirtualProtectEx: vi.fn(),
   VirtualAllocEx: vi.fn(),
+  VirtualProtectEx: vi.fn(),
   CreateRemoteThread: vi.fn(),
-  GetModuleHandle: vi.fn(),
-  GetProcAddress: vi.fn(),
-  NtQueryInformationProcess: vi.fn(),
-  EnumProcessModules: vi.fn(),
-  GetModuleBaseName: vi.fn(),
-  GetModuleInformation: vi.fn(),
   checkNativeMemoryAvailability: vi.fn(),
-  findPatternInBuffer: vi.fn(),
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -51,8 +52,10 @@ vi.mock('node:child_process', () => ({
   exec: state.exec,
 }));
 
+import * as util from 'node:util';
+
 vi.mock('node:util', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:util')>();
+  const actual = await importOriginal<typeof util>();
   return {
     ...actual,
     promisify: vi.fn(() => state.execAsync),
@@ -63,24 +66,21 @@ vi.mock('@utils/logger', () => ({
   logger: state.logger,
 }));
 
+// Mock the platform factory to return our mock provider
+vi.mock('@src/native/platform/factory.js', () => ({
+  createPlatformProvider: vi.fn(() => state.mockProvider),
+}));
+
+// Mock Win32API for Win32-only methods (injection) that use dynamic import
 vi.mock('@native/Win32API', () => ({
   PAGE: state.PAGE,
   MEM: state.MEM,
-  MEM_TYPE: state.MEM_TYPE,
   openProcessForMemory: state.openProcessForMemory,
   CloseHandle: state.CloseHandle,
-  ReadProcessMemory: state.ReadProcessMemory,
   WriteProcessMemory: state.WriteProcessMemory,
-  VirtualQueryEx: state.VirtualQueryEx,
-  VirtualProtectEx: state.VirtualProtectEx,
   VirtualAllocEx: state.VirtualAllocEx,
+  VirtualProtectEx: state.VirtualProtectEx,
   CreateRemoteThread: state.CreateRemoteThread,
-  GetModuleHandle: state.GetModuleHandle,
-  GetProcAddress: state.GetProcAddress,
-  NtQueryInformationProcess: state.NtQueryInformationProcess,
-  EnumProcessModules: state.EnumProcessModules,
-  GetModuleBaseName: state.GetModuleBaseName,
-  GetModuleInformation: state.GetModuleInformation,
 }));
 
 vi.mock('@native/NativeMemoryManager.availability', () => ({
@@ -100,7 +100,7 @@ describe('scanRegionInChunks', () => {
       { baseAddress: 0x1000n, regionSize: 1024 },
       [],
       [],
-      readChunk
+      readChunk,
     );
     expect(result).toEqual([]);
     expect(readChunk).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe('scanRegionInChunks', () => {
       { baseAddress: 0x1000n, regionSize: 2 },
       [0xaa, 0xbb, 0xcc],
       [1, 1, 1],
-      readChunk
+      readChunk,
     );
     expect(result).toEqual([]);
   });
@@ -124,7 +124,7 @@ describe('scanRegionInChunks', () => {
       [0xaa],
       [1],
       readChunk,
-      0
+      0,
     );
     expect(result).toEqual([]);
   });
@@ -138,7 +138,7 @@ describe('scanRegionInChunks', () => {
       [0xaa, 0xbb],
       [1, 1],
       readChunk,
-      4096 // chunk larger than region
+      4096, // chunk larger than region
     );
 
     expect(result).toEqual([0x1001n]);
@@ -157,7 +157,7 @@ describe('scanRegionInChunks', () => {
       [0xcc, 0xdd],
       [1, 1],
       readChunk,
-      3
+      3,
     );
 
     expect(result).toEqual([0x2002n]);
@@ -173,7 +173,7 @@ describe('scanRegionInChunks', () => {
       [0xaa, 0xbb],
       [1, 1],
       readChunk,
-      4096
+      4096,
     );
 
     expect(result).toEqual([0x3000n, 0x3003n]);
@@ -189,24 +189,45 @@ describe('scanRegionInChunks', () => {
       [0xaa, 0x00, 0xcc],
       [1, 0, 1],
       readChunk,
-      4096
+      4096,
     );
 
     expect(result).toEqual([0x4000n]);
+  });
+
+  it('handles single-byte patterns without carry-over', () => {
+    const readChunk = vi.fn().mockReturnValue(Buffer.from([0xaa]));
+
+    const result = scanRegionInChunks(
+      { baseAddress: 0x5000n, regionSize: 3 },
+      [0xaa],
+      [1],
+      readChunk,
+      1,
+    );
+
+    expect(result).toEqual([0x5000n, 0x5001n, 0x5002n]);
+    expect(readChunk).toHaveBeenCalledTimes(3);
   });
 });
 
 describe('NativeMemoryManager extended', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Setup platform provider mock defaults
+    state.mockProvider.openProcess.mockReturnValue({ pid: 100, writeAccess: false });
+    state.mockProvider.closeProcess.mockReturnValue(undefined);
+    state.mockProvider.readMemory.mockReturnValue({ data: Buffer.alloc(0), bytesRead: 0 });
+    state.mockProvider.writeMemory.mockReturnValue({ bytesWritten: 0 });
+    state.checkNativeMemoryAvailability.mockResolvedValue({ available: true });
+    // Win32-only mocks
     state.openProcessForMemory.mockReturnValue(9999n);
     state.CloseHandle.mockReturnValue(true);
-    state.checkNativeMemoryAvailability.mockResolvedValue({ available: true });
   });
 
   describe('writeMemory', () => {
-    it('returns error when openProcessForMemory throws', async () => {
-      state.openProcessForMemory.mockImplementation(() => {
+    it('returns error when provider.openProcess throws', async () => {
+      state.mockProvider.openProcess.mockImplementation(() => {
         throw new Error('access denied');
       });
 
@@ -219,8 +240,8 @@ describe('NativeMemoryManager extended', () => {
   });
 
   describe('enumerateRegions', () => {
-    it('returns error when openProcessForMemory throws', async () => {
-      state.openProcessForMemory.mockImplementation(() => {
+    it('returns error when provider.openProcess throws', async () => {
+      state.mockProvider.openProcess.mockImplementation(() => {
         throw new Error('no access');
       });
 
@@ -234,19 +255,11 @@ describe('NativeMemoryManager extended', () => {
 
   describe('enumerateModules', () => {
     it('returns modules with name and base address', async () => {
-      state.EnumProcessModules.mockReturnValue({
-        success: true,
-        modules: [0x10000n, 0x20000n],
-        count: 2,
-      });
-      state.GetModuleBaseName.mockReturnValueOnce('kernel32.dll').mockReturnValueOnce('ntdll.dll');
-      state.GetModuleInformation.mockReturnValueOnce({
-        success: true,
-        info: { lpBaseOfDll: 0x10000n, SizeOfImage: 4096, EntryPoint: 0x10100n },
-      }).mockReturnValueOnce({
-        success: true,
-        info: { lpBaseOfDll: 0x20000n, SizeOfImage: 8192, EntryPoint: 0x20100n },
-      });
+      state.mockProvider.openProcess.mockReturnValue({ pid: 50, writeAccess: false });
+      state.mockProvider.enumerateModules.mockReturnValue([
+        { name: 'kernel32.dll', baseAddress: 0x10000n, size: 4096 },
+        { name: 'ntdll.dll', baseAddress: 0x20000n, size: 8192 },
+      ]);
 
       const manager = new NativeMemoryManager();
       const result = await manager.enumerateModules(50);
@@ -265,46 +278,45 @@ describe('NativeMemoryManager extended', () => {
       });
     });
 
-    it('returns failure when EnumProcessModules fails', async () => {
-      state.EnumProcessModules.mockReturnValue({
-        success: false,
-        modules: [],
-        count: 0,
+    it('returns failure when provider.enumerateModules throws', async () => {
+      state.mockProvider.openProcess.mockReturnValue({ pid: 50, writeAccess: false });
+      state.mockProvider.enumerateModules.mockImplementation(() => {
+        throw new Error('enumeration failed');
       });
 
       const manager = new NativeMemoryManager();
       const result = await manager.enumerateModules(50);
 
       expect(result.success).toBe(false);
-      expect(result.error).toBe('EnumProcessModules failed');
+      expect(result.error).toBe('enumeration failed');
     });
 
-    it('skips modules where GetModuleInformation fails', async () => {
-      state.EnumProcessModules.mockReturnValue({
-        success: true,
-        modules: [0x10000n, 0x20000n],
-        count: 2,
-      });
-      state.GetModuleBaseName.mockReturnValue('test.dll');
-      state.GetModuleInformation.mockReturnValueOnce({
-        success: false,
-        info: {},
-      }).mockReturnValueOnce({
-        success: true,
-        info: { lpBaseOfDll: 0x20000n, SizeOfImage: 2048, EntryPoint: 0n },
-      });
+    it('returns empty array when no modules loaded', async () => {
+      state.mockProvider.openProcess.mockReturnValue({ pid: 50, writeAccess: false });
+      state.mockProvider.enumerateModules.mockReturnValue([]);
 
       const manager = new NativeMemoryManager();
       const result = await manager.enumerateModules(50);
-      const onlyModule = result.modules?.[0];
 
-      expect(result.modules).toHaveLength(1);
-      expect(onlyModule?.baseAddress).toBe('0x20000');
+      expect(result.success).toBe(true);
+      expect(result.modules).toHaveLength(0);
     });
   });
 
   describe('injectShellcode', () => {
-    it('injects hex-encoded shellcode successfully', async () => {
+    it('returns platform error on non-Windows', async () => {
+      if (process.platform === 'win32') return; // skip on Windows
+
+      const manager = new NativeMemoryManager();
+      const result = await manager.injectShellcode(200, 'CC DD');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Shellcode injection is only supported on Windows');
+    });
+
+    it('injects hex-encoded shellcode successfully (Win32 only)', async () => {
+      if (process.platform !== 'win32') return;
+
       state.VirtualAllocEx.mockReturnValue(0x8000n);
       state.WriteProcessMemory.mockReturnValue(2);
       state.VirtualProtectEx.mockReturnValue({ success: true, oldProtect: 4 });
@@ -317,7 +329,9 @@ describe('NativeMemoryManager extended', () => {
       expect(result.remoteThreadId).toBe(99);
     });
 
-    it('injects base64-encoded shellcode', async () => {
+    it('injects base64-encoded shellcode (Win32 only)', async () => {
+      if (process.platform !== 'win32') return;
+
       state.VirtualAllocEx.mockReturnValue(0x9000n);
       state.WriteProcessMemory.mockReturnValue(3);
       state.VirtualProtectEx.mockReturnValue({ success: true, oldProtect: 4 });
@@ -330,7 +344,9 @@ describe('NativeMemoryManager extended', () => {
       expect(result.remoteThreadId).toBe(88);
     });
 
-    it('returns failure when VirtualAllocEx returns null', async () => {
+    it('returns failure when VirtualAllocEx returns null (Win32 only)', async () => {
+      if (process.platform !== 'win32') return;
+
       state.VirtualAllocEx.mockReturnValue(0n);
 
       const manager = new NativeMemoryManager();
@@ -340,7 +356,9 @@ describe('NativeMemoryManager extended', () => {
       expect(result.error).toContain('allocate remote memory');
     });
 
-    it('returns failure when VirtualProtectEx fails', async () => {
+    it('returns failure when VirtualProtectEx fails (Win32 only)', async () => {
+      if (process.platform !== 'win32') return;
+
       state.VirtualAllocEx.mockReturnValue(0x8000n);
       state.WriteProcessMemory.mockReturnValue(2);
       state.VirtualProtectEx.mockReturnValue({ success: false, oldProtect: 0 });
@@ -352,7 +370,9 @@ describe('NativeMemoryManager extended', () => {
       expect(result.error).toContain('memory protection');
     });
 
-    it('returns failure when CreateRemoteThread returns null handle', async () => {
+    it('returns failure when CreateRemoteThread returns null handle (Win32 only)', async () => {
+      if (process.platform !== 'win32') return;
+
       state.VirtualAllocEx.mockReturnValue(0x8000n);
       state.WriteProcessMemory.mockReturnValue(2);
       state.VirtualProtectEx.mockReturnValue({ success: true, oldProtect: 4 });
@@ -368,17 +388,16 @@ describe('NativeMemoryManager extended', () => {
 
   describe('checkMemoryProtection', () => {
     it('returns protection details on success', async () => {
-      state.VirtualQueryEx.mockReturnValue({
-        success: true,
-        info: {
-          BaseAddress: 0x1000n,
-          AllocationBase: 0x1000n,
-          AllocationProtect: state.PAGE.READWRITE,
-          RegionSize: 0x2000n,
-          State: state.MEM.COMMIT,
-          Protect: state.PAGE.EXECUTE_READ,
-          Type: state.MEM_TYPE.IMAGE,
-        },
+      state.mockProvider.openProcess.mockReturnValue({ pid: 42, writeAccess: false });
+      state.mockProvider.queryRegion.mockReturnValue({
+        baseAddress: 0x1000n,
+        size: 8192,
+        protection: 0x05, // Read | Execute
+        state: 'committed',
+        type: 'image',
+        isReadable: true,
+        isWritable: false,
+        isExecutable: true,
       });
 
       const manager = new NativeMemoryManager();
@@ -392,8 +411,71 @@ describe('NativeMemoryManager extended', () => {
       expect(result.regionSize).toBe(8192);
     });
 
+    it('formats additional protection combinations', async () => {
+      state.mockProvider.openProcess.mockReturnValue({ pid: 42, writeAccess: false });
+      state.mockProvider.queryRegion
+        .mockReturnValueOnce({
+          baseAddress: 0x2000n,
+          size: 4096,
+          protection: 0,
+          state: 'committed',
+          type: 'private',
+          isReadable: false,
+          isWritable: false,
+          isExecutable: false,
+        })
+        .mockReturnValueOnce({
+          baseAddress: 0x3000n,
+          size: 4096,
+          protection: 0x01,
+          state: 'committed',
+          type: 'private',
+          isReadable: true,
+          isWritable: false,
+          isExecutable: false,
+        })
+        .mockReturnValueOnce({
+          baseAddress: 0x4000n,
+          size: 4096,
+          protection: 0x04,
+          state: 'committed',
+          type: 'private',
+          isReadable: false,
+          isWritable: false,
+          isExecutable: true,
+        })
+        .mockReturnValueOnce({
+          baseAddress: 0x5000n,
+          size: 4096,
+          protection: 0x07,
+          state: 'committed',
+          type: 'private',
+          isReadable: true,
+          isWritable: true,
+          isExecutable: true,
+        });
+
+      const manager = new NativeMemoryManager();
+      await expect(manager.checkMemoryProtection(42, '0x2000')).resolves.toMatchObject({
+        success: true,
+        protection: 'NOACCESS',
+      });
+      await expect(manager.checkMemoryProtection(42, '0x3000')).resolves.toMatchObject({
+        success: true,
+        protection: 'R',
+      });
+      await expect(manager.checkMemoryProtection(42, '0x4000')).resolves.toMatchObject({
+        success: true,
+        protection: 'X',
+      });
+      await expect(manager.checkMemoryProtection(42, '0x5000')).resolves.toMatchObject({
+        success: true,
+        protection: 'RWX',
+      });
+    });
+
     it('returns error when the outer openProcess throws', async () => {
-      state.openProcessForMemory.mockImplementation(() => {
+      state.mockProvider.openProcess.mockImplementation(() => {
         throw new Error('permission denied');
       });
 
@@ -402,6 +484,69 @@ describe('NativeMemoryManager extended', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('permission denied');
+    });
+  });
+
+  describe('scanMemory', () => {
+    it('returns invalid pattern when parsing produces no bytes', async () => {
+      const manager = new NativeMemoryManager();
+      const result = await manager.scanMemory(100, 'ZZ', 'hex');
+
+      expect(result).toEqual({
+        success: false,
+        addresses: [],
+        error: 'Invalid pattern',
+      });
+    });
+
+    it('scans readable regions and formats found addresses', async () => {
+      state.mockProvider.openProcess.mockReturnValue({ pid: 100, writeAccess: false });
+      state.mockProvider.queryRegion.mockImplementation((_handle, address) => {
+        if (address === 0n) {
+          return {
+            baseAddress: 0x1000n,
+            size: 4,
+            protection: state.PAGE.READONLY,
+            state: 'committed',
+            type: 'private',
+            isReadable: false,
+            isWritable: false,
+            isExecutable: false,
+          };
+        }
+
+        if (address === 0x1004n) {
+          return {
+            baseAddress: 0x2000n,
+            size: 6,
+            protection: state.PAGE.READWRITE,
+            state: 'committed',
+            type: 'private',
+            isReadable: true,
+            isWritable: true,
+            isExecutable: false,
+          };
+        }
+
+        return null;
+      });
+      state.mockProvider.readMemory.mockReturnValue({
+        data: Buffer.from([0x11, 0xaa, 0xbb, 0x22, 0x33, 0x44]),
+        bytesRead: 6,
+      });
+
+      const manager = new NativeMemoryManager();
+      const result = await manager.scanMemory(100, 'AA BB', 'hex');
+
+      expect(result.success).toBe(true);
+      expect(result.addresses).toEqual(['0x2001']);
+      expect(result.stats).toEqual({
+        patternLength: 2,
+        resultsFound: 1,
+      });
+      expect(state.mockProvider.readMemory).toHaveBeenCalledTimes(1);
+      expect(state.mockProvider.queryRegion).toHaveBeenCalledTimes(3);
+      expect(state.mockProvider.closeProcess).toHaveBeenCalled();
     });
   });
 });

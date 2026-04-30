@@ -1,4 +1,5 @@
 import type { PageController } from '@server/domains/shared/modules';
+import type { FrameResolveOptions } from '@modules/collector/PageController';
 import type { DetailedDataManager } from '@utils/DetailedDataManager';
 import { resolveScreenshotOutputPath } from '@utils/outputPaths';
 import {
@@ -8,17 +9,27 @@ import {
   argObject,
   argStringArray,
 } from '@server/domains/shared/parse-args';
+import { applyEvaluationPostFilters } from '@server/domains/browser/handlers/evaluation-utils';
+import { R } from '@server/domains/shared/ResponseBuilder';
+import type { ToolResponse } from '@server/domains/shared/ResponseBuilder';
 
 interface CamoufoxElementLike {
   screenshot(options: { path?: string; type?: 'png' | 'jpeg'; quality?: number }): Promise<Buffer>;
 }
 
-interface CamoufoxPageLike {
+interface CamoufoxEvaluateContextLike {
   evaluate<Result>(pageFunction: () => Result | Promise<Result>): Promise<Result>;
   evaluate<Arg, Result>(
     pageFunction: (arg: Arg) => Result | Promise<Result>,
-    arg: Arg
+    arg: Arg,
   ): Promise<Result>;
+}
+
+interface CamoufoxFrameLike extends CamoufoxEvaluateContextLike {
+  url(): string;
+}
+
+interface CamoufoxPageLike extends CamoufoxEvaluateContextLike {
   $(selector: string): Promise<CamoufoxElementLike | null>;
   screenshot(options: {
     path?: string;
@@ -27,6 +38,8 @@ interface CamoufoxPageLike {
     fullPage?: boolean;
   }): Promise<Buffer>;
   waitForSelector(selector: string, options?: { timeout?: number }): Promise<unknown>;
+  frames(): CamoufoxFrameLike[];
+  mainFrame(): CamoufoxFrameLike;
 }
 
 interface PageEvaluationHandlersDeps {
@@ -36,255 +49,170 @@ interface PageEvaluationHandlersDeps {
   getCamoufoxPage: () => Promise<unknown>;
 }
 
-/** Recursively remove keys listed in `fields` from any nested object/array. */
-function filterFields(value: unknown, fields: Set<string>): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => filterFields(item, fields));
-  }
-  if (value !== null && typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      if (!fields.has(k)) {
-        out[k] = filterFields(v, fields);
-      }
-    }
-    return out;
-  }
-  return value;
-}
-
-/**
- * Recursively replace base64 payloads with a short placeholder.
- * Catches:  data:[mime];base64,<payload>  and  bare strings >500 chars of [A-Za-z0-9+/=]
- */
-function stripBase64Values(value: unknown): unknown {
-  if (typeof value === 'string') {
-    if (/^data:[a-z+-]+\/[a-z+-]+;base64,/i.test(value)) {
-      return `[base64 ~${Math.round(value.length / 1024)}KB stripped]`;
-    }
-    if (value.length > 500 && /^[A-Za-z0-9+/=\r\n]+$/.test(value.replace(/\s/g, ''))) {
-      return `[base64 ~${value.length}chars stripped]`;
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => stripBase64Values(item));
-  }
-  if (value !== null && typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) {
-      out[k] = stripBase64Values(v);
-    }
-    return out;
-  }
-  return value;
-}
-
 export class PageEvaluationHandlers {
   constructor(private deps: PageEvaluationHandlersDeps) {}
 
-  async handlePageEvaluate(args: Record<string, unknown>) {
-    const code = argString(args, 'script', '') || argString(args, 'code', '');
-    const autoSummarize = argBool(args, 'autoSummarize', true);
-    const maxSize = argNumber(args, 'maxSize', 51200);
-    const fieldFilterArg = argStringArray(args, 'fieldFilter');
-    const doStripBase64 = argBool(args, 'stripBase64', false);
-
-    const applyPostFilters = (raw: unknown): unknown => {
-      let out = raw;
-      if (fieldFilterArg && fieldFilterArg.length > 0) {
-        out = filterFields(out, new Set(fieldFilterArg));
-      }
-      if (doStripBase64) {
-        out = stripBase64Values(out);
-      }
-      return out;
-    };
-
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      const evaluateExpression = new Function(`return (${code})`) as () => unknown;
-      const result = await page.evaluate(evaluateExpression);
-      const processedResult = applyPostFilters(
-        autoSummarize ? this.deps.detailedDataManager.smartHandle(result, maxSize) : result
-      );
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              { success: true, driver: 'camoufox', result: processedResult },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+  private async getCamoufoxEvaluationContext(
+    frameOptions?: FrameResolveOptions,
+  ): Promise<CamoufoxEvaluateContextLike> {
+    const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
+    if (!frameOptions?.frameUrl && !frameOptions?.frameSelector) {
+      return page;
     }
-
-    const result = await this.deps.pageController.evaluate(code);
-
-    const processedResult = applyPostFilters(
-      autoSummarize ? this.deps.detailedDataManager.smartHandle(result, maxSize) : result
-    );
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              result: processedResult,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
+    return (await this.deps.pageController.resolveFrame(
+      page as any,
+      frameOptions,
+    )) as unknown as CamoufoxEvaluateContextLike;
   }
 
-  async handlePageScreenshot(args: Record<string, unknown>) {
-    const requestedPath = argString(args, 'path');
-    const type = argString(args, 'type', 'png') as 'png' | 'jpeg';
-    const quality = argNumber(args, 'quality');
-    const fullPage = argBool(args, 'fullPage', false);
-    const clipArg = argObject(args, 'clip') as
-      | { x: number; y: number; width: number; height: number }
-      | undefined;
+  async handlePageEvaluate(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const code = argString(args, 'script', '') || argString(args, 'code', '');
+      const autoSummarize = argBool(args, 'autoSummarize', true);
+      const maxSize = argNumber(args, 'maxSize', 51200);
+      const fieldFilterArg = argStringArray(args, 'fieldFilter');
+      const doStripBase64 = argBool(args, 'stripBase64', false);
+      const frameUrl = argString(args, 'frameUrl');
+      const frameSelector = argString(args, 'frameSelector');
 
-    // Normalise selector: string | string[] | undefined
-    const rawSelector = args.selector;
-    const selectors: string[] = [];
-    if (Array.isArray(rawSelector)) {
-      for (const s of rawSelector) {
-        const trimmed = typeof s === 'string' ? s.trim() : '';
+      const frameOptions: FrameResolveOptions | undefined =
+        frameUrl || frameSelector
+          ? { frameUrl: frameUrl || undefined, frameSelector: frameSelector || undefined }
+          : undefined;
+
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const context = await this.getCamoufoxEvaluationContext(frameOptions);
+        const evaluateExpression = new Function(`return (${code})`) as () => unknown;
+        const result = await context.evaluate(evaluateExpression);
+        const processedResult = applyEvaluationPostFilters(result, this.deps.detailedDataManager, {
+          autoSummarize,
+          maxSize,
+          fieldFilter: fieldFilterArg ?? undefined,
+          stripBase64: doStripBase64,
+        });
+        return R.ok().build({
+          driver: 'camoufox',
+          ...(frameOptions ? { frame: frameOptions } : {}),
+          result: processedResult,
+        });
+      }
+
+      const result = frameOptions
+        ? await this.deps.pageController.evaluate(code, frameOptions)
+        : await this.deps.pageController.evaluate(code);
+
+      const processedResult = applyEvaluationPostFilters(result, this.deps.detailedDataManager, {
+        autoSummarize,
+        maxSize,
+        fieldFilter: fieldFilterArg ?? undefined,
+        stripBase64: doStripBase64,
+      });
+
+      return R.ok().build({
+        ...(frameOptions ? { frame: frameOptions } : {}),
+        result: processedResult,
+      });
+    } catch (e) {
+      return R.fail(e).build();
+    }
+  }
+
+  async handlePageScreenshot(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const requestedPath = argString(args, 'path');
+      const type = argString(args, 'type', 'png') as 'png' | 'jpeg';
+      const quality = argNumber(args, 'quality');
+      const fullPage = argBool(args, 'fullPage', false);
+      const clipArg = argObject(args, 'clip') as
+        | { x: number; y: number; width: number; height: number }
+        | undefined;
+
+      // Normalise selector: string | string[] | undefined
+      const rawSelector = args.selector;
+      const selectors: string[] = [];
+      if (Array.isArray(rawSelector)) {
+        for (const s of rawSelector) {
+          const trimmed = typeof s === 'string' ? s.trim() : '';
+          if (trimmed.length > 0 && trimmed.toLowerCase() !== 'all') selectors.push(trimmed);
+        }
+      } else if (typeof rawSelector === 'string') {
+        const trimmed = rawSelector.trim();
         if (trimmed.length > 0 && trimmed.toLowerCase() !== 'all') selectors.push(trimmed);
       }
-    } else if (typeof rawSelector === 'string') {
-      const trimmed = rawSelector.trim();
-      if (trimmed.length > 0 && trimmed.toLowerCase() !== 'all') selectors.push(trimmed);
-    }
 
-    // ── Batch mode: multiple selectors ──
-    if (selectors.length > 1) {
-      return this._screenshotBatch(selectors, requestedPath, type, quality);
-    }
+      // ── Batch mode: multiple selectors ──
+      if (selectors.length > 1) {
+        return this._screenshotBatch(selectors, requestedPath, type, quality);
+      }
 
-    // ── Single-selector / clip / full-page ──
-    const selector = selectors[0] ?? '';
+      // ── Single-selector / clip / full-page ──
+      const selector = selectors[0] ?? '';
 
-    const { absolutePath, displayPath, pathRewritten } = await resolveScreenshotOutputPath({
-      requestedPath,
-      type,
-      fallbackName: selector ? 'element' : clipArg ? 'region' : 'page',
-      fallbackDir: 'screenshots/manual',
-    });
+      const { absolutePath, displayPath, pathRewritten } = await resolveScreenshotOutputPath({
+        requestedPath,
+        type,
+        fallbackName: selector ? 'element' : clipArg ? 'region' : 'page',
+        fallbackDir: 'screenshots/manual',
+      });
 
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-      let buffer: Buffer | undefined;
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
+        let buffer: Buffer | undefined;
+        if (selector) {
+          const element = await page.$(selector);
+          if (!element) {
+            return R.fail(`Element not found: ${selector}`).build();
+          }
+          buffer = await element.screenshot({ path: absolutePath, type, quality });
+        } else {
+          // Camoufox page.screenshot doesn't expose clip natively; pass what we can
+          buffer = await page.screenshot({
+            path: absolutePath,
+            type,
+            quality,
+            fullPage: clipArg ? false : fullPage,
+          });
+        }
+        return R.ok().build({
+          driver: 'camoufox',
+          selector: selector || undefined,
+          clip: clipArg || undefined,
+          message: `Screenshot taken: ${displayPath}`,
+          path: displayPath,
+          pathRewritten,
+          size: buffer?.length ?? 0,
+        });
+      }
+
+      let buffer: Buffer;
       if (selector) {
+        const page = await this.deps.pageController.getPage();
         const element = await page.$(selector);
         if (!element) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(
-                  { success: false, error: `Element not found: ${selector}` },
-                  null,
-                  2
-                ),
-              },
-            ],
-          };
+          return R.fail(`Element not found: ${selector}`).build();
         }
-        buffer = await element.screenshot({ path: absolutePath, type, quality });
+        buffer = (await element.screenshot({ path: absolutePath, type, quality })) as Buffer;
       } else {
-        // Camoufox page.screenshot doesn't expose clip natively; pass what we can
-        buffer = await page.screenshot({
+        buffer = await this.deps.pageController.screenshot({
           path: absolutePath,
           type,
           quality,
           fullPage: clipArg ? false : fullPage,
+          clip: clipArg,
         });
       }
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                success: true,
-                driver: 'camoufox',
-                selector: selector || undefined,
-                clip: clipArg || undefined,
-                message: `Screenshot taken: ${displayPath}`,
-                path: displayPath,
-                pathRewritten,
-                size: buffer?.length ?? 0,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
 
-    let buffer: Buffer;
-    if (selector) {
-      const page = await this.deps.pageController.getPage();
-      const element = await page.$(selector);
-      if (!element) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                { success: false, error: `Element not found: ${selector}` },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      }
-      buffer = (await element.screenshot({ path: absolutePath, type, quality })) as Buffer;
-    } else {
-      buffer = await this.deps.pageController.screenshot({
-        path: absolutePath,
-        type,
-        quality,
-        fullPage: clipArg ? false : fullPage,
-        clip: clipArg,
+      return R.ok().build({
+        selector: selector || undefined,
+        clip: clipArg || undefined,
+        message: `Screenshot taken: ${displayPath}`,
+        path: displayPath,
+        pathRewritten,
+        size: buffer.length,
       });
+    } catch (e) {
+      return R.fail(e).build();
     }
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              selector: selector || undefined,
-              clip: clipArg || undefined,
-              message: `Screenshot taken: ${displayPath}`,
-              path: displayPath,
-              pathRewritten,
-              size: buffer.length,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
   }
 
   /** Take one screenshot per selector and return all results. */
@@ -292,8 +220,8 @@ export class PageEvaluationHandlers {
     selectors: string[],
     requestedPath: string | undefined,
     type: 'png' | 'jpeg',
-    quality: number | undefined
-  ) {
+    quality: number | undefined,
+  ): Promise<ToolResponse> {
     const isCamoufox = this.deps.getActiveDriver() === 'camoufox';
     const results: {
       selector: string;
@@ -340,123 +268,74 @@ export class PageEvaluationHandlers {
       }
     }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              mode: 'batch',
-              total: selectors.length,
-              succeeded: results.filter((r) => r.success).length,
-              results,
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
+    return R.ok().build({
+      mode: 'batch',
+      total: selectors.length,
+      succeeded: results.filter((r) => r.success).length,
+      results,
+    });
   }
 
-  async handlePageInjectScript(args: Record<string, unknown>) {
-    const script = argString(args, 'script', '');
+  async handlePageInjectScript(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const script = argString(args, 'script', '');
 
-    await this.deps.pageController.injectScript(script);
+      await this.deps.pageController.injectScript(script);
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              success: true,
-              message: 'Script injected',
-            },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-
-  async handlePageWaitForSelector(args: Record<string, unknown>) {
-    const selector = argString(args, 'selector', '');
-    const timeout = argNumber(args, 'timeout');
-
-    if (this.deps.getActiveDriver() === 'camoufox') {
-      const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
-
-      try {
-        await page.waitForSelector(selector, { timeout: timeout || 30000 });
-
-        const element = await page.evaluate((sel: string) => {
-          const el = document.querySelector(sel);
-          if (!el) return null;
-
-          return {
-            tagName: el.tagName.toLowerCase(),
-            id: el.id || undefined,
-            className: el.className || undefined,
-            textContent: el.textContent?.trim().substring(0, 100) || undefined,
-            attributes: Array.from(el.attributes).reduce(
-              (acc, attr) => {
-                acc[attr.name] = attr.value;
-                return acc;
-              },
-              {} as Record<string, string>
-            ),
-          };
-        }, selector);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  success: true,
-                  driver: 'camoufox',
-                  element,
-                  message: `Selector appeared: ${selector}`,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      } catch {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  success: false,
-                  driver: 'camoufox',
-                  message: `Timeout waiting for selector: ${selector}`,
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
-      }
+      return R.ok().build({
+        message: 'Script injected',
+      });
+    } catch (e) {
+      return R.fail(e).build();
     }
+  }
 
-    const result = await this.deps.pageController.waitForSelector(selector, timeout);
+  async handlePageWaitForSelector(args: Record<string, unknown>): Promise<ToolResponse> {
+    try {
+      const selector = argString(args, 'selector', '');
+      const timeout = argNumber(args, 'timeout');
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(result, null, 2),
-        },
-      ],
-    };
+      if (this.deps.getActiveDriver() === 'camoufox') {
+        const page = (await this.deps.getCamoufoxPage()) as CamoufoxPageLike;
+
+        try {
+          await page.waitForSelector(selector, { timeout: timeout || 30000 });
+
+          const element = await page.evaluate((sel: string) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+
+            return {
+              tagName: el.tagName.toLowerCase(),
+              id: el.id || undefined,
+              className: el.className || undefined,
+              textContent: el.textContent?.trim().substring(0, 100) || undefined,
+              attributes: Array.from(el.attributes).reduce(
+                (acc, attr) => {
+                  acc[attr.name] = attr.value;
+                  return acc;
+                },
+                {} as Record<string, string>,
+              ),
+            };
+          }, selector);
+
+          return R.ok().build({
+            driver: 'camoufox',
+            element,
+            message: `Selector appeared: ${selector}`,
+          });
+        } catch {
+          return R.fail(`Timeout waiting for selector: ${selector}`).build({ driver: 'camoufox' });
+        }
+      }
+
+      const result = await this.deps.pageController.waitForSelector(selector, timeout);
+      return R.ok()
+        .merge(result as Record<string, unknown>)
+        .build();
+    } catch (e) {
+      return R.fail(e).build();
+    }
   }
 }

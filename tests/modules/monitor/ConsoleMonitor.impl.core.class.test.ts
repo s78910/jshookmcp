@@ -57,7 +57,7 @@ vi.mock('@modules/monitor/NetworkMonitor', () => {
     public getXHRRequests = vi.fn(async () => []);
     public getFetchRequests = vi.fn(async () => []);
 
-    constructor(_session: unknown) {
+    constructor(_session: any) {
       classState.networkInstances.push(this);
     }
   }
@@ -98,7 +98,7 @@ vi.mock('@modules/monitor/PlaywrightNetworkMonitor', () => {
     public getFetchRequests = vi.fn(async () => []);
     public setPage = vi.fn();
 
-    constructor(_page: unknown) {
+    constructor(_page: any) {
       classState.playwrightInstances.push(this);
     }
   }

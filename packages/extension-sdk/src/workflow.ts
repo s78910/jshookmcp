@@ -4,13 +4,14 @@ export interface RetryPolicy {
   multiplier?: number;
 }
 
-export type WorkflowNodeType = 'tool' | 'sequence' | 'parallel' | 'branch';
+export type WorkflowNodeType = 'tool' | 'sequence' | 'parallel' | 'branch' | 'fallback';
 
 export interface ToolNode {
   readonly kind: 'tool';
   readonly id: string;
   readonly toolName: string;
   readonly input?: Record<string, unknown>;
+  readonly inputFrom?: Record<string, string>;
   readonly timeoutMs?: number;
   readonly retry?: RetryPolicy;
 }
@@ -38,11 +39,18 @@ export interface BranchNode {
   readonly whenFalse?: WorkflowNode;
 }
 
-export type WorkflowNode = ToolNode | SequenceNode | ParallelNode | BranchNode;
+export interface FallbackNode {
+  readonly kind: 'fallback';
+  readonly id: string;
+  readonly primary: WorkflowNode;
+  readonly fallback: WorkflowNode;
+}
 
-/** Shorthand options for `.tool()` — avoids the callback for simple cases. */
+export type WorkflowNode = ToolNode | SequenceNode | ParallelNode | BranchNode | FallbackNode;
+
 export interface ToolNodeOptions {
   input?: Record<string, unknown>;
+  inputFrom?: Record<string, string>;
   retry?: RetryPolicy;
   timeoutMs?: number;
 }
@@ -50,6 +58,7 @@ export interface ToolNodeOptions {
 export interface WorkflowExecutionContext {
   readonly workflowRunId: string;
   readonly profile: string;
+  readonly stepResults: ReadonlyMap<string, unknown>;
   invokeTool(toolName: string, args: Record<string, unknown>): Promise<unknown>;
   emitSpan(name: string, attrs?: Record<string, unknown>): void;
   emitMetric(
@@ -61,6 +70,26 @@ export interface WorkflowExecutionContext {
   getConfig<T = unknown>(path: string, fallback?: T): T;
 }
 
+export interface WorkflowRouteStep {
+  readonly id: string;
+  readonly toolName: string;
+  readonly description: string;
+  readonly prerequisites: string[];
+  readonly parallel?: boolean;
+  readonly expectedInputs?: Record<string, string>;
+  readonly evidenceNodeType?: string;
+}
+
+export type WorkflowRouteKind = 'preset' | 'workflow';
+
+export interface WorkflowRouteMetadata {
+  readonly kind: WorkflowRouteKind;
+  readonly triggerPatterns: RegExp[];
+  readonly steps: WorkflowRouteStep[];
+  readonly requiredDomains: string[];
+  readonly priority: number;
+}
+
 export interface WorkflowContract {
   readonly kind: 'workflow-contract';
   readonly version: 1;
@@ -70,275 +99,376 @@ export interface WorkflowContract {
   readonly tags?: string[];
   readonly timeoutMs?: number;
   readonly defaultMaxConcurrency?: number;
+  readonly route?: WorkflowRouteMetadata;
   build(ctx: WorkflowExecutionContext): WorkflowNode;
   onStart?(ctx: WorkflowExecutionContext): Promise<void> | void;
   onFinish?(ctx: WorkflowExecutionContext, result: unknown): Promise<void> | void;
   onError?(ctx: WorkflowExecutionContext, error: Error): Promise<void> | void;
 }
 
-
-export abstract class WorkflowNodeBuilder<T extends WorkflowNode> {
-  protected id: string;
-  constructor(id: string) {
-    this.id = id;
-  }
-  abstract build(): T;
+export interface ToolStep {
+  input(input: Record<string, unknown>): this;
+  inputFrom(mapping: Record<string, string>): this;
+  retry(policy: RetryPolicy): this;
+  timeout(ms: number): this;
 }
 
-type AnyWorkflowNodeBuilder = WorkflowNodeBuilder<WorkflowNode>;
-
-export class ToolNodeBuilder extends WorkflowNodeBuilder<ToolNode> {
-  private toolName: string;
-  private _input?: Record<string, unknown>;
-  private _retry?: RetryPolicy;
-  private _timeoutMs?: number;
-
-  constructor(id: string, toolName: string) {
-    super(id);
-    this.toolName = toolName;
-  }
-
-  input(input: Record<string, unknown>): this {
-    this._input = input;
-    return this;
-  }
-
-  retry(policy: RetryPolicy): this {
-    this._retry = policy;
-    return this;
-  }
-
-  timeout(ms: number): this {
-    this._timeoutMs = ms;
-    return this;
-  }
-
-  build(): ToolNode {
-    return {
-      kind: 'tool',
-      id: this.id,
-      toolName: this.toolName,
-      input: this._input,
-      retry: this._retry,
-      timeoutMs: this._timeoutMs,
-    };
-  }
+export interface SequenceStep {
+  step(node: WorkflowNode): this;
+  tool(id: string, toolName: string, config?: ToolNodeOptions | ((step: ToolStep) => void)): this;
+  sequence(id: string, config?: (step: SequenceStep) => void): this;
+  parallel(id: string, config?: (step: ParallelStep) => void): this;
+  branch(id: string, predicateId: string, config?: (step: BranchStep) => void): this;
+  fallback(id: string, config?: (step: FallbackStep) => void): this;
 }
 
-/**
- * Shared base for builders that contain child steps (Sequence and Parallel).
- * Eliminates duplicated `step()` / `tool()` / `sequence()` / `parallel()` / `branch()` methods.
- */
-abstract class CompositeNodeBuilder<T extends WorkflowNode> extends WorkflowNodeBuilder<T> {
-  protected _steps: AnyWorkflowNodeBuilder[] = [];
+export interface ParallelStep extends SequenceStep {
+  maxConcurrency(concurrency: number): this;
+  failFast(enabled: boolean): this;
+}
 
-  step(nodeBuilder: AnyWorkflowNodeBuilder): this {
-    this._steps.push(nodeBuilder);
-    return this;
+export interface BranchStep {
+  predicateFn(fn: (ctx: WorkflowExecutionContext) => boolean | Promise<boolean>): this;
+  whenTrue(node: WorkflowNode): this;
+  whenFalse(node: WorkflowNode): this;
+}
+
+export interface FallbackStep {
+  primary(node: WorkflowNode): this;
+  fallback(node: WorkflowNode): this;
+}
+
+export interface WorkflowSpec {
+  description(desc: string): this;
+  tags(tags: string[]): this;
+  timeoutMs(timeout: number): this;
+  defaultMaxConcurrency(max: number): this;
+  route(route: WorkflowRouteMetadata): this;
+  buildGraph(fn: (ctx: WorkflowExecutionContext) => WorkflowNode): this;
+  onStart(fn: (ctx: WorkflowExecutionContext) => Promise<void> | void): this;
+  onFinish(fn: (ctx: WorkflowExecutionContext, result: unknown) => Promise<void> | void): this;
+  onError(fn: (ctx: WorkflowExecutionContext, error: Error) => Promise<void> | void): this;
+}
+
+type Builder<T> = { build(): T };
+type NodeRef = WorkflowNode | NodeBuilder<WorkflowNode>;
+type NodeBuilder<T extends WorkflowNode> = Builder<T>;
+type ToolBuilder = ToolStep & Builder<ToolNode>;
+type SequenceBuilder = SequenceStep & Builder<SequenceNode>;
+type ParallelBuilder = ParallelStep & Builder<ParallelNode>;
+type BranchBuilder = BranchStep & Builder<BranchNode>;
+type FallbackBuilder = FallbackStep & Builder<FallbackNode>;
+type WorkflowBuilder = WorkflowSpec & Builder<WorkflowContract>;
+
+function buildNode(node: NodeRef): WorkflowNode {
+  return 'kind' in node ? node : node.build();
+}
+
+function setup<T>(target: T, fn?: (value: T) => void): T {
+  fn?.(target);
+  return target;
+}
+
+function createToolBuilder(id: string, toolName: string): ToolBuilder {
+  const step = {} as ToolBuilder;
+  let input: Record<string, unknown> | undefined;
+  let inputFrom: Record<string, string> | undefined;
+  let retry: RetryPolicy | undefined;
+  let timeoutMs: number | undefined;
+
+  step.input = (value) => {
+    input = value;
+    return step;
+  };
+  step.inputFrom = (value) => {
+    inputFrom = value;
+    return step;
+  };
+  step.retry = (value) => {
+    retry = value;
+    return step;
+  };
+  step.timeout = (value) => {
+    timeoutMs = value;
+    return step;
+  };
+  step.build = () => ({
+    kind: 'tool',
+    id,
+    toolName,
+    input,
+    inputFrom,
+    retry,
+    timeoutMs,
+  });
+  return step;
+}
+
+function applyToolConfig(
+  step: ToolBuilder,
+  config?: ToolNodeOptions | ((value: ToolStep) => void),
+): ToolBuilder {
+  if (!config) {
+    return step;
   }
+  if (typeof config === 'function') {
+    config(step);
+    return step;
+  }
+  if (config.input) {
+    step.input(config.input);
+  }
+  if (config.inputFrom) {
+    step.inputFrom(config.inputFrom);
+  }
+  if (config.retry) {
+    step.retry(config.retry);
+  }
+  if (config.timeoutMs !== undefined) {
+    step.timeout(config.timeoutMs);
+  }
+  return step;
+}
 
-  /**
-   * Add a tool node.
-   *
-   * Accepts either an options object for simple cases or a callback for full
-   * control:
-   *
-   * ```ts
-   * .tool('nav', 'page_navigate', { input: { url: '...' } })
-   * .tool('nav', 'page_navigate', (b) => b.input({ url: '...' }).timeout(5000))
-   * ```
-   */
-  tool(
-    id: string,
-    toolName: string,
-    config?: ToolNodeOptions | ((b: ToolNodeBuilder) => void),
-  ): this {
-    const builder = new ToolNodeBuilder(id, toolName);
-    if (config) {
-      if (typeof config === 'function') {
-        config(builder);
-      } else {
-        if (config.input) builder.input(config.input);
-        if (config.retry) builder.retry(config.retry);
-        if (config.timeoutMs !== undefined) builder.timeout(config.timeoutMs);
-      }
+function addSequenceMethods<T extends SequenceStep>(step: T, steps: NodeRef[]): T {
+  step.step = (node) => {
+    steps.push(node);
+    return step;
+  };
+  step.tool = (id, toolName, config) => {
+    steps.push(applyToolConfig(createToolBuilder(id, toolName), config));
+    return step;
+  };
+  step.sequence = (id, config) => {
+    steps.push(setup(createSequenceBuilder(id), config));
+    return step;
+  };
+  step.parallel = (id, config) => {
+    steps.push(setup(createParallelBuilder(id), config));
+    return step;
+  };
+  step.branch = (id, predicateId, config) => {
+    steps.push(setup(createBranchBuilder(id, predicateId), config));
+    return step;
+  };
+  step.fallback = (id, config) => {
+    steps.push(setup(createFallbackBuilder(id), config));
+    return step;
+  };
+  return step;
+}
+
+function createSequenceBuilder(id: string): SequenceBuilder {
+  const steps: NodeRef[] = [];
+  const step = addSequenceMethods({} as SequenceBuilder, steps);
+  step.build = () => ({
+    kind: 'sequence',
+    id,
+    steps: steps.map(buildNode),
+  });
+  return step;
+}
+
+function createParallelBuilder(id: string): ParallelBuilder {
+  const steps: NodeRef[] = [];
+  const step = addSequenceMethods({} as ParallelBuilder, steps);
+  let maxConcurrency = 4;
+  let failFast = false;
+
+  step.maxConcurrency = (value) => {
+    maxConcurrency = value;
+    return step;
+  };
+  step.failFast = (value) => {
+    failFast = value;
+    return step;
+  };
+  step.build = () => ({
+    kind: 'parallel',
+    id,
+    steps: steps.map(buildNode),
+    maxConcurrency,
+    failFast,
+  });
+  return step;
+}
+
+function createBranchBuilder(id: string, predicateId: string): BranchBuilder {
+  const step = {} as BranchBuilder;
+  let predicateFn: ((ctx: WorkflowExecutionContext) => boolean | Promise<boolean>) | undefined;
+  let whenTrue: NodeRef | undefined;
+  let whenFalse: NodeRef | undefined;
+
+  step.predicateFn = (value) => {
+    predicateFn = value;
+    return step;
+  };
+  step.whenTrue = (value) => {
+    whenTrue = value;
+    return step;
+  };
+  step.whenFalse = (value) => {
+    whenFalse = value;
+    return step;
+  };
+  step.build = () => {
+    if (!whenTrue) {
+      throw new Error(`BranchNode '${id}' requires a whenTrue step`);
     }
-    this._steps.push(builder);
-    return this;
-  }
 
-  sequence(id: string, config?: (b: SequenceNodeBuilder) => void): this {
-    const builder = new SequenceNodeBuilder(id);
-    if (config) config(builder);
-    this._steps.push(builder);
-    return this;
-  }
-
-  parallel(id: string, config?: (b: ParallelNodeBuilder) => void): this {
-    const builder = new ParallelNodeBuilder(id);
-    if (config) config(builder);
-    this._steps.push(builder);
-    return this;
-  }
-
-  branch(id: string, predicateId: string, config?: (b: BranchNodeBuilder) => void): this {
-    const builder = new BranchNodeBuilder(id, predicateId);
-    if (config) config(builder);
-    this._steps.push(builder);
-    return this;
-  }
-}
-
-export class SequenceNodeBuilder extends CompositeNodeBuilder<SequenceNode> {
-  build(): SequenceNode {
-    return {
-      kind: 'sequence',
-      id: this.id,
-      steps: this._steps.map((b) => b.build()),
-    };
-  }
-}
-
-export class ParallelNodeBuilder extends CompositeNodeBuilder<ParallelNode> {
-  private _maxConcurrency?: number = 4;
-  private _failFast?: boolean = false;
-
-  maxConcurrency(concurrency: number): this {
-    this._maxConcurrency = concurrency;
-    return this;
-  }
-
-  failFast(ff: boolean): this {
-    this._failFast = ff;
-    return this;
-  }
-
-  build(): ParallelNode {
-    return {
-      kind: 'parallel',
-      id: this.id,
-      steps: this._steps.map((b) => b.build()),
-      maxConcurrency: this._maxConcurrency,
-      failFast: this._failFast,
-    };
-  }
-}
-
-export class BranchNodeBuilder extends WorkflowNodeBuilder<BranchNode> {
-  private predicateId: string;
-  private _predicateFn?: (ctx: WorkflowExecutionContext) => boolean | Promise<boolean>;
-  private _whenTrue?: AnyWorkflowNodeBuilder;
-  private _whenFalse?: AnyWorkflowNodeBuilder;
-
-  constructor(id: string, predicateId: string) {
-    super(id);
-    this.predicateId = predicateId;
-  }
-
-  predicateFn(fn: (ctx: WorkflowExecutionContext) => boolean | Promise<boolean>): this {
-    this._predicateFn = fn;
-    return this;
-  }
-
-  whenTrue(nodeBuilder: AnyWorkflowNodeBuilder): this {
-    this._whenTrue = nodeBuilder;
-    return this;
-  }
-
-  whenFalse(nodeBuilder: AnyWorkflowNodeBuilder): this {
-    this._whenFalse = nodeBuilder;
-    return this;
-  }
-
-  build(): BranchNode {
-    if (!this._whenTrue) {
-      throw new Error(`BranchNode '${this.id}' requires a whenTrue step`);
-    }
     return {
       kind: 'branch',
-      id: this.id,
-      predicateId: this.predicateId,
-      predicateFn: this._predicateFn,
-      whenTrue: this._whenTrue.build(),
-      whenFalse: this._whenFalse ? this._whenFalse.build() : undefined,
+      id,
+      predicateId,
+      predicateFn,
+      whenTrue: buildNode(whenTrue),
+      whenFalse: whenFalse ? buildNode(whenFalse) : undefined,
     };
-  }
+  };
+  return step;
 }
 
-export class WorkflowBuilder {
-  private _id: string;
-  private _displayName: string;
-  private _description?: string;
-  private _tags?: string[];
-  private _timeoutMs?: number;
-  private _defaultMaxConcurrency?: number;
-  private _buildFn!: (ctx: WorkflowExecutionContext) => WorkflowNode;
-  private _onStart?: (ctx: WorkflowExecutionContext) => Promise<void> | void;
-  private _onFinish?: (ctx: WorkflowExecutionContext, result: unknown) => Promise<void> | void;
-  private _onError?: (ctx: WorkflowExecutionContext, error: Error) => Promise<void> | void;
+function createFallbackBuilder(id: string): FallbackBuilder {
+  const step = {} as FallbackBuilder;
+  let primary: NodeRef | undefined;
+  let fallback: NodeRef | undefined;
 
-  constructor(id: string, displayName: string) {
-    this._id = id;
-    this._displayName = displayName;
-  }
+  step.primary = (value) => {
+    primary = value;
+    return step;
+  };
+  step.fallback = (value) => {
+    fallback = value;
+    return step;
+  };
+  step.build = () => {
+    if (!primary) {
+      throw new Error(`FallbackNode '${id}' requires a primary step`);
+    }
+    if (!fallback) {
+      throw new Error(`FallbackNode '${id}' requires a fallback step`);
+    }
 
-  description(desc: string): this { this._description = desc; return this; }
-  tags(tags: string[]): this { this._tags = tags; return this; }
-  timeoutMs(timeout: number): this { this._timeoutMs = timeout; return this; }
-  defaultMaxConcurrency(max: number): this { this._defaultMaxConcurrency = max; return this; }
+    return {
+      kind: 'fallback',
+      id,
+      primary: buildNode(primary),
+      fallback: buildNode(fallback),
+    };
+  };
+  return step;
+}
 
-  buildGraph(fn: (ctx: WorkflowExecutionContext) => AnyWorkflowNodeBuilder): this {
-    this._buildFn = (ctx) => fn(ctx).build();
-    return this;
-  }
+function createWorkflowBuilder(id: string, displayName: string): WorkflowBuilder {
+  const workflow = {} as WorkflowBuilder;
+  let description: string | undefined;
+  let tags: string[] | undefined;
+  let timeoutMs: number | undefined;
+  let defaultMaxConcurrency: number | undefined;
+  let route: WorkflowRouteMetadata | undefined;
+  let buildGraph: ((ctx: WorkflowExecutionContext) => WorkflowNode) | undefined;
+  let onStart: ((ctx: WorkflowExecutionContext) => Promise<void> | void) | undefined;
+  let onFinish:
+    | ((ctx: WorkflowExecutionContext, result: unknown) => Promise<void> | void)
+    | undefined;
+  let onError: ((ctx: WorkflowExecutionContext, error: Error) => Promise<void> | void) | undefined;
 
-  onStart(fn: (ctx: WorkflowExecutionContext) => Promise<void> | void): this { this._onStart = fn; return this; }
-  onFinish(fn: (ctx: WorkflowExecutionContext, result: unknown) => Promise<void> | void): this { this._onFinish = fn; return this; }
-  onError(fn: (ctx: WorkflowExecutionContext, error: Error) => Promise<void> | void): this { this._onError = fn; return this; }
-
-  build(): WorkflowContract {
-    if (!this._buildFn) throw new Error(`WorkflowBuilder '${this._id}' needs a buildGraph() function.`);
+  workflow.description = (value) => {
+    description = value;
+    return workflow;
+  };
+  workflow.tags = (value) => {
+    tags = value;
+    return workflow;
+  };
+  workflow.timeoutMs = (value) => {
+    timeoutMs = value;
+    return workflow;
+  };
+  workflow.defaultMaxConcurrency = (value) => {
+    defaultMaxConcurrency = value;
+    return workflow;
+  };
+  workflow.route = (value) => {
+    route = value;
+    return workflow;
+  };
+  workflow.buildGraph = (value) => {
+    buildGraph = value;
+    return workflow;
+  };
+  workflow.onStart = (value) => {
+    onStart = value;
+    return workflow;
+  };
+  workflow.onFinish = (value) => {
+    onFinish = value;
+    return workflow;
+  };
+  workflow.onError = (value) => {
+    onError = value;
+    return workflow;
+  };
+  workflow.build = () => {
+    if (!buildGraph) {
+      throw new Error(`Workflow '${id}' needs a buildGraph() function.`);
+    }
 
     return {
       kind: 'workflow-contract',
       version: 1,
-      id: this._id,
-      displayName: this._displayName,
-      description: this._description,
-      tags: this._tags,
-      timeoutMs: this._timeoutMs,
-      defaultMaxConcurrency: this._defaultMaxConcurrency,
-      build: this._buildFn,
-      onStart: this._onStart,
-      onFinish: this._onFinish,
-      onError: this._onError,
+      id,
+      displayName,
+      description,
+      tags,
+      timeoutMs,
+      defaultMaxConcurrency,
+      route,
+      build: buildGraph,
+      onStart,
+      onFinish,
+      onError,
     };
-  }
+  };
+  return workflow;
 }
 
-export function createWorkflow(id: string, displayName: string): WorkflowBuilder {
-  return new WorkflowBuilder(id, displayName);
+type WorkflowConfigurator = (workflow: WorkflowSpec) => void;
+
+export function defineWorkflow(
+  id: string,
+  displayName: string,
+  configure: WorkflowConfigurator,
+): WorkflowContract {
+  const workflow = createWorkflowBuilder(id, displayName);
+  configure(workflow);
+  return workflow.build();
 }
 
-// ── Convenience factory functions ──
-
-/** Create a tool node. */
-export function toolNode(id: string, toolName: string): ToolNodeBuilder {
-  return new ToolNodeBuilder(id, toolName);
+export function toolStep(
+  id: string,
+  toolName: string,
+  config?: ToolNodeOptions | ((step: ToolStep) => void),
+): ToolNode {
+  return applyToolConfig(createToolBuilder(id, toolName), config).build();
 }
 
-/** Create a sequence node. */
-export function sequenceNode(id: string): SequenceNodeBuilder {
-  return new SequenceNodeBuilder(id);
+export function sequenceStep(id: string, config?: (step: SequenceStep) => void): SequenceNode {
+  return setup(createSequenceBuilder(id), config).build();
 }
 
-/** Create a parallel node. */
-export function parallelNode(id: string): ParallelNodeBuilder {
-  return new ParallelNodeBuilder(id);
+export function parallelStep(id: string, config?: (step: ParallelStep) => void): ParallelNode {
+  return setup(createParallelBuilder(id), config).build();
 }
 
-/** Create a branch node. */
-export function branchNode(id: string, predicateId: string): BranchNodeBuilder {
-  return new BranchNodeBuilder(id, predicateId);
+export function branchStep(
+  id: string,
+  predicateId: string,
+  config?: (step: BranchStep) => void,
+): BranchNode {
+  return setup(createBranchBuilder(id, predicateId), config).build();
 }
 
+export function fallbackStep(id: string, config?: (step: FallbackStep) => void): FallbackNode {
+  return setup(createFallbackBuilder(id), config).build();
+}

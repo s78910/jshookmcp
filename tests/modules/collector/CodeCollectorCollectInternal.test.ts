@@ -16,7 +16,7 @@ const collectorHelpers = vi.hoisted(() => ({
     (files: Array<{ url: string }>): MockDependencyGraph => ({
       nodes: files.map((file) => ({ id: file.url, url: file.url, type: 'external' })),
       edges: [],
-    })
+    }),
   ),
   setupWebWorkerTracking: vi.fn(async () => undefined),
 }));
@@ -87,7 +87,7 @@ function createPageAndSession() {
   return { page, session };
 }
 
-type ResponseListener = (params: unknown) => Promise<void> | void;
+type ResponseListener = (params: any) => Promise<void> | void;
 
 interface HarnessOptions {
   responseBodies?: Record<string, { body: string; base64Encoded?: boolean }>;
@@ -99,7 +99,8 @@ interface HarnessOptions {
   concurrentGotoResponses?: boolean;
   responseBodyDelayMs?: number;
   cacheEnabled?: boolean;
-  cachedResult?: unknown;
+  cachedResult?: any;
+  useBrowserContext?: boolean;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -164,6 +165,13 @@ function createHarness(options: HarnessOptions = {}) {
     }),
     close: vi.fn().mockResolvedValue(undefined),
   };
+  const browserContext = {
+    newPage: vi.fn().mockResolvedValue(page),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  const activePage = {
+    browserContext: vi.fn().mockReturnValue(browserContext),
+  };
 
   const self = {
     cacheEnabled: options.cacheEnabled ?? false,
@@ -172,8 +180,14 @@ function createHarness(options: HarnessOptions = {}) {
       set: vi.fn().mockResolvedValue(undefined),
     },
     init: vi.fn().mockResolvedValue(undefined),
+    getActivePage: vi.fn().mockResolvedValue(activePage),
+    getActivePageIndex: vi.fn().mockResolvedValue(0),
+    listPages: vi.fn().mockResolvedValue([{ index: 0, url: 'https://site', title: 'Site' }]),
+    selectPage: vi.fn().mockResolvedValue(undefined),
     browser: {
       newPage: vi.fn().mockResolvedValue(page),
+      createBrowserContext:
+        options.useBrowserContext === false ? undefined : vi.fn().mockResolvedValue(browserContext),
     },
     config: {
       timeout: 1000,
@@ -209,7 +223,7 @@ function createHarness(options: HarnessOptions = {}) {
     },
   };
 
-  return { cdpSession, page, self };
+  return { activePage, browserContext, cdpSession, page, self };
 }
 
 describe('CodeCollector collect internals', () => {
@@ -274,8 +288,8 @@ describe('CodeCollector collect internals', () => {
         ctx as any,
         {
           url: 'https://example.com',
-        } as any
-      )
+        } as any,
+      ),
     ).rejects.toThrow('Browser not initialized');
   });
 
@@ -335,7 +349,7 @@ describe('CodeCollector collect internals', () => {
       {
         url: 'https://example.com',
         smartMode: 'summary',
-      } as any
+      } as any,
     );
 
     expect(result).toEqual({
@@ -366,7 +380,7 @@ describe('CodeCollector collect internals', () => {
 
     expect(collectorHelpers.setupWebWorkerTracking).toHaveBeenCalledWith(page);
     expect(collectorHelpers.setupWebWorkerTracking.mock.invocationCallOrder[0]).toBeLessThan(
-      page.goto.mock.invocationCallOrder[0]!
+      page.goto.mock.invocationCallOrder[0]!,
     );
   });
 
@@ -679,6 +693,60 @@ describe('CodeCollector collect internals', () => {
     expect(self.cache.set).not.toHaveBeenCalled();
   });
 
+  it('reuses the active page browser context when available', async () => {
+    const { activePage, browserContext, page, self } = createHarness();
+
+    await collectInnerImpl(self, {
+      url: 'https://site',
+      includeInline: false,
+      includeServiceWorker: false,
+      includeWebWorker: false,
+    });
+
+    expect(self.listPages).toHaveBeenCalledOnce();
+    expect(self.getActivePage).toHaveBeenCalledOnce();
+    expect(activePage.browserContext).toHaveBeenCalledOnce();
+    expect(self.browser.createBrowserContext).not.toHaveBeenCalled();
+    expect(browserContext.newPage).toHaveBeenCalledOnce();
+    expect(browserContext.close).not.toHaveBeenCalled();
+    expect(page.close).toHaveBeenCalledOnce();
+    expect(self.selectPage).toHaveBeenCalledWith(0);
+  });
+
+  it('falls back to an isolated browser context when no active page exists', async () => {
+    const { browserContext, page, self } = createHarness();
+    self.listPages.mockResolvedValue([]);
+
+    await collectInnerImpl(self, {
+      url: 'https://site',
+      includeInline: false,
+      includeServiceWorker: false,
+      includeWebWorker: false,
+    });
+
+    expect(self.getActivePage).not.toHaveBeenCalled();
+    expect(self.browser.createBrowserContext).toHaveBeenCalledOnce();
+    expect(browserContext.newPage).toHaveBeenCalledOnce();
+    expect(browserContext.close).toHaveBeenCalledOnce();
+    expect(page.close).not.toHaveBeenCalled();
+    expect(self.selectPage).not.toHaveBeenCalled();
+  });
+
+  it('restores the previously active page after closing the temporary collection page', async () => {
+    const { self, page } = createHarness({ useBrowserContext: false });
+
+    await collectInnerImpl(self, {
+      url: 'https://site',
+      includeInline: false,
+      includeServiceWorker: false,
+      includeWebWorker: false,
+    });
+
+    expect(page.close).toHaveBeenCalledOnce();
+    expect(self.getActivePageIndex).toHaveBeenCalledOnce();
+    expect(self.selectPage).toHaveBeenCalledWith(0);
+  });
+
   it('rejects invalid collector contexts that do not provide shouldCollectUrl', async () => {
     await expect(
       collectInnerImpl(
@@ -686,8 +754,8 @@ describe('CodeCollector collect internals', () => {
           init: vi.fn(),
           applyAntiDetection: vi.fn(),
         },
-        { url: 'https://site' }
-      )
+        { url: 'https://site' },
+      ),
     ).rejects.toThrow('Invalid collector context');
   });
 });

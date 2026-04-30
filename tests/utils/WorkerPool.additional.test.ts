@@ -18,7 +18,7 @@ const workerState = vi.hoisted(() => {
 
     constructor(
       public readonly script: string,
-      public readonly options: Record<string, unknown>
+      public readonly options: Record<string, unknown>,
     ) {}
 
     on(event: string, callback: Listener) {

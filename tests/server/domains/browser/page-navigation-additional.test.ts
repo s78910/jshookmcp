@@ -1,8 +1,8 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PageNavigationHandlers } from '@server/domains/browser/handlers/page-navigation';
 
 type Driver = 'chrome' | 'camoufox';
-type TextResponse = { content: Array<{ text: string }> };
 type NavigationResponse = {
   success: boolean;
   url?: string;
@@ -20,18 +20,13 @@ type ConsoleMonitorStub = Pick<
   'setPlaywrightPage' | 'enable' | 'isNetworkEnabled'
 >;
 type CamoufoxPageStub = {
-  goto: (url: string, options?: { waitUntil?: string; timeout?: number }) => Promise<unknown>;
-  reload: () => Promise<unknown>;
-  goBack: () => Promise<unknown>;
-  goForward: () => Promise<unknown>;
+  goto: (url: string, options?: { waitUntil?: string; timeout?: number }) => Promise<any>;
+  reload: () => Promise<any>;
+  goBack: () => Promise<any>;
+  goForward: () => Promise<any>;
   url: () => string;
   title: () => Promise<string>;
 };
-
-function parseJson<T>(response: TextResponse): T {
-  const text = response.content[0]?.text ?? '';
-  return JSON.parse(text) as T;
-}
 
 function mockDeps(driver: Driver = 'chrome') {
   const gotoMock = vi.fn<CamoufoxPageStub['goto']>().mockResolvedValue(undefined);
@@ -121,7 +116,7 @@ describe('PageNavigationHandlers', () => {
       expect(body.title).toBe('Chrome Page');
       expect(pageController.navigate).toHaveBeenCalledWith(
         'https://test.com',
-        expect.objectContaining({ waitUntil: 'networkidle2' })
+        expect.objectContaining({ waitUntil: 'networkidle2' }),
       );
     });
 
@@ -183,7 +178,7 @@ describe('PageNavigationHandlers', () => {
 
       expect(pageController.navigate).toHaveBeenCalledWith(
         'https://test.com',
-        expect.objectContaining({ waitUntil: 'load' })
+        expect.objectContaining({ waitUntil: 'load' }),
       );
     });
   });

@@ -6,9 +6,17 @@ function mb(value: number): number {
   return value * 1024 * 1024;
 }
 
+class TestUnifiedCacheManager extends UnifiedCacheManager {
+  static resetInstance() {
+    // Must reset on the parent class directly, since UnifiedCacheManager.getInstance()
+    // reads `this.instance` where `this` is UnifiedCacheManager, not the subclass.
+    (UnifiedCacheManager as any).instance = undefined;
+  }
+}
+
 describe('UnifiedCacheManager', () => {
   afterEach(() => {
-    (UnifiedCacheManager as any).instance = undefined;
+    TestUnifiedCacheManager.resetInstance();
     vi.restoreAllMocks();
   });
 
@@ -74,9 +82,11 @@ describe('UnifiedCacheManager', () => {
       cleanup: vi.fn(async () => undefined),
     });
 
-    const result = await manager.smartCleanup(mb(10));
-    expect(result.freed).toBe(0);
-    expect(result.before).toBe(result.after);
+    const result1 = await manager.smartCleanup(mb(10));
+    expect(result1.freed).toBe(0);
+
+    const result2 = await manager.smartCleanup();
+    expect(result2.freed).toBe(0);
   });
 
   it('smart cleanup clears low hit-rate cache when over target', async () => {

@@ -53,7 +53,7 @@ function emitScriptParsed(
   session: ReturnType<typeof createSession>['session'],
   scriptId: string,
   url: string,
-  length = 120
+  length = 120,
 ) {
   session.emit('Debugger.scriptParsed', {
     scriptId,
@@ -97,6 +97,45 @@ describe('ScriptManager core class internals', () => {
     expect(cdp.session.send).toHaveBeenCalledTimes(1);
   });
 
+  it('captures scriptParsed events emitted during Debugger.enable', async () => {
+    const cdp = createSession();
+    cdp.session.send.mockImplementation(async (method: string) => {
+      if (method === 'Debugger.enable') {
+        cdp.session.emit('Debugger.scriptParsed', {
+          scriptId: 'script-enable',
+          url: 'https://site/enable.js',
+          startLine: 0,
+          startColumn: 0,
+          endLine: 1,
+          endColumn: 0,
+          length: 42,
+        });
+        return {};
+      }
+      if (method === 'Debugger.disable') {
+        return {};
+      }
+      if (method === 'Debugger.getScriptSource') {
+        return { scriptSource: 'const enabled = true;' };
+      }
+      return {};
+    });
+    const manager = new ScriptManager({
+      getActivePage: vi.fn().mockResolvedValue({
+        createCDPSession: vi.fn().mockResolvedValue(cdp.session),
+      }),
+    } as never);
+
+    await manager.init();
+    const scripts = await manager.getAllScripts();
+
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]).toMatchObject({
+      scriptId: 'script-enable',
+      url: 'https://site/enable.js',
+    });
+  });
+
   it('supports wildcard URL lookup and validates missing identifiers', async () => {
     const cdp = createSession();
     const manager = new ScriptManager({
@@ -109,7 +148,7 @@ describe('ScriptManager core class internals', () => {
     emitScriptParsed(cdp.session, 'script-1', 'https://site/app.js');
 
     await expect(manager.getScriptSource()).rejects.toThrow(
-      'Either scriptId or url parameter must be provided'
+      'Either scriptId or url parameter must be provided',
     );
 
     const script = await manager.getScriptSource(undefined, '*app*');
@@ -129,7 +168,7 @@ describe('ScriptManager core class internals', () => {
           resolvers.push(() =>
             resolve({
               scriptSource: `const script${params?.scriptId} = true;`,
-            })
+            }),
           );
         });
       }
@@ -151,14 +190,14 @@ describe('ScriptManager core class internals', () => {
     await Promise.resolve();
 
     expect(
-      cdp.session.send.mock.calls.filter(([method]) => method === 'Debugger.getScriptSource')
+      cdp.session.send.mock.calls.filter(([method]) => method === 'Debugger.getScriptSource'),
     ).toHaveLength(8);
 
     resolvers.splice(0, 8).forEach((resolve) => resolve());
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(
-      cdp.session.send.mock.calls.filter(([method]) => method === 'Debugger.getScriptSource')
+      cdp.session.send.mock.calls.filter(([method]) => method === 'Debugger.getScriptSource'),
     ).toHaveLength(9);
 
     resolvers.splice(0).forEach((resolve) => resolve());
@@ -229,7 +268,7 @@ describe('ScriptManager core class internals', () => {
 
     expect(scriptClassMocks.logger.warn).toHaveBeenCalledWith(
       'Failed to close CDP session:',
-      expect.any(Error)
+      expect.any(Error),
     );
     expect((manager as any).initialized).toBe(false);
     expect((manager as any).cdpSession).toBeNull();
@@ -242,7 +281,7 @@ describe('ScriptManager core class internals', () => {
     (manager as any).buildKeywordIndex(
       'script-1',
       'https://site/app.js',
-      'line1\nLine2 tokenValue\nline3\nline4\nline5'
+      'line1\nLine2 tokenValue\nline3\nline4\nline5',
     );
     (manager as any).chunkScript('script-1', 'abcdefghij');
 

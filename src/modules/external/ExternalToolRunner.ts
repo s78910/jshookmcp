@@ -11,11 +11,13 @@
  */
 
 import { spawn } from 'node:child_process';
-import { resolve, relative, sep } from 'node:path';
-import { getProjectRoot } from '@utils/outputPaths';
+import { tmpdir } from 'node:os';
+import { resolve, relative, sep, isAbsolute } from 'node:path';
+import { ProcessRegistry } from '@utils/ProcessRegistry';
+import * as outputPaths from '@utils/outputPaths';
 import { logger } from '@utils/logger';
 import { ioLimit } from '@utils/concurrency';
-import { ToolRegistry } from '@modules/external/ToolRegistry';
+import { type ToolRegistry } from '@modules/external/ToolRegistry';
 import type { ToolRunRequest, ToolRunResult } from '@modules/external/types';
 import {
   EXTERNAL_TOOL_TIMEOUT_MS,
@@ -27,6 +29,12 @@ import {
 const DEFAULT_TIMEOUT_MS = EXTERNAL_TOOL_TIMEOUT_MS;
 const DEFAULT_MAX_STDOUT = EXTERNAL_TOOL_MAX_STDOUT_BYTES;
 const DEFAULT_MAX_STDERR = EXTERNAL_TOOL_MAX_STDERR_BYTES;
+
+function getTempRootsForValidation(): string[] {
+  return [process.env.TEMP, process.env.TMP, tmpdir(), '/tmp', '/var/tmp'].filter(
+    (value): value is string => Boolean(value),
+  );
+}
 
 export class ExternalToolRunner {
   constructor(private readonly registry: ToolRegistry) {}
@@ -72,9 +80,16 @@ export class ExternalToolRunner {
     // Build minimal environment
     const env: Record<string, string> = { PATH: process.env.PATH || '' };
     if (process.platform === 'win32') {
-      env.SYSTEMROOT = process.env.SYSTEMROOT || 'C:\\Windows';
-      env.TEMP = process.env.TEMP || '';
-      env.TMP = process.env.TMP || '';
+      const systemRoot = process.env.SYSTEMROOT || process.env.SystemRoot || process.env.WINDIR;
+      if (systemRoot) {
+        env.SYSTEMROOT = systemRoot;
+      }
+      if (process.env.TEMP) {
+        env.TEMP = process.env.TEMP;
+      }
+      if (process.env.TMP) {
+        env.TMP = process.env.TMP;
+      }
     }
     if (spec.envAllowlist) {
       for (const key of spec.envAllowlist) {
@@ -99,20 +114,49 @@ export class ExternalToolRunner {
         windowsHide: true,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      ProcessRegistry.register(child);
 
-      let stdout = '';
-      let stderr = '';
+      let stdoutBufs: Buffer[] = [];
+      let stderrBufs: Buffer[] = [];
+      let stdoutLen = 0;
+      let stderrLen = 0;
       let stdoutTruncated = false;
       let stderrTruncated = false;
       let settled = false;
-      // eslint-disable-next-line prefer-const -- reassigned in timeout handler below
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeoutHandle = setTimeout(() => {
+        /* v8 ignore next 1 */ // Impossible race condition: clearTimeout prevents this unless already executing
+        if (!settled) {
+          child.kill('SIGTERM');
+          // Give it 2s to gracefully exit before SIGKILL
+          setTimeout(() => {
+            if (!settled) {
+              child.kill('SIGKILL');
+              finish(null, 'SIGKILL');
+            }
+          }, EXTERNAL_TOOL_FORCE_KILL_GRACE_MS);
+          request.onProgress?.({ phase: 'timeout', ts: Date.now() });
+        }
+      }, timeoutMs);
 
       const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
         if (settled) return;
         settled = true;
-        if (timeoutHandle) clearTimeout(timeoutHandle);
+        clearTimeout(timeoutHandle);
 
+        const stdout =
+          stdoutBufs.length === 1
+            ? stdoutBufs[0]!.toString('utf-8')
+            : stdoutBufs.length > 1
+              ? Buffer.concat(stdoutBufs).toString('utf-8')
+              : '';
+        const stderr =
+          stderrBufs.length === 1
+            ? stderrBufs[0]!.toString('utf-8')
+            : stderrBufs.length > 1
+              ? Buffer.concat(stderrBufs).toString('utf-8')
+              : '';
+        stdoutBufs = [];
+        stderrBufs = [];
         const durationMs = Date.now() - startTime;
         const result: ToolRunResult = {
           ok: exitCode === 0,
@@ -128,27 +172,12 @@ export class ExternalToolRunner {
           logger.debug(`[ExternalToolRunner] ${spec.command} completed in ${durationMs}ms`);
         } else {
           logger.warn(
-            `[ExternalToolRunner] ${spec.command} failed (exit=${exitCode}, signal=${signal}) in ${durationMs}ms`
+            `[ExternalToolRunner] ${spec.command} failed (exit=${exitCode}, signal=${signal}) in ${durationMs}ms`,
           );
         }
 
         resolvePromise(result);
       };
-
-      // Timeout
-      timeoutHandle = setTimeout(() => {
-        if (!settled) {
-          child.kill('SIGTERM');
-          // Give it 2s to gracefully exit before SIGKILL
-          setTimeout(() => {
-            if (!settled) {
-              child.kill('SIGKILL');
-              finish(null, 'SIGKILL');
-            }
-          }, EXTERNAL_TOOL_FORCE_KILL_GRACE_MS);
-          request.onProgress?.({ phase: 'timeout', ts: Date.now() });
-        }
-      }, timeoutMs);
 
       // Pipe stdin if provided
       if (request.stdin) {
@@ -159,27 +188,31 @@ export class ExternalToolRunner {
       }
 
       child.stdout.on('data', (chunk: Buffer) => {
-        if (stdout.length < maxStdout) {
-          const remaining = maxStdout - stdout.length;
-          stdout += chunk.toString('utf-8', 0, Math.min(chunk.length, remaining));
-          if (stdout.length >= maxStdout) stdoutTruncated = true;
+        if (stdoutLen < maxStdout) {
+          const remaining = maxStdout - stdoutLen;
+          const slice = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
+          stdoutBufs.push(slice);
+          stdoutLen += slice.length;
+          if (stdoutLen >= maxStdout) stdoutTruncated = true;
         }
         request.onProgress?.({
           phase: 'stdout',
-          bytesRead: stdout.length,
+          bytesRead: stdoutLen,
           ts: Date.now(),
         });
       });
 
       child.stderr.on('data', (chunk: Buffer) => {
-        if (stderr.length < maxStderr) {
-          const remaining = maxStderr - stderr.length;
-          stderr += chunk.toString('utf-8', 0, Math.min(chunk.length, remaining));
-          if (stderr.length >= maxStderr) stderrTruncated = true;
+        if (stderrLen < maxStderr) {
+          const remaining = maxStderr - stderrLen;
+          const slice = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
+          stderrBufs.push(slice);
+          stderrLen += slice.length;
+          if (stderrLen >= maxStderr) stderrTruncated = true;
         }
         request.onProgress?.({
           phase: 'stderr',
-          bytesRead: stderr.length,
+          bytesRead: stderrLen,
           ts: Date.now(),
         });
       });
@@ -189,7 +222,9 @@ export class ExternalToolRunner {
       });
 
       child.on('error', (err) => {
-        stderr += `\nSpawn error: ${err.message}`;
+        const errBuf = Buffer.from(`\nSpawn error: ${err.message}`, 'utf-8');
+        stderrBufs.push(errBuf);
+        stderrLen += errBuf.length;
         finish(1, null);
       });
 
@@ -202,23 +237,22 @@ export class ExternalToolRunner {
    */
   private validateCwd(requestedCwd?: string): string {
     if (!requestedCwd) {
-      return getProjectRoot();
+      return outputPaths.getProjectRoot();
     }
 
     const resolved = resolve(requestedCwd);
-    const projectRoot = getProjectRoot();
+    const projectRoot = outputPaths.getProjectRoot();
     const rel = relative(projectRoot, resolved);
 
     // Allow project root subdirectories
-    if (rel && !rel.startsWith('..') && !resolve(rel).startsWith(sep)) {
+    if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
       return resolved;
     }
 
     // Allow system temp directories (with separator boundary to prevent prefix bypass)
-    const tmpDirs = [process.env.TEMP, process.env.TMP, '/tmp', '/var/tmp'].filter(Boolean);
+    const tmpDirs = getTempRootsForValidation();
 
     for (const tmp of tmpDirs) {
-      if (!tmp) continue;
       const resolvedTmp = resolve(tmp);
       // Exact match or must be followed by a path separator to prevent /tmpevil bypassing /tmp
       if (resolved === resolvedTmp || resolved.startsWith(resolvedTmp + sep)) {
@@ -227,7 +261,7 @@ export class ExternalToolRunner {
     }
 
     logger.warn(
-      `[ExternalToolRunner] CWD '${requestedCwd}' outside allowed boundaries, using project root`
+      `[ExternalToolRunner] CWD '${requestedCwd}' outside allowed boundaries, using project root`,
     );
     return projectRoot;
   }

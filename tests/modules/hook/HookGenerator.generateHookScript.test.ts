@@ -53,7 +53,7 @@ describe('HookGenerator — generateHookScript dispatch', () => {
 
   it('throws for unknown hook type', () => {
     expect(() => generateHookScript('x', 'not-real' as any, 'log')).toThrow(
-      'Unsupported hook type'
+      'Unsupported hook type',
     );
   });
 
@@ -62,7 +62,7 @@ describe('HookGenerator — generateHookScript dispatch', () => {
       'window.alert',
       'function',
       'modify',
-      'args[0] = "intercepted";'
+      'args[0] = "intercepted";',
     );
     expect(script).toContain('args[0] = "intercepted";');
   });
@@ -81,7 +81,7 @@ describe('HookGenerator — generateHookScript dispatch', () => {
       'log',
       undefined,
       undefined,
-      true
+      true,
     );
     expect(script).toContain('performance.now()');
   });

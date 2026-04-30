@@ -4,7 +4,7 @@
 import { readFileSync, openSync, readSync, closeSync } from 'node:fs';
 import { logger } from '@utils/logger';
 import type { MemoryScanResult } from '@modules/process/memory/types';
-import { parseProcMaps } from './linux/mapsParser';
+import { parseProcMaps } from '@src/modules/process/memory/linux/mapsParser';
 import { findPatternInBuffer } from '@native/NativeMemoryManager.utils';
 import { buildPatternBytesAndMask } from './scanner.patterns';
 
@@ -26,7 +26,7 @@ function formatLinuxProcAccessError(pid: number, procFile: 'maps' | 'mem', error
 export async function scanMemoryLinux(
   pid: number,
   pattern: string,
-  patternType: string
+  patternType: string,
 ): Promise<MemoryScanResult> {
   let patternBytes: number[];
   let mask: number[];
@@ -55,7 +55,10 @@ export async function scanMemoryLinux(
       };
     }
 
-    const linuxRegions = parseProcMaps(mapsContent).filter((r) => r.permissions.read);
+    const parsedRegions = parseProcMaps(mapsContent);
+    const linuxRegions = Array.isArray(parsedRegions)
+      ? parsedRegions.filter((r) => r.permissions.read)
+      : [];
 
     let fd: number;
     try {

@@ -51,7 +51,7 @@ describe('PageNavigationHandlers', () => {
       expect(parsed.title).toBe('Example Page');
       expect(deps.pageController.navigate).toHaveBeenCalledWith(
         'https://example.com',
-        expect.objectContaining({ waitUntil: 'networkidle2' })
+        expect.objectContaining({ waitUntil: 'networkidle2' }),
       );
     });
 
@@ -63,7 +63,7 @@ describe('PageNavigationHandlers', () => {
 
       expect(deps.pageController.navigate).toHaveBeenCalledWith(
         'https://example.com',
-        expect.objectContaining({ waitUntil: 'load' })
+        expect.objectContaining({ waitUntil: 'load' }),
       );
     });
 
@@ -78,7 +78,7 @@ describe('PageNavigationHandlers', () => {
 
       expect(deps.pageController.navigate).toHaveBeenCalledWith(
         'https://example.com',
-        expect.objectContaining({ waitUntil: 'domcontentloaded' })
+        expect.objectContaining({ waitUntil: 'domcontentloaded' }),
       );
     });
 
@@ -90,7 +90,7 @@ describe('PageNavigationHandlers', () => {
 
       expect(deps.pageController.navigate).toHaveBeenCalledWith(
         'https://example.com',
-        expect.objectContaining({ timeout: 10000 })
+        expect.objectContaining({ timeout: 10000 }),
       );
     });
 

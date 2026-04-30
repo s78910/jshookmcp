@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { logger } from '@utils/logger';
+import { getDebuggerSessionsDir } from '@utils/outputPaths';
 import type { DebuggerSession } from '@internal-types/index';
 import type { DebuggerManager } from '@modules/debugger/DebuggerManager';
 
@@ -24,7 +25,7 @@ export class DebuggerSessionManager {
   private async processInBatches<T>(
     items: readonly T[],
     batchSize: number,
-    worker: (item: T) => Promise<void>
+    worker: (item: T) => Promise<void>,
   ): Promise<void> {
     for (let i = 0; i < items.length; i += batchSize) {
       const batch = items.slice(i, i + batchSize);
@@ -89,7 +90,7 @@ export class DebuggerSessionManager {
     const session = this.exportSession(metadata);
 
     if (!filePath) {
-      const sessionsDir = path.join(process.cwd(), 'debugger-sessions');
+      const sessionsDir = getDebuggerSessionsDir();
       await fs.mkdir(sessionsDir, { recursive: true });
       filePath = path.join(sessionsDir, `session-${Date.now()}.json`);
     } else {
@@ -122,7 +123,7 @@ export class DebuggerSessionManager {
   async importSession(sessionData: DebuggerSession | string): Promise<void> {
     if (!this.debuggerManager.isEnabled()) {
       throw new Error(
-        'Debugger must be enabled before importing session. Call init() or enable() first.'
+        'Debugger must be enabled before importing session. Call init() or enable() first.',
       );
     }
 
@@ -185,7 +186,7 @@ export class DebuggerSessionManager {
   }
 
   async listSavedSessions(): Promise<SavedDebuggerSessionSummary[]> {
-    const sessionsDir = path.join(process.cwd(), 'debugger-sessions');
+    const sessionsDir = getDebuggerSessionsDir();
 
     try {
       await fs.access(sessionsDir);

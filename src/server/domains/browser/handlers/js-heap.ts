@@ -1,11 +1,9 @@
-/**
- * JS Heap Search — CE-like search over browser JS heap snapshot strings.
- */
-
 import { DetailedDataManager } from '@utils/DetailedDataManager';
 import { cdpLimit } from '@utils/concurrency';
 import { logger } from '@utils/logger';
 import { argString, argNumber, argBool } from '@server/domains/shared/parse-args';
+import { R } from '@server/domains/shared/ResponseBuilder';
+import type { ToolResponse } from '@server/domains/shared/ResponseBuilder';
 
 interface JSHeapSearchDeps {
   getActivePage: () => Promise<unknown>;
@@ -32,19 +30,6 @@ interface HeapSearchMatch {
   value: string;
   objectPath: string;
   nameHint?: string;
-}
-
-interface HeapSnapshotMeta {
-  node_fields?: string[];
-  node_types?: unknown[];
-}
-
-interface HeapSnapshotLike {
-  strings?: string[];
-  nodes?: number[];
-  snapshot?: {
-    meta?: HeapSnapshotMeta;
-  };
 }
 
 const NODE_TYPE_NAMES = [
@@ -76,14 +61,6 @@ function isHeapSnapshotChunk(value: unknown): value is HeapSnapshotChunk {
   return isRecord(value) && typeof value.chunk === 'string';
 }
 
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
-}
-
-function toNumberArray(value: unknown): number[] {
-  return Array.isArray(value) ? value.filter((v): v is number => typeof v === 'number') : [];
-}
-
 export class JSHeapSearchHandlers {
   private detailedDataManager: DetailedDataManager;
 
@@ -91,20 +68,13 @@ export class JSHeapSearchHandlers {
     this.detailedDataManager = DetailedDataManager.getInstance();
   }
 
-  async handleJSHeapSearch(args: Record<string, unknown>) {
-    const pattern = argString(args, 'pattern', '');
+  async handleJSHeapSearch(args: Record<string, unknown>): Promise<ToolResponse> {
+    const pattern = argString(args, 'pattern', '') || argString(args, 'query', '');
     const maxResults = argNumber(args, 'maxResults', 50);
     const caseSensitive = argBool(args, 'caseSensitive', false);
 
     if (!pattern) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ success: false, error: 'pattern is required' }, null, 2),
-          },
-        ],
-      };
+      return R.fail('pattern is required').build();
     }
 
     return cdpLimit(async () => {
@@ -128,10 +98,12 @@ export class JSHeapSearchHandlers {
 
         await cdpSession.send('HeapProfiler.enable');
 
-        let snapshotData = '';
+        const snapshotChunks: string[] = [];
+        let snapshotSize = 0;
         cdpSession.on('HeapProfiler.addHeapSnapshotChunk', (params: unknown) => {
           if (isHeapSnapshotChunk(params)) {
-            snapshotData += params.chunk;
+            snapshotChunks.push(params.chunk);
+            snapshotSize += params.chunk.length;
           }
         });
 
@@ -143,16 +115,16 @@ export class JSHeapSearchHandlers {
 
         await cdpSession.send('HeapProfiler.disable');
 
-        logger.info(
-          `[js_heap_search] Snapshot size: ${(snapshotData.length / 1024).toFixed(1)} KB`
-        );
+        logger.info(`[js_heap_search] Snapshot size: ${(snapshotSize / 1024).toFixed(1)} KB`);
 
+        const snapshotData = snapshotChunks.join('');
+        snapshotChunks.length = 0;
         const matches = this.searchSnapshot(snapshotData, pattern, maxResults, caseSensitive);
         const result = {
           success: true,
           pattern,
           caseSensitive,
-          snapshotSizeKB: Math.round(snapshotData.length / 1024),
+          snapshotSizeKB: Math.round(snapshotSize / 1024),
           matchCount: matches.length,
           truncated: matches.length >= maxResults,
           matches,
@@ -162,31 +134,10 @@ export class JSHeapSearchHandlers {
               : 'No matches found. The value may be encrypted, compressed, or stored in a non-string form.',
         };
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(this.detailedDataManager.smartHandle(result, 51200), null, 2),
-            },
-          ],
-        };
+        return R.ok().build(this.detailedDataManager.smartHandle(result, 51200) as any);
       } catch (error) {
         logger.error('[js_heap_search] Error:', error);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  success: false,
-                  error: error instanceof Error ? error.message : String(error),
-                },
-                null,
-                2
-              ),
-            },
-          ],
-        };
+        return R.fail(error).build();
       } finally {
         if (ownedSession && cdpSession) {
           try {
@@ -203,45 +154,64 @@ export class JSHeapSearchHandlers {
     snapshotData: string,
     pattern: string,
     maxResults: number,
-    caseSensitive: boolean
+    caseSensitive: boolean,
   ): HeapSearchMatch[] {
     try {
-      const parsed = JSON.parse(snapshotData) as unknown;
-      if (!isRecord(parsed)) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(snapshotData);
+      } catch {
+        return [];
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         return [];
       }
 
-      const snapshot = parsed as HeapSnapshotLike;
-      const strings = toStringArray(snapshot.strings);
-      const nodes = toNumberArray(snapshot.nodes);
-      const nodeFields = toStringArray(snapshot.snapshot?.meta?.node_fields);
-      const nodeTypesRaw = snapshot.snapshot?.meta?.node_types;
+      const snapshot = parsed as Record<string, unknown>;
+      const stringsRaw = snapshot.strings;
+      const nodesRaw = snapshot.nodes;
+      const snapshotMeta =
+        typeof snapshot.snapshot === 'object' && snapshot.snapshot !== null
+          ? (snapshot.snapshot as Record<string, unknown>)
+          : null;
+      const meta =
+        snapshotMeta && typeof snapshotMeta.meta === 'object' && snapshotMeta.meta !== null
+          ? (snapshotMeta.meta as Record<string, unknown>)
+          : null;
+      const nodeFieldsRaw = meta?.node_fields;
+      const nodeTypesRaw = meta?.node_types;
+
+      if (!Array.isArray(nodeFieldsRaw) || !Array.isArray(stringsRaw) || !Array.isArray(nodesRaw)) {
+        return [];
+      }
+
+      const nodeFieldCount = nodeFieldsRaw.length;
+      if (nodeFieldCount === 0) return [];
+
+      const typeIdx = nodeFieldsRaw.indexOf('type');
+      const nameIdx = nodeFieldsRaw.indexOf('name');
+      const idIdx = nodeFieldsRaw.indexOf('id');
+      if (typeIdx < 0 || nameIdx < 0) return [];
+
       const nodeTypeTable =
         Array.isArray(nodeTypesRaw) && Array.isArray(nodeTypesRaw[0])
           ? (nodeTypesRaw[0] as unknown[])
           : [];
-      const nodeFieldCount = nodeFields.length;
-
-      if (nodeFieldCount === 0 || strings.length === 0) {
-        return [];
-      }
-
-      const typeIdx = nodeFields.indexOf('type');
-      const nameIdx = nodeFields.indexOf('name');
-      const idIdx = nodeFields.indexOf('id');
-      if (typeIdx < 0 || nameIdx < 0) {
-        return [];
-      }
 
       const searchStr = caseSensitive ? pattern : pattern.toLowerCase();
       const matches: HeapSearchMatch[] = [];
-      const nodeCount = Math.floor(nodes.length / nodeFieldCount);
+      const nodeCount = Math.floor(nodesRaw.length / nodeFieldCount);
+      const stringsArr = stringsRaw as string[];
 
       for (let i = 0; i < nodeCount && matches.length < maxResults; i++) {
         const base = i * nodeFieldCount;
-        const typeOrdinal = nodes[base + typeIdx] ?? 0;
-        const nameOrdinal = nodes[base + nameIdx];
-        if (nameOrdinal === undefined || nameOrdinal >= strings.length) {
+        const typeOrdinal = nodesRaw[base + typeIdx] as number;
+        const nameOrdinal = nodesRaw[base + nameIdx] as number;
+        if (
+          typeof nameOrdinal !== 'number' ||
+          nameOrdinal < 0 ||
+          nameOrdinal >= stringsArr.length
+        ) {
           continue;
         }
 
@@ -251,7 +221,6 @@ export class JSHeapSearchHandlers {
           NODE_TYPE_NAMES[typeOrdinal] ??
           `type_${typeOrdinal}`;
 
-        // Only string-like node types can be matched by the user-provided string pattern.
         if (
           nodeTypeName !== 'string' &&
           nodeTypeName !== 'concatenated string' &&
@@ -260,7 +229,7 @@ export class JSHeapSearchHandlers {
           continue;
         }
 
-        const value = strings[nameOrdinal];
+        const value = stringsArr[nameOrdinal];
         if (typeof value !== 'string') {
           continue;
         }
@@ -269,7 +238,7 @@ export class JSHeapSearchHandlers {
           continue;
         }
 
-        const rawId = idIdx >= 0 ? nodes[base + idIdx] : undefined;
+        const rawId = idIdx >= 0 ? (nodesRaw[base + idIdx] as number) : undefined;
         const nodeId = rawId !== undefined ? rawId : i;
 
         matches.push({

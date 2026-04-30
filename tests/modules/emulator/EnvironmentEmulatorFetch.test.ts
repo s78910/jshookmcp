@@ -20,6 +20,7 @@ vi.mock('rebrowser-puppeteer-core', () => ({
   default: {
     launch: puppeteerState.launch,
   },
+  launch: puppeteerState.launch,
 }));
 
 import { fetchRealEnvironmentData } from '@modules/emulator/EnvironmentEmulatorFetch';
@@ -82,7 +83,7 @@ describe('EnvironmentEmulatorFetch', () => {
       expect.objectContaining({
         headless: true,
         executablePath: 'C:/Browsers/chrome.exe',
-      })
+      }),
     );
     expect(browser.newPage).toHaveBeenCalledTimes(1);
     expect(page.setUserAgent).toHaveBeenCalledWith(expect.stringContaining('Chrome/120.0.0.0'));

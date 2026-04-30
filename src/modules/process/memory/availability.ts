@@ -5,8 +5,13 @@
  */
 
 import { executePowerShellScript, execAsync, type Platform } from '@modules/process/memory/types';
+import {
+  MEMORY_AVAILABILITY_CACHE_TTL_MS,
+  MEMORY_PROBE_CMD_TIMEOUT_MS,
+  MEMORY_PROCESS_SIGNAL_TIMEOUT_MS,
+} from '@src/constants';
 
-const WINDOWS_CACHE_TTL_MS = 45_000;
+const WINDOWS_CACHE_TTL_MS = MEMORY_AVAILABILITY_CACHE_TTL_MS;
 
 let windowsAvailabilityCache: {
   expiresAt: number;
@@ -43,7 +48,7 @@ async function runWindowsAdminAvailabilityCheck(): Promise<{
   try {
     const { stdout } = await executePowerShellScript(
       '([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
-      { timeout: 5000 }
+      { timeout: MEMORY_PROBE_CMD_TIMEOUT_MS },
     );
     const normalizedOutput = stdout.trim().toLowerCase();
 
@@ -83,7 +88,7 @@ async function checkWindowsAvailability(): Promise<{ available: boolean; reason?
 }
 
 export async function checkAvailability(
-  platform: Platform
+  platform: Platform,
 ): Promise<{ available: boolean; reason?: string }> {
   switch (platform) {
     case 'win32':
@@ -91,13 +96,13 @@ export async function checkAvailability(
 
     case 'linux':
       try {
-        const { stdout } = await execAsync('id -u', { timeout: 2000 });
+        const { stdout } = await execAsync('id -u', { timeout: MEMORY_PROCESS_SIGNAL_TIMEOUT_MS });
         if (stdout.trim() === '0') {
           return { available: true };
         }
         try {
           await execAsync('capsh --print 2>/dev/null | grep -q "cap_sys_ptrace"', {
-            timeout: 2000,
+            timeout: MEMORY_PROCESS_SIGNAL_TIMEOUT_MS,
           });
           return { available: true };
         } catch {
@@ -116,7 +121,7 @@ export async function checkAvailability(
 
     case 'darwin':
       try {
-        await execAsync('which lldb', { timeout: 3000 });
+        await execAsync('which lldb', { timeout: MEMORY_PROCESS_SIGNAL_TIMEOUT_MS });
         const isRoot = process.getuid?.() === 0;
         return {
           available: true,
@@ -142,7 +147,7 @@ export async function checkAvailability(
 /** For Windows debug-port check (inline PowerShell, no shared state) */
 export async function checkDebugPort(
   platform: Platform,
-  pid: number
+  pid: number,
 ): Promise<{ success: boolean; isDebugged?: boolean; error?: string }> {
   if (platform !== 'win32') {
     return { success: false, error: 'Debug port check currently only implemented for Windows' };
@@ -202,12 +207,17 @@ try {
 
     const { stdout } = await executePowerShellScript(psScript, {
       maxBuffer: 1024 * 1024,
-      timeout: 10000,
+      timeout: MEMORY_PROBE_CMD_TIMEOUT_MS * 2,
     });
 
-    const _trimmed = stdout.trim();
-    if (!_trimmed) throw new Error('PowerShell returned empty output');
-    return JSON.parse(_trimmed);
+    const trimmed = stdout.trim();
+    if (!trimmed) throw new Error('PowerShell returned empty output');
+
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      throw new Error('PowerShell returned empty output');
+    }
   } catch (error) {
     return {
       success: false,

@@ -44,7 +44,7 @@ describe('MCPServer.registration', () => {
     expect(mocks.getToolsByDomains).toHaveBeenCalledWith(['browser', 'network']);
     expect(mocks.getToolsForProfile).not.toHaveBeenCalled();
     expect(mocks.logger.info).toHaveBeenCalledWith(
-      'Tool registration mode=domains [browser,network], count=1'
+      'Tool registration mode=domains [browser,network], count=1',
     );
   });
 
@@ -72,7 +72,7 @@ describe('MCPServer.registration', () => {
     });
     expect(mocks.getToolsForProfile).toHaveBeenCalledWith('workflow');
     expect(mocks.logger.info).toHaveBeenCalledWith(
-      'Tool registration mode=workflow, transport=http, count=1'
+      'Tool registration mode=workflow, transport=http, count=1',
     );
   });
 

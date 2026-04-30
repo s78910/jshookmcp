@@ -1,8 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
 import { bindByDepKey, toolLookup } from '@server/domains/shared/registry';
 import { wasmTools } from '@server/domains/wasm/definitions';
-import { WasmToolHandlers } from '@server/domains/wasm/index';
-import { CodeCollector } from '@server/domains/shared/modules';
+import type { WasmToolHandlers } from '@server/domains/wasm/index';
 
 const DOMAIN = 'wasm' as const;
 const DEP_KEY = 'wasmHandlers' as const;
@@ -11,7 +10,9 @@ const t = toolLookup(wasmTools);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { CodeCollector } = await import('@server/domains/shared/modules');
+  const { WasmToolHandlers } = await import('@server/domains/wasm/index');
   if (!ctx.collector) {
     ctx.collector = new CodeCollector(ctx.config.puppeteer);
     void ctx.registerCaches();
@@ -28,6 +29,11 @@ const manifest = {
   profiles: ['full'],
   ensure,
   registrations: [
+    {
+      tool: t('wasm_capabilities'),
+      domain: DOMAIN,
+      bind: b((h, _args) => h.handleWasmCapabilities()),
+    },
     { tool: t('wasm_dump'), domain: DOMAIN, bind: b((h, a) => h.handleWasmDump(a)) },
     { tool: t('wasm_disassemble'), domain: DOMAIN, bind: b((h, a) => h.handleWasmDisassemble(a)) },
     { tool: t('wasm_decompile'), domain: DOMAIN, bind: b((h, a) => h.handleWasmDecompile(a)) },
@@ -43,6 +49,17 @@ const manifest = {
       tool: t('wasm_memory_inspect'),
       domain: DOMAIN,
       bind: b((h, a) => h.handleWasmMemoryInspect(a)),
+    },
+    { tool: t('wasm_to_c'), domain: DOMAIN, bind: b((h, a) => h.handleWasmToC(a)) },
+    {
+      tool: t('wasm_detect_obfuscation'),
+      domain: DOMAIN,
+      bind: b((h, a) => h.handleWasmDetectObfuscation(a)),
+    },
+    {
+      tool: t('wasm_instrument_trace'),
+      domain: DOMAIN,
+      bind: b((h, a) => h.handleWasmInstrumentTrace(a)),
     },
   ],
 } satisfies DomainManifest<typeof DEP_KEY, H, typeof DOMAIN>;

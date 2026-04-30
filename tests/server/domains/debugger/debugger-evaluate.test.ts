@@ -7,7 +7,7 @@ type EvaluateRuntimeInspector = Pick<RuntimeInspector, 'evaluate' | 'evaluateGlo
 function parseJson(response: { content: Array<{ text: string }> }): unknown {
   const firstContent = response.content[0];
   expect(firstContent).toBeDefined();
-  return JSON.parse(firstContent!.text) as unknown;
+  return JSON.parse(firstContent!.text) as any;
 }
 
 describe('DebuggerEvaluateHandlers', () => {
@@ -32,11 +32,12 @@ describe('DebuggerEvaluateHandlers', () => {
     >);
     const handlers = createHandlers();
 
-    const body = parseJson(
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(
       await handlers.handleDebuggerEvaluate({
         expression: 'a + b',
         callFrameId: 'frame-1',
-      })
+      }),
     );
 
     expect(runtimeInspector.evaluate).toHaveBeenCalledWith('a + b', 'frame-1');
@@ -54,8 +55,9 @@ describe('DebuggerEvaluateHandlers', () => {
     } as Awaited<ReturnType<EvaluateRuntimeInspector['evaluateGlobal']>>);
     const handlers = createHandlers();
 
-    const body = parseJson(
-      await handlers.handleDebuggerEvaluateGlobal({ expression: 'window.name' })
+    // @ts-expect-error — auto-suppressed [TS2558]
+    const body = parseJson<any>(
+      await handlers.handleDebuggerEvaluateGlobal({ expression: 'window.name' }),
     );
 
     expect(runtimeInspector.evaluateGlobal).toHaveBeenCalledWith('window.name');
@@ -71,7 +73,7 @@ describe('DebuggerEvaluateHandlers', () => {
     const handlers = createHandlers();
 
     await expect(handlers.handleDebuggerEvaluate({ expression: 'boom()' })).rejects.toThrow(
-      'eval failed'
+      'eval failed',
     );
   });
 });

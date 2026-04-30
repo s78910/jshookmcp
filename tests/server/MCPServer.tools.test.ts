@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   class MockToolError extends Error {}
@@ -42,7 +42,7 @@ function createCtx(overrides: Record<string, unknown> = {}) {
   const registrations: Array<{
     name: string;
     config: Record<string, unknown>;
-    handler: (args?: Record<string, unknown>) => Promise<unknown>;
+    handler: (args?: Record<string, unknown>) => Promise<any>;
   }> = [];
 
   const ctx = {
@@ -51,17 +51,18 @@ function createCtx(overrides: Record<string, unknown> = {}) {
         (
           name: string,
           config: Record<string, unknown>,
-          handler: (args?: Record<string, unknown>) => Promise<unknown>
+          handler: (args?: Record<string, unknown>) => Promise<any>,
         ) => {
           const registered = { name, config, handler, remove: vi.fn() };
           registrations.push(registered);
           return registered;
-        }
+        },
       ),
     },
     executeToolWithTracking: vi.fn(async (_name: string, args: Record<string, unknown>) => ({
       content: [{ type: 'text', text: JSON.stringify(args) }],
     })),
+    toolAutocompleteHandlers: new Map(),
     __registrations: registrations,
     ...overrides,
   } as any;
@@ -96,7 +97,7 @@ describe('MCPServer.tools', () => {
         description: 'Navigate a page',
         inputSchema: { url: { safeParse: expect.any(Function) } },
       },
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(ctx.executeToolWithTracking).toHaveBeenCalledWith('page_navigate', {
       url: 'https://example.com',
@@ -121,12 +122,30 @@ describe('MCPServer.tools', () => {
     expect(ctx.server.registerTool).toHaveBeenCalledWith(
       'extensions_list',
       { description: 'extensions_list' },
-      expect.any(Function)
+      expect.any(Function),
     );
     expect(ctx.executeToolWithTracking).toHaveBeenCalledWith('extensions_list', {});
   });
 
-  it('converts ToolError failures into structured tool responses', async () => {
+  it('registers tools when inputSchema is missing and forwards empty args', async () => {
+    const ctx = createCtx();
+
+    registerSingleTool(ctx, {
+      name: 'extensions_reload',
+    } as any);
+    const handler = ctx.__registrations[0].handler;
+    await handler({ ignored: true });
+
+    expect(mocks.buildZodShape).not.toHaveBeenCalled();
+    expect(ctx.server.registerTool).toHaveBeenCalledWith(
+      'extensions_reload',
+      { description: 'extensions_reload' },
+      expect.any(Function),
+    );
+    expect(ctx.executeToolWithTracking).toHaveBeenCalledWith('extensions_reload', {});
+  });
+
+  it('throws McpError on ToolError failures', async () => {
     mocks.buildZodShape.mockReturnValue({});
     const ctx = createCtx({
       executeToolWithTracking: vi.fn(async () => {
@@ -139,17 +158,11 @@ describe('MCPServer.tools', () => {
       description: 'Navigate a page',
       inputSchema: { type: 'object', properties: {} },
     } as any);
-    const response = await ctx.__registrations[0].handler();
-
-    expect(response).toEqual({
-      content: [{ type: 'text', text: 'tool:missing prerequisite' }],
-    });
-    expect(mocks.toolErrorToResponse).toHaveBeenCalledWith(expect.any(mocks.MockToolError));
-    expect(mocks.asErrorResponse).not.toHaveBeenCalled();
-    expect(mocks.logger.error).not.toHaveBeenCalled();
+    await expect(ctx.__registrations[0].handler()).rejects.toThrow(/missing prerequisite/);
+    expect(mocks.logger.error).toHaveBeenCalled();
   });
 
-  it('converts unknown failures into generic error responses and logs them', async () => {
+  it('throws McpError for unknown failures and logs them', async () => {
     mocks.buildZodShape.mockReturnValue({});
     const ctx = createCtx({
       executeToolWithTracking: vi.fn(async () => {
@@ -157,21 +170,14 @@ describe('MCPServer.tools', () => {
       }),
     });
 
-    registerSingleTool(ctx, {
-      name: 'page_navigate',
-      description: 'Navigate a page',
-      inputSchema: { type: 'object', properties: {} },
-    } as any);
-    const response = await ctx.__registrations[0].handler();
+    const mockTool = { name: 'page_navigate', inputSchema: {} } as any;
+    registerSingleTool(ctx, mockTool);
+    const handler = (ctx.server.registerTool as Mock).mock.calls[0]![2];
 
-    expect(response).toEqual({
-      isError: true,
-      content: [{ type: 'text', text: 'generic:boom' }],
-    });
+    await expect(handler({})).rejects.toThrowError(/Execution Failed in page_navigate: boom/);
     expect(mocks.logger.error).toHaveBeenCalledWith(
       'Tool execution failed: page_navigate',
-      expect.any(Error)
+      expect.any(Error),
     );
-    expect(mocks.asErrorResponse).toHaveBeenCalledWith(expect.any(Error));
   });
 });

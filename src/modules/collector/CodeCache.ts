@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { logger } from '@utils/logger';
+import { getCodeCacheDir } from '@utils/outputPaths';
 import type { CodeFile, CollectCodeResult } from '@internal-types/index';
 
 export interface CacheEntry {
@@ -25,14 +26,14 @@ export class CodeCache {
   private cacheDir: string;
   private maxAge: number;
   private maxSize: number;
-  private memoryCache: Map<string, CacheEntry> = new Map();
+  protected memoryCache: Map<string, CacheEntry> = new Map();
 
   private readonly MAX_MEMORY_CACHE_SIZE = 100;
   private writesSinceCleanup = 0;
   private static readonly CLEANUP_INTERVAL = 20;
 
   constructor(options: CacheOptions = {}) {
-    this.cacheDir = options.cacheDir || path.join(process.cwd(), '.cache', 'code');
+    this.cacheDir = options.cacheDir || getCodeCacheDir();
     this.maxAge = options.maxAge || 24 * 60 * 60 * 1000;
     this.maxSize = options.maxSize || 100 * 1024 * 1024;
   }
@@ -46,7 +47,7 @@ export class CodeCache {
     }
   }
 
-  private generateKey(url: string, options?: Record<string, unknown>): string {
+  protected generateKey(url: string, options?: Record<string, unknown>): string {
     const data = JSON.stringify({ url, options });
     return crypto.createHash('md5').update(data).digest('hex');
   }
@@ -56,7 +57,7 @@ export class CodeCache {
   }
 
   private getDependenciesOrEmpty(
-    dependencies?: CollectCodeResult['dependencies']
+    dependencies?: CollectCodeResult['dependencies'],
   ): CollectCodeResult['dependencies'] {
     return dependencies ?? { nodes: [], edges: [] };
   }
@@ -107,7 +108,7 @@ export class CodeCache {
       };
     } catch (err) {
       logger.warn(
-        `Cache read failed for ${url}: ${err instanceof Error ? err.message : String(err)}`
+        `Cache read failed for ${url}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return null;
     }
@@ -116,7 +117,7 @@ export class CodeCache {
   async set(
     url: string,
     result: CollectCodeResult,
-    options?: Record<string, unknown>
+    options?: Record<string, unknown>,
   ): Promise<void> {
     const key = this.generateKey(url, options);
     const hash = crypto.createHash('md5').update(JSON.stringify(result.files)).digest('hex');

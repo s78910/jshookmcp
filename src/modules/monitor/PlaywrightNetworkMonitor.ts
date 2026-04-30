@@ -16,6 +16,8 @@ interface PlaywrightLikeResponse {
   statusText(): string;
   headers(): Record<string, string>;
   body?(): Promise<Buffer>;
+  httpVersion?(): string;
+  protocol?(): string;
 }
 
 interface PlaywrightLikePage {
@@ -121,7 +123,7 @@ export class PlaywrightNetworkMonitor {
   }
 
   private async evaluateOnNewDocumentInPage<T>(
-    pageFunction: string | (() => T | Promise<T>)
+    pageFunction: string | (() => T | Promise<T>),
   ): Promise<T> {
     const page = this.getPageOrThrow();
     if (!page.evaluateOnNewDocument) {
@@ -170,6 +172,41 @@ export class PlaywrightNetworkMonitor {
     );
   }
 
+  private normalizeHttpVersion(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'http/1.0' || normalized === '1.0') return '1.0';
+    if (normalized === 'http/1.1' || normalized === '1.1') return '1.1';
+    if (
+      normalized === 'http/2' ||
+      normalized === '2' ||
+      normalized === '2.0' ||
+      normalized === 'h2'
+    ) {
+      return 'h2';
+    }
+    if (
+      normalized === 'http/3' ||
+      normalized === '3' ||
+      normalized === '3.0' ||
+      normalized === 'h3'
+    ) {
+      return 'h3';
+    }
+    return undefined;
+  }
+
+  private detectHttpVersion(res: PlaywrightLikeResponse): string | undefined {
+    const fromHttpVersion = typeof res.httpVersion === 'function' ? res.httpVersion() : undefined;
+    const normalizedHttpVersion = this.normalizeHttpVersion(fromHttpVersion);
+    if (normalizedHttpVersion) {
+      return normalizedHttpVersion;
+    }
+
+    const fromProtocol = typeof res.protocol === 'function' ? res.protocol() : undefined;
+    return this.normalizeHttpVersion(fromProtocol);
+  }
+
   async enable(): Promise<void> {
     if (this.networkEnabled) {
       logger.warn('PlaywrightNetworkMonitor already enabled');
@@ -210,6 +247,11 @@ export class PlaywrightNetworkMonitor {
       const requestId = this.isPlaywrightLikeRequest(req)
         ? (this.requestIdMap.get(req) ?? fallbackRequestId)
         : fallbackRequestId;
+      const observedHttpVersion = this.detectHttpVersion(res);
+      const request = this.requests.get(requestId);
+      if (request && observedHttpVersion) {
+        request.httpVersion = observedHttpVersion;
+      }
 
       const response: NetworkResponse = {
         requestId,
@@ -237,7 +279,7 @@ export class PlaywrightNetworkMonitor {
             // Skip bodies larger than 1MB to prevent memory bloat
             if (buf.length > 1_048_576) {
               logger.debug(
-                `[PW-BodyCache] Skipping oversized body for ${captureId} (${buf.length} bytes)`
+                `[PW-BodyCache] Skipping oversized body for ${captureId} (${buf.length} bytes)`,
               );
               return;
             }
@@ -247,7 +289,7 @@ export class PlaywrightNetworkMonitor {
             }
             const isText =
               /^(text\/|application\/(json|javascript|xml|x-www-form-urlencoded))/i.test(
-                response.mimeType
+                response.mimeType,
               );
             if (isText) {
               this.responseBodyCache.set(captureId, {
@@ -264,7 +306,7 @@ export class PlaywrightNetworkMonitor {
           })
           .catch((err: unknown) => {
             logger.debug(
-              `[PW-BodyCache] Could not capture body for ${captureId}: ${err instanceof Error ? err.message : String(err)}`
+              `[PW-BodyCache] Could not capture body for ${captureId}: ${err instanceof Error ? err.message : String(err)}`,
             );
           });
       }
@@ -375,7 +417,7 @@ export class PlaywrightNetworkMonitor {
 
   /** Response body retrieval from LRU cache. */
   async getResponseBody(
-    requestId: string
+    requestId: string,
   ): Promise<{ body: string; base64Encoded: boolean } | null> {
     const cached = this.responseBodyCache.get(requestId);
     if (cached) {
@@ -444,24 +486,73 @@ export class PlaywrightNetworkMonitor {
         const origFetch = window.__pwOriginalFetch || window.fetch;
         window.__pwOriginalFetch = origFetch;
         if (!window.__fetchRequests) window.__fetchRequests = [];
+        const normalizeHeaders = (value) => {
+          if (!value) return {};
+          try {
+            if (typeof Headers !== 'undefined' && value instanceof Headers) {
+              return Object.fromEntries(value.entries());
+            }
+          } catch {}
+          if (Array.isArray(value)) {
+            try {
+              return Object.fromEntries(value);
+            } catch {
+              return {};
+            }
+          }
+          return typeof value === 'object' ? value : {};
+        };
         window.fetch = function(...args) {
-          const [url, opts] = args;
-          const entry = { url: String(url), method: opts?.method || 'GET', timestamp: Date.now() };
+          const [resource, opts = {}] = args;
+          const requestLike = resource && typeof resource === 'object' ? resource : null;
+          const url =
+            typeof resource === 'string'
+              ? resource
+              : typeof resource?.url === 'string'
+                ? resource.url
+                : String(resource);
+          const method = opts?.method || requestLike?.method || 'GET';
+          const headers = normalizeHeaders(opts?.headers || requestLike?.headers);
+          const bodySource = opts?.body;
+          const body =
+            bodySource === undefined || bodySource === null
+              ? null
+              : String(bodySource).slice(0, 2048);
+          const entry = {
+            url,
+            method,
+            headers,
+            body,
+            timestamp: Date.now(),
+            response: null,
+            status: 0,
+          };
           return origFetch.apply(this, args).then(res => {
             entry.status = res.status;
-            window.__fetchRequests.push(entry);
-            if (window.__fetchRequests.length > maxRecords) {
-              window.__fetchRequests.splice(0, window.__fetchRequests.length - maxRecords);
-            }
-            // Auto-persist compact summary so data survives context compression
-            try {
-              const s = { url: entry.url, method: entry.method, status: entry.status, ts: entry.timestamp };
-              const prev = JSON.parse(localStorage.getItem('__capturedAPIs') || '[]');
-              prev.push(s);
-              if (prev.length > 500) prev.splice(0, prev.length - 500);
-              localStorage.setItem('__capturedAPIs', JSON.stringify(prev));
-            } catch(e) {}
-            return res;
+            return res.clone().text().then(
+              (text) => {
+                entry.response = text.slice(0, 2048);
+                return res;
+              },
+              () => {
+                entry.response = '[Unable to read response]';
+                return res;
+              },
+            ).then((response) => {
+              window.__fetchRequests.push(entry);
+              if (window.__fetchRequests.length > maxRecords) {
+                window.__fetchRequests.splice(0, window.__fetchRequests.length - maxRecords);
+              }
+              // Auto-persist compact summary so data survives context compression
+              try {
+                const s = { url: entry.url, method: entry.method, status: entry.status, ts: entry.timestamp };
+                const prev = JSON.parse(localStorage.getItem('__capturedAPIs') || '[]');
+                prev.push(s);
+                if (prev.length > 500) prev.splice(0, prev.length - 500);
+                localStorage.setItem('__capturedAPIs', JSON.stringify(prev));
+              } catch(e) {}
+              return response;
+            });
           });
         };
         console.log('[PlaywrightFetch] Fetch interceptor injected');
@@ -483,7 +574,7 @@ export class PlaywrightNetworkMonitor {
       return this.isUnknownArray(result) ? result : [];
     } catch (err) {
       logger.warn(
-        `[PW] Failed to get XHR requests: ${err instanceof Error ? err.message : String(err)}`
+        `[PW] Failed to get XHR requests: ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
     }
@@ -498,7 +589,7 @@ export class PlaywrightNetworkMonitor {
       return this.isUnknownArray(result) ? result : [];
     } catch (err) {
       logger.warn(
-        `[PW] Failed to get fetch requests: ${err instanceof Error ? err.message : String(err)}`
+        `[PW] Failed to get fetch requests: ${err instanceof Error ? err.message : String(err)}`,
       );
       return [];
     }
@@ -526,7 +617,7 @@ export class PlaywrightNetworkMonitor {
       return this.isClearedBuffersResult(result) ? result : { xhrCleared: 0, fetchCleared: 0 };
     } catch (err) {
       logger.warn(
-        `[PW] Failed to clear injected buffers: ${err instanceof Error ? err.message : String(err)}`
+        `[PW] Failed to clear injected buffers: ${err instanceof Error ? err.message : String(err)}`,
       );
       return { xhrCleared: 0, fetchCleared: 0 };
     }
@@ -566,7 +657,7 @@ export class PlaywrightNetworkMonitor {
         : { xhrReset: false, fetchReset: false };
     } catch (err) {
       logger.warn(
-        `[PW] Failed to reset interceptors: ${err instanceof Error ? err.message : String(err)}`
+        `[PW] Failed to reset interceptors: ${err instanceof Error ? err.message : String(err)}`,
       );
       return { xhrReset: false, fetchReset: false };
     }

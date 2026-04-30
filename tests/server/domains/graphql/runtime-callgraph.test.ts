@@ -1,3 +1,4 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const isSsrfTargetMock = vi.fn(async () => false);
@@ -11,10 +12,6 @@ import type {
   CallGraphNode,
   CallGraphEdge,
 } from '@server/domains/graphql/handlers.impl.core.runtime.shared';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0]!.text);
-}
 
 describe('GraphQLToolHandlersCallGraph', () => {
   const page = {
@@ -42,7 +39,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
       const response = await handlers.handleCallGraphAnalyze({
         filterPattern: '[unclosed',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toContain('Invalid filterPattern regex');
       expect(body.context).toBeDefined();
@@ -63,7 +60,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({ filterPattern: '' }));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({ filterPattern: '' }));
       expect(body.success).toBe(true);
     });
 
@@ -81,7 +78,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
       expect(body.success).toBe(true);
     });
 
@@ -99,7 +96,9 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({ filterPattern: 'fetch.*' }));
+      const body = parseJson<any>(
+        await handlers.handleCallGraphAnalyze({ filterPattern: 'fetch.*' }),
+      );
       expect(body.success).toBe(true);
     });
   });
@@ -125,7 +124,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ maxDepth: 5 })
+        expect.objectContaining({ maxDepth: 5 }),
       );
     });
 
@@ -147,7 +146,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ maxDepth: 10 })
+        expect.objectContaining({ maxDepth: 10 }),
       );
     });
 
@@ -169,7 +168,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ maxDepth: 1 })
+        expect.objectContaining({ maxDepth: 1 }),
       );
     });
 
@@ -191,7 +190,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ maxDepth: 20 })
+        expect.objectContaining({ maxDepth: 20 }),
       );
     });
   });
@@ -216,7 +215,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
 
       page.evaluate.mockResolvedValueOnce({ nodes, edges, stats });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
 
       expect(body.success).toBe(true);
       expect(body.nodes).toHaveLength(2);
@@ -242,7 +241,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
 
       expect(body.success).toBe(true);
       expect(body.nodes).toHaveLength(0);
@@ -269,7 +268,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
 
       expect(page.evaluate).toHaveBeenCalledWith(
         expect.any(Function),
-        expect.objectContaining({ filterPattern: 'test' })
+        expect.objectContaining({ filterPattern: 'test' }),
       );
     });
   });
@@ -297,7 +296,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
 
       expect(body.stats.nodesTruncated).toBe(true);
       expect(body.stats.nodesReturned).toBe(2000);
@@ -324,7 +323,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
 
       expect(body.stats.edgesTruncated).toBe(true);
       expect(body.stats.edgesReturned).toBe(5000);
@@ -345,7 +344,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
 
       expect(body.stats.nodesTruncated).toBe(false);
       expect(body.stats.edgesTruncated).toBe(false);
@@ -372,7 +371,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
         },
       });
 
-      const body = parseJson(await handlers.handleCallGraphAnalyze({}));
+      const body = parseJson<any>(await handlers.handleCallGraphAnalyze({}));
 
       expect(body.stats.nodesReturned).toBe(2);
       expect(body.stats.edgesReturned).toBe(1);
@@ -401,8 +400,8 @@ describe('GraphQLToolHandlersCallGraph', () => {
         stats: originalStats,
       });
 
-      const body = parseJson(
-        await handlers.handleCallGraphAnalyze({ maxDepth: 7, filterPattern: 'test.*' })
+      const body = parseJson<any>(
+        await handlers.handleCallGraphAnalyze({ maxDepth: 7, filterPattern: 'test.*' }),
       );
 
       expect(body.stats.scannedRecords).toBe(42);
@@ -419,7 +418,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
       collector.getActivePage.mockRejectedValueOnce(new Error('Browser crashed'));
 
       const response = await handlers.handleCallGraphAnalyze({});
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toBe('Browser crashed');
     });
@@ -428,7 +427,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
       page.evaluate.mockRejectedValueOnce(new Error('Script timeout'));
 
       const response = await handlers.handleCallGraphAnalyze({});
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.error).toBe('Script timeout');
     });
@@ -437,7 +436,7 @@ describe('GraphQLToolHandlersCallGraph', () => {
       const response = await handlers.handleCallGraphAnalyze({
         filterPattern: '(?P<invalid>)',
       });
-      const body = parseJson(response);
+      const body = parseJson<any>(response);
       expect((response as any).isError).toBe(true);
       expect(body.context.reason).toBeDefined();
       expect(typeof body.context.reason).toBe('string');

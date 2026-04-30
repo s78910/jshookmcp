@@ -1,4 +1,4 @@
-import type { CDPSession } from 'rebrowser-puppeteer-core';
+import type { CDPSessionLike } from '@modules/browser/CDPSessionLike';
 import { logger } from '@utils/logger';
 import type { NetworkRequest, NetworkResponse } from '@modules/monitor/NetworkMonitor.types';
 import {
@@ -19,6 +19,7 @@ interface CDPRequestWillBeSentPayload {
     method: string;
     headers?: UnknownRecord;
     postData?: string;
+    httpVersion?: string;
   };
   timestamp: number;
   type?: string;
@@ -132,7 +133,7 @@ export class NetworkMonitor {
     loadingFinished?: (params: unknown) => void;
   } = {};
 
-  constructor(private cdpSession: CDPSession) {
+  constructor(private cdpSession: CDPSessionLike) {
     // Mark as disabled on session drop — ConsoleMonitor will recreate us on reconnect
     this.cdpSession.on('disconnected', () => {
       logger.warn('NetworkMonitor: CDP session disconnected');
@@ -174,6 +175,7 @@ export class NetworkMonitor {
           postData: params.request.postData,
           timestamp: params.timestamp,
           type: params.type,
+          httpVersion: params.request.httpVersion,
           initiator: params.initiator,
         };
 
@@ -229,7 +231,7 @@ export class NetworkMonitor {
         // Auto-capture response body into LRU cache (fire-and-forget)
         this.captureResponseBody(params.requestId).catch((err) => {
           logger.debug(
-            `[BodyCache] Auto-capture failed for ${params.requestId}: ${err instanceof Error ? err.message : String(err)}`
+            `[BodyCache] Auto-capture failed for ${params.requestId}: ${err instanceof Error ? err.message : String(err)}`,
           );
         });
       };
@@ -278,7 +280,7 @@ export class NetworkMonitor {
       // Skip bodies larger than 1MB to prevent memory bloat
       if (rawResult.body.length > 1_048_576) {
         logger.debug(
-          `[BodyCache] Skipping oversized body for ${requestId} (${rawResult.body.length} chars)`
+          `[BodyCache] Skipping oversized body for ${requestId} (${rawResult.body.length} chars)`,
         );
         return;
       }
@@ -297,12 +299,12 @@ export class NetworkMonitor {
       });
 
       logger.debug(
-        `[BodyCache] Cached body for ${requestId} (${rawResult.body.length} chars, url=${response.url})`
+        `[BodyCache] Cached body for ${requestId} (${rawResult.body.length} chars, url=${response.url})`,
       );
     } catch (err) {
       // Body not available (e.g., 204, redirect, streaming) — log and skip
       logger.debug(
-        `[BodyCache] Could not capture body for ${requestId}: ${err instanceof Error ? err.message : String(err)}`
+        `[BodyCache] Could not capture body for ${requestId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -350,7 +352,7 @@ export class NetworkMonitor {
       requestCount: this.requests.size,
       responseCount: this.responses.size,
       listenerCount: Object.keys(this.networkListeners).filter(
-        (key) => this.networkListeners[key as keyof typeof this.networkListeners] !== undefined
+        (key) => this.networkListeners[key as keyof typeof this.networkListeners] !== undefined,
       ).length,
       cdpSessionActive: true,
     };
@@ -412,7 +414,7 @@ export class NetworkMonitor {
 
     if (!this.networkEnabled) {
       logger.error(
-        'Network monitoring is not enabled. Call enable() with enableNetwork: true first.'
+        'Network monitoring is not enabled. Call enable() with enableNetwork: true first.',
       );
       return null;
     }
@@ -432,14 +434,14 @@ export class NetworkMonitor {
 
     if (!request) {
       logger.error(
-        `Request not found: ${requestId}. Make sure network monitoring was enabled before the request.`
+        `Request not found: ${requestId}. Make sure network monitoring was enabled before the request.`,
       );
       return null;
     }
 
     if (!response) {
       logger.warn(
-        `Response not yet received for request: ${requestId}. The request may still be pending.`
+        `Response not yet received for request: ${requestId}. The request may still be pending.`,
       );
       return null;
     }
@@ -519,20 +521,20 @@ export class NetworkMonitor {
             size: content.length,
             requestId,
           };
-        })
+        }),
       );
 
       jsResponses.push(
         ...batchResults.filter(
           (
-            value
+            value,
           ): value is {
             url: string;
             content: string;
             size: number;
             requestId: string;
-          } => value !== null
-        )
+          } => value !== null,
+        ),
       );
     }
 

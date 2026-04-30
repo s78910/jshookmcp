@@ -1,4 +1,14 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
+import { createPageMock, parseJson } from '@tests/server/domains/shared/mock-factories';
+import type {
+  BrowserAttachResponse,
+  BrowserCloseResponse,
+  BrowserLaunchResponse,
+  BrowserListTabsResponse,
+  BrowserSelectTabResponse,
+  BrowserStatusResponse,
+} from '@tests/shared/common-test-types';
+import { readFile, writeFile } from 'fs/promises';
 
 vi.mock('@utils/logger', () => ({
   logger: {
@@ -20,27 +30,54 @@ vi.mock('@utils/config', () => ({
 
 import { BrowserControlHandlers } from '@server/domains/browser/handlers/browser-control';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
+interface CollectorMock {
+  connect: Mock<(args: any) => Promise<void>>;
+  launch: Mock<(args: any) => Promise<any>>;
+  close: Mock<() => Promise<void>>;
+  listPages: Mock<() => Promise<Array<{ index: number; url: string; title: string }>>>;
+  listResolvedPages: Mock<() => Promise<Array<{ index: number; url: string; title: string }>>>;
+  selectPage: Mock<(index: number) => Promise<void>>;
+  getStatus: Mock<() => Promise<{ connected: boolean; pages?: number }>>;
+}
+
+interface ConsoleMonitorMock {
+  disable: Mock<() => Promise<void>>;
+  enable: Mock<() => Promise<void>>;
+  markContextChanged: Mock<() => void>;
+}
+
+interface TabRegistryMock {
+  reconcilePages: Mock<() => any[]>;
+  setCurrentByIndex: Mock<(index: number) => { pageId: string; aliases: string[] }>;
+  getTabByIndex: Mock<(index: number) => { pageId: string; aliases: string[] }>;
+  getContextMeta: Mock<() => { pageId: string; tabIndex: number }>;
 }
 
 function createMocks() {
-  const collector = {
+  const collector: CollectorMock = {
     connect: vi.fn(async () => {}),
-    init: vi.fn(async () => {}),
+    launch: vi.fn(async () => ({
+      action: 'launched',
+      launchOptions: {
+        headless: true,
+        args: [],
+        v8NativeSyntaxEnabled: false,
+      },
+    })),
     close: vi.fn(async () => {}),
     listPages: vi.fn(async () => []),
     listResolvedPages: vi.fn(async () => []),
     selectPage: vi.fn(async () => {}),
     getStatus: vi.fn(async () => ({ connected: true })),
-  } as any;
+  };
 
-  const consoleMonitor = {
+  const consoleMonitor: ConsoleMonitorMock = {
     disable: vi.fn(async () => {}),
     enable: vi.fn(async () => {}),
-  } as any;
+    markContextChanged: vi.fn(() => {}),
+  };
 
-  const tabRegistry = {
+  const tabRegistry: TabRegistryMock = {
     reconcilePages: vi.fn(() => []),
     setCurrentByIndex: vi.fn((index: number) => ({
       pageId: `page-${index}`,
@@ -51,16 +88,23 @@ function createMocks() {
       aliases: [`alias-${index}`],
     })),
     getContextMeta: vi.fn(() => ({ pageId: 'page-0', tabIndex: 0 })),
-  } as any;
+  };
 
   const deps = {
-    collector,
-    pageController: {} as any,
-    consoleMonitor,
+    collector: collector as any,
+    pageController: createPageMock() as any,
+    consoleMonitor: consoleMonitor as any,
     getActiveDriver: () => 'chrome' as const,
     getCamoufoxManager: () => null,
     getCamoufoxPage: async () => null,
-    getTabRegistry: () => tabRegistry,
+    getTabRegistry: () => tabRegistry as any,
+    clearAttachedTargetContext: vi.fn(
+      async (): Promise<{ detached: boolean; targetId: string | null; type: string | null }> => ({
+        detached: false,
+        targetId: null,
+        type: null,
+      }),
+    ),
   };
 
   return { collector, consoleMonitor, tabRegistry, deps };
@@ -70,7 +114,7 @@ function createMocks() {
 
 describe('BrowserControlHandlers – handleBrowserLaunch', () => {
   let handlers: BrowserControlHandlers;
-  let collector: ReturnType<typeof createMocks>['collector'];
+  let collector: CollectorMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,8 +125,12 @@ describe('BrowserControlHandlers – handleBrowserLaunch', () => {
 
   it('launches chrome in default mode and returns status', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true, pages: 1 });
-    const body = parseJson(await handlers.handleBrowserLaunch({}));
-    expect(collector.init).toHaveBeenCalledWith(undefined);
+    const body = parseJson<BrowserLaunchResponse>(await handlers.handleBrowserLaunch({}));
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: undefined,
+    });
     expect(body.success).toBe(true);
     expect(body.driver).toBe('chrome');
     expect(body.status.connected).toBe(true);
@@ -90,11 +138,11 @@ describe('BrowserControlHandlers – handleBrowserLaunch', () => {
 
   it('connects chrome when mode=connect with browserURL', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
-    const body = parseJson(
+    const body = parseJson<BrowserLaunchResponse>(
       await handlers.handleBrowserLaunch({
         mode: 'connect',
         browserURL: 'http://127.0.0.1:9222',
-      })
+      }),
     );
     expect(collector.connect).toHaveBeenCalledWith({
       browserURL: 'http://127.0.0.1:9222',
@@ -110,11 +158,11 @@ describe('BrowserControlHandlers – handleBrowserLaunch', () => {
 
   it('connects chrome when mode=connect with wsEndpoint', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
-    const body = parseJson(
+    const body = parseJson<BrowserLaunchResponse>(
       await handlers.handleBrowserLaunch({
         mode: 'connect',
         wsEndpoint: 'ws://127.0.0.1:9222/devtools/browser/abc',
-      })
+      }),
     );
     expect(collector.connect).toHaveBeenCalledWith({
       browserURL: undefined,
@@ -126,28 +174,70 @@ describe('BrowserControlHandlers – handleBrowserLaunch', () => {
     expect(body.success).toBe(true);
   });
 
+  it('connects chrome with a valid autoConnect channel and approval hint', async () => {
+    collector.getStatus.mockResolvedValueOnce({ connected: true });
+
+    const body = parseJson<BrowserLaunchResponse>(
+      await handlers.handleBrowserLaunch({
+        mode: 'connect',
+        channel: 'beta',
+      }),
+    );
+
+    expect(collector.connect).toHaveBeenCalledWith({
+      browserURL: undefined,
+      wsEndpoint: undefined,
+      autoConnect: undefined,
+      userDataDir: undefined,
+      channel: 'beta',
+    });
+    expect(body.success).toBe(true);
+    expect(body.mode).toBe('connect');
+    expect(body.endpoint).toBe('autoConnect:beta');
+    // @ts-expect-error
+    expect(body.autoConnect).toBe(true);
+    // @ts-expect-error
+    expect(body.manualApprovalMayBeRequired).toBe(true);
+    // @ts-expect-error
+    expect(body.approvalHint).toContain('Chrome 144+');
+  });
+
   it('returns error when chrome connect mode has no endpoint', async () => {
-    const body = parseJson(await handlers.handleBrowserLaunch({ mode: 'connect' }));
+    const body = parseJson<BrowserLaunchResponse>(
+      await handlers.handleBrowserLaunch({ mode: 'connect' }),
+    );
     expect(body.success).toBe(false);
     expect(body.error).toContain(
-      'browserURL, wsEndpoint, autoConnect, userDataDir, or channel is required'
+      'browserURL, wsEndpoint, autoConnect, userDataDir, or channel is required',
     );
   });
 
+  it('rejects chrome connect mode with an invalid channel', async () => {
+    const response = await handlers.handleBrowserLaunch({
+      mode: 'connect',
+      channel: 'nightly',
+    });
+    const body = parseJson<BrowserLaunchResponse>(response);
+    expect(body.success).toBe(false);
+    expect(body.error).toContain('Invalid channel "nightly"');
+  });
+
   it('launches camoufox in default launch mode', async () => {
-    const body = parseJson(await handlers.handleBrowserLaunch({ driver: 'camoufox' }));
+    const body = parseJson<BrowserLaunchResponse>(
+      await handlers.handleBrowserLaunch({ driver: 'camoufox' }),
+    );
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');
     expect(body.mode).toBe('launch');
   });
 
   it('connects camoufox when mode=connect with wsEndpoint', async () => {
-    const body = parseJson(
+    const body = parseJson<BrowserLaunchResponse>(
       await handlers.handleBrowserLaunch({
         driver: 'camoufox',
         mode: 'connect',
         wsEndpoint: 'ws://localhost:1234',
-      })
+      }),
     );
     expect(body.success).toBe(true);
     expect(body.driver).toBe('camoufox');
@@ -156,67 +246,156 @@ describe('BrowserControlHandlers – handleBrowserLaunch', () => {
   });
 
   it('returns error when camoufox connect mode has no wsEndpoint', async () => {
-    const body = parseJson(
+    const body = parseJson<BrowserLaunchResponse>(
       await handlers.handleBrowserLaunch({
         driver: 'camoufox',
         mode: 'connect',
-      })
+      }),
     );
     expect(body.success).toBe(false);
     expect(body.error).toContain('wsEndpoint is required');
   });
 
-  it('passes headless boolean true to collector.init', async () => {
+  it('passes headless boolean true to collector.launch', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: true });
-    expect(collector.init).toHaveBeenCalledWith(true);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: true,
+    });
   });
 
-  it('passes headless boolean false to collector.init', async () => {
+  it('passes headless boolean false to collector.launch', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: false });
-    expect(collector.init).toHaveBeenCalledWith(false);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: false,
+    });
   });
 
   it('parses headless string "true" correctly', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: 'true' });
-    expect(collector.init).toHaveBeenCalledWith(true);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: true,
+    });
   });
 
   it('parses headless string "false" correctly', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: 'false' });
-    expect(collector.init).toHaveBeenCalledWith(false);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: false,
+    });
   });
 
   it('parses headless string "yes"/"no" correctly', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: 'yes' });
-    expect(collector.init).toHaveBeenCalledWith(true);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: true,
+    });
   });
 
   it('parses headless number 1 as true', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: 1 });
-    expect(collector.init).toHaveBeenCalledWith(true);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: true,
+    });
   });
 
   it('parses headless number 0 as false', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: 0 });
-    expect(collector.init).toHaveBeenCalledWith(false);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: false,
+    });
   });
 
   it('treats unrecognized headless values as undefined', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true });
     await handlers.handleBrowserLaunch({ headless: 'maybe' });
-    expect(collector.init).toHaveBeenCalledWith(undefined);
+    expect(collector.launch).toHaveBeenCalledWith({
+      args: [],
+      enableV8NativesSyntax: undefined,
+      headless: undefined,
+    });
   });
 
-  it('re-throws non-linux-display errors from init', async () => {
-    collector.init.mockRejectedValueOnce(new Error('some other error'));
-    await expect(handlers.handleBrowserLaunch({})).rejects.toThrow('some other error');
+  it('returns failure response for non-linux-display errors from init', async () => {
+    collector.launch.mockRejectedValueOnce(new Error('some other error'));
+    const response = await handlers.handleBrowserLaunch({});
+    const body = parseJson<BrowserLaunchResponse>(response);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe('some other error');
+  });
+
+  it('falls back to headless mode on Linux display errors and persists .env', async () => {
+    const prevFallback = process.env.JSHOOK_FORCE_LINUX_FALLBACK;
+    process.env.JSHOOK_FORCE_LINUX_FALLBACK = 'true';
+
+    try {
+      collector.launch
+        .mockRejectedValueOnce(new Error('Missing X server or $DISPLAY'))
+        .mockResolvedValueOnce({
+          action: 'launched',
+          launchOptions: {
+            headless: true,
+            args: [],
+            v8NativeSyntaxEnabled: false,
+          },
+        });
+      collector.getStatus.mockResolvedValueOnce({ connected: true, pages: 1 });
+      vi.mocked(readFile).mockResolvedValueOnce('APP_NAME=jshook\nPUPPETEER_HEADLESS=false\n');
+      vi.mocked(writeFile).mockResolvedValueOnce(undefined);
+
+      const body = parseJson<BrowserLaunchResponse>(
+        await handlers.handleBrowserLaunch({
+          headless: false,
+        }),
+      );
+
+      expect(collector.launch).toHaveBeenNthCalledWith(1, {
+        args: [],
+        enableV8NativesSyntax: undefined,
+        headless: false,
+      });
+      expect(collector.launch).toHaveBeenNthCalledWith(2, {
+        args: [],
+        enableV8NativesSyntax: undefined,
+        headless: true,
+      });
+      expect(writeFile).toHaveBeenCalledWith(
+        expect.stringContaining('project'),
+        expect.stringContaining('PUPPETEER_HEADLESS=true'),
+        'utf-8',
+      );
+      expect(body.success).toBe(true);
+      // @ts-expect-error
+      expect(body.fallback?.applied).toBe(true);
+      // @ts-expect-error
+      expect(body.fallback?.newEnv).toBe('PUPPETEER_HEADLESS=true');
+    } finally {
+      if (prevFallback === undefined) {
+        delete process.env.JSHOOK_FORCE_LINUX_FALLBACK;
+      } else {
+        process.env.JSHOOK_FORCE_LINUX_FALLBACK = prevFallback;
+      }
+    }
   });
 });
 
@@ -224,7 +403,7 @@ describe('BrowserControlHandlers – handleBrowserLaunch', () => {
 
 describe('BrowserControlHandlers – handleBrowserClose', () => {
   let handlers: BrowserControlHandlers;
-  let collector: ReturnType<typeof createMocks>['collector'];
+  let collector: CollectorMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -234,7 +413,7 @@ describe('BrowserControlHandlers – handleBrowserClose', () => {
   });
 
   it('closes the browser and returns success', async () => {
-    const body = parseJson(await handlers.handleBrowserClose({}));
+    const body = parseJson<BrowserCloseResponse>(await handlers.handleBrowserClose({}));
     expect(collector.close).toHaveBeenCalledOnce();
     expect(body.success).toBe(true);
     expect(body.message).toContain('closed');
@@ -245,7 +424,7 @@ describe('BrowserControlHandlers – handleBrowserClose', () => {
 
 describe('BrowserControlHandlers – handleBrowserStatus', () => {
   let handlers: BrowserControlHandlers;
-  let collector: ReturnType<typeof createMocks>['collector'];
+  let collector: CollectorMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -256,7 +435,7 @@ describe('BrowserControlHandlers – handleBrowserStatus', () => {
 
   it('returns the collector status with driver field', async () => {
     collector.getStatus.mockResolvedValueOnce({ connected: true, pages: 2 });
-    const body = parseJson(await handlers.handleBrowserStatus({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handleBrowserStatus({}));
     expect(body.driver).toBe('chrome');
     expect(body.connected).toBe(true);
     expect(body.pages).toBe(2);
@@ -267,7 +446,7 @@ describe('BrowserControlHandlers – handleBrowserStatus', () => {
 
 describe('BrowserControlHandlers – handleBrowserListTabs', () => {
   let handlers: BrowserControlHandlers;
-  let collector: ReturnType<typeof createMocks>['collector'];
+  let collector: CollectorMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -282,12 +461,14 @@ describe('BrowserControlHandlers – handleBrowserListTabs', () => {
       { index: 1, url: 'https://b.com', title: 'B' },
     ]);
 
-    const body = parseJson(await handlers.handleBrowserListTabs({}));
+    const body = parseJson<BrowserListTabsResponse>(await handlers.handleBrowserListTabs({}));
 
     expect(body.success).toBe(true);
     expect(body.count).toBe(2);
     expect(body.pages).toHaveLength(2);
+    // @ts-expect-error — auto-suppressed [TS2532]
     expect(body.pages[0].pageId).toBe('page-0');
+    // @ts-expect-error — auto-suppressed [TS2532]
     expect(body.pages[1].aliases).toEqual(['alias-1']);
     expect(body.currentPageId).toBe('page-0');
   });
@@ -308,7 +489,7 @@ describe('BrowserControlHandlers – handleBrowserListTabs', () => {
 
   it('returns error payload when listPages throws', async () => {
     collector.listPages.mockRejectedValueOnce(new Error('no browser'));
-    const body = parseJson(await handlers.handleBrowserListTabs({}));
+    const body = parseJson<BrowserListTabsResponse>(await handlers.handleBrowserListTabs({}));
     expect(body.success).toBe(false);
     expect(body.error).toBe('no browser');
     expect(body.hint).toBeDefined();
@@ -319,9 +500,9 @@ describe('BrowserControlHandlers – handleBrowserListTabs', () => {
 
 describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
   let handlers: BrowserControlHandlers;
-  let collector: ReturnType<typeof createMocks>['collector'];
-  let consoleMonitor: ReturnType<typeof createMocks>['consoleMonitor'];
-  let tabRegistry: ReturnType<typeof createMocks>['tabRegistry'];
+  let collector: CollectorMock;
+  let consoleMonitor: ConsoleMonitorMock;
+  let tabRegistry: TabRegistryMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -338,7 +519,9 @@ describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
       { index: 1, url: 'https://b.com', title: 'B' },
     ]);
 
-    const body = parseJson(await handlers.handleBrowserSelectTab({ index: 1 }));
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ index: 1 }),
+    );
 
     expect(collector.selectPage).toHaveBeenCalledWith(1);
     expect(tabRegistry.setCurrentByIndex).toHaveBeenCalledWith(1);
@@ -346,7 +529,32 @@ describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
     expect(body.selectedIndex).toBe(1);
     expect(body.url).toBe('https://b.com');
     expect(body.title).toBe('B');
-    expect(body.activeContextRefreshed).toBe(true);
+    expect(body.contextSwitched).toBe(true);
+    expect(body.monitoringBindingDeferred).toBe(true);
+    expect(body.networkMonitoringEnabled).toBe(false);
+    expect(body.consoleMonitoringEnabled).toBe(false);
+    expect(consoleMonitor.markContextChanged).toHaveBeenCalledOnce();
+  });
+
+  it('selects a tab by index without enabling monitoring when no stable page handle exists', async () => {
+    collector.listPages.mockResolvedValueOnce([{ index: 0, url: 'https://a.com', title: 'A' }]);
+    tabRegistry.setCurrentByIndex.mockReturnValueOnce({
+      pageId: undefined as unknown as string,
+      aliases: [],
+    });
+
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ index: 0 }),
+    );
+
+    expect(body.success).toBe(true);
+    expect(body.selectedIndex).toBe(0);
+    // @ts-expect-error
+    expect(body.selectedPageId).toBe(null);
+    expect(body.contextSwitched).toBe(true);
+    expect(body.monitoringBindingDeferred).toBe(false);
+    expect(body.networkMonitoringEnabled).toBe(false);
+    expect(body.consoleMonitoringEnabled).toBe(false);
   });
 
   it('selects a tab by urlPattern', async () => {
@@ -355,11 +563,14 @@ describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
       { index: 1, url: 'https://b.com/target', title: 'B' },
     ]);
 
-    const body = parseJson(await handlers.handleBrowserSelectTab({ urlPattern: 'target' }));
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ urlPattern: 'target' }),
+    );
 
     expect(collector.selectPage).toHaveBeenCalledWith(1);
     expect(body.success).toBe(true);
     expect(body.selectedIndex).toBe(1);
+    expect(body.contextSwitched).toBe(true);
   });
 
   it('selects a tab by titlePattern', async () => {
@@ -368,16 +579,21 @@ describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
       { index: 1, url: 'https://b.com', title: 'Second Tab' },
     ]);
 
-    const body = parseJson(await handlers.handleBrowserSelectTab({ titlePattern: 'Second' }));
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ titlePattern: 'Second' }),
+    );
 
     expect(body.success).toBe(true);
     expect(body.selectedIndex).toBe(1);
+    expect(body.contextSwitched).toBe(true);
   });
 
   it('returns error when no matching tab found', async () => {
     collector.listPages.mockResolvedValueOnce([{ index: 0, url: 'https://a.com', title: 'A' }]);
 
-    const body = parseJson(await handlers.handleBrowserSelectTab({ urlPattern: 'notfound' }));
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ urlPattern: 'notfound' }),
+    );
 
     expect(body.success).toBe(false);
     expect(body.error).toBe('No matching tab found');
@@ -387,27 +603,23 @@ describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
   it('returns error payload when selectPage throws', async () => {
     collector.selectPage.mockRejectedValueOnce(new Error('select failed'));
 
-    const body = parseJson(await handlers.handleBrowserSelectTab({ index: 0 }));
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ index: 0 }),
+    );
 
     expect(body.success).toBe(false);
     expect(body.error).toBe('select failed');
   });
 
-  it('continues with monitoring disabled when consoleMonitor.disable fails', async () => {
+  it('continues when marking the monitoring context stale fails', async () => {
     collector.listPages.mockResolvedValueOnce([{ index: 0, url: 'https://a.com', title: 'A' }]);
-    consoleMonitor.disable.mockRejectedValueOnce(new Error('disable fail'));
+    consoleMonitor.markContextChanged.mockImplementationOnce(() => {
+      throw new Error('mark stale failed');
+    });
 
-    const body = parseJson(await handlers.handleBrowserSelectTab({ index: 0 }));
-
-    expect(body.success).toBe(true);
-    expect(consoleMonitor.enable).toHaveBeenCalled();
-  });
-
-  it('reports monitoring disabled when consoleMonitor.enable fails', async () => {
-    collector.listPages.mockResolvedValueOnce([{ index: 0, url: 'https://a.com', title: 'A' }]);
-    consoleMonitor.enable.mockRejectedValueOnce(new Error('enable fail'));
-
-    const body = parseJson(await handlers.handleBrowserSelectTab({ index: 0 }));
+    const body = parseJson<BrowserSelectTabResponse>(
+      await handlers.handleBrowserSelectTab({ index: 0 }),
+    );
 
     expect(body.success).toBe(true);
     expect(body.networkMonitoringEnabled).toBe(false);
@@ -419,20 +631,24 @@ describe('BrowserControlHandlers – handleBrowserSelectTab', () => {
 
 describe('BrowserControlHandlers – handleBrowserAttach', () => {
   let handlers: BrowserControlHandlers;
-  let collector: ReturnType<typeof createMocks>['collector'];
+  let collector: CollectorMock;
+  let consoleMonitor: ConsoleMonitorMock;
+  let tabRegistry: TabRegistryMock;
 
   beforeEach(() => {
     vi.clearAllMocks();
     const m = createMocks();
     collector = m.collector;
+    consoleMonitor = m.consoleMonitor;
+    tabRegistry = m.tabRegistry;
     handlers = new BrowserControlHandlers(m.deps);
   });
 
   it('returns error when no endpoint provided', async () => {
-    const body = parseJson(await handlers.handleBrowserAttach({}));
+    const body = parseJson<BrowserAttachResponse>(await handlers.handleBrowserAttach({}));
     expect(body.success).toBe(false);
     expect(body.error).toContain(
-      'browserURL, wsEndpoint, autoConnect, userDataDir, or channel is required'
+      'browserURL, wsEndpoint, autoConnect, userDataDir, or channel is required',
     );
   });
 
@@ -442,8 +658,8 @@ describe('BrowserControlHandlers – handleBrowserAttach', () => {
     ]);
     collector.getStatus.mockResolvedValueOnce({ connected: true });
 
-    const body = parseJson(
-      await handlers.handleBrowserAttach({ browserURL: 'http://127.0.0.1:9222' })
+    const body = parseJson<BrowserAttachResponse>(
+      await handlers.handleBrowserAttach({ browserURL: 'http://127.0.0.1:9222' }),
     );
 
     expect(collector.connect).toHaveBeenCalledWith({
@@ -458,6 +674,13 @@ describe('BrowserControlHandlers – handleBrowserAttach', () => {
     expect(body.selectedIndex).toBe(0);
     expect(body.totalPages).toBe(1);
     expect(body.takeoverReady).toBe(true);
+    expect(body.contextSwitched).toBe(true);
+    expect(body.monitoringBindingDeferred).toBe(true);
+    // @ts-expect-error
+    expect(body.networkMonitoringEnabled).toBe(false);
+    // @ts-expect-error
+    expect(body.consoleMonitoringEnabled).toBe(false);
+    expect(consoleMonitor.markContextChanged).toHaveBeenCalledOnce();
   });
 
   it('attaches and selects the requested pageIndex', async () => {
@@ -467,11 +690,11 @@ describe('BrowserControlHandlers – handleBrowserAttach', () => {
     ]);
     collector.getStatus.mockResolvedValueOnce({ connected: true });
 
-    const body = parseJson(
+    const body = parseJson<BrowserAttachResponse>(
       await handlers.handleBrowserAttach({
         wsEndpoint: 'ws://localhost:1234',
         pageIndex: 1,
-      })
+      }),
     );
 
     expect(collector.selectPage).toHaveBeenCalledWith(1);
@@ -483,11 +706,11 @@ describe('BrowserControlHandlers – handleBrowserAttach', () => {
     collector.listPages.mockResolvedValueOnce([{ index: 0, url: 'https://a.com', title: 'A' }]);
     collector.getStatus.mockResolvedValueOnce({ connected: true });
 
-    const body = parseJson(
+    const body = parseJson<BrowserAttachResponse>(
       await handlers.handleBrowserAttach({
         browserURL: 'http://127.0.0.1:9222',
         pageIndex: 99,
-      })
+      }),
     );
 
     expect(collector.selectPage).toHaveBeenCalledWith(0);
@@ -501,11 +724,11 @@ describe('BrowserControlHandlers – handleBrowserAttach', () => {
     ]);
     collector.getStatus.mockResolvedValueOnce({ connected: true });
 
-    const body = parseJson(
+    const body = parseJson<BrowserAttachResponse>(
       await handlers.handleBrowserAttach({
         browserURL: 'http://127.0.0.1:9222',
         pageIndex: '1',
-      })
+      }),
     );
 
     expect(collector.selectPage).toHaveBeenCalledWith(1);
@@ -515,28 +738,94 @@ describe('BrowserControlHandlers – handleBrowserAttach', () => {
   it('returns error payload when connect throws', async () => {
     collector.connect.mockRejectedValueOnce(new Error('connection refused'));
 
-    const body = parseJson(
+    const body = parseJson<BrowserAttachResponse>(
       await handlers.handleBrowserAttach({
         browserURL: 'http://127.0.0.1:9222',
-      })
+      }),
     );
 
     expect(body.success).toBe(false);
     expect(body.error).toBe('connection refused');
   });
 
+  it('attaches without takeover when the selected tab does not expose a stable page handle', async () => {
+    collector.listPages.mockResolvedValueOnce([
+      { index: 0, url: 'https://example.com', title: 'Example' },
+    ]);
+    collector.getStatus.mockResolvedValueOnce({ connected: true });
+    tabRegistry.setCurrentByIndex.mockReturnValueOnce({
+      pageId: undefined as unknown as string,
+      aliases: [],
+    });
+
+    const body = parseJson<BrowserAttachResponse>(
+      await handlers.handleBrowserAttach({
+        browserURL: 'http://127.0.0.1:9222',
+      }),
+    );
+
+    expect(body.success).toBe(true);
+    expect(body.selectedIndex).toBe(0);
+    // @ts-expect-error
+    expect(body.selectedPageId).toBe(null);
+    expect(body.takeoverReady).toBe(false);
+    expect(body.contextSwitched).toBe(true);
+    expect(body.monitoringBindingDeferred).toBe(false);
+    // @ts-expect-error
+    expect(body.networkMonitoringEnabled).toBe(false);
+    // @ts-expect-error
+    expect(body.consoleMonitoringEnabled).toBe(false);
+    // @ts-expect-error
+    expect(body.note).toContain('does not currently expose a stable Puppeteer Page handle');
+  });
+
   it('handles empty pages list gracefully', async () => {
     collector.listPages.mockResolvedValueOnce([]);
     collector.getStatus.mockResolvedValueOnce({ connected: true });
 
-    const body = parseJson(
+    const body = parseJson<BrowserAttachResponse>(
       await handlers.handleBrowserAttach({
         browserURL: 'http://127.0.0.1:9222',
-      })
+      }),
     );
 
     expect(body.success).toBe(true);
     expect(body.totalPages).toBe(0);
     expect(body.selectedIndex).toBe(0);
+    expect(body.contextSwitched).toBe(false);
+    expect(body.monitoringBindingDeferred).toBe(false);
+  });
+});
+
+describe('BrowserControlHandlers – target context clearing', () => {
+  let handlers: BrowserControlHandlers;
+  let deps: ReturnType<typeof createMocks>['deps'];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const m = createMocks();
+    deps = m.deps;
+    handlers = new BrowserControlHandlers(deps);
+  });
+
+  it('detaches active CDP target before selecting a tab', async () => {
+    deps.clearAttachedTargetContext = vi.fn(async () => ({
+      detached: true,
+      targetId: 'frame-1',
+      type: 'iframe',
+    }));
+    const collector = deps.collector as unknown as CollectorMock;
+    collector.listPages.mockResolvedValueOnce([
+      { index: 0, url: 'https://example.com', title: 'Example' },
+    ]);
+
+    const body = parseJson<
+      BrowserSelectTabResponse & { detachedCdpTarget: boolean; detachedCdpTargetId: string }
+    >(await handlers.handleBrowserSelectTab({ index: 0 }));
+
+    expect(deps.clearAttachedTargetContext).toHaveBeenCalledOnce();
+    expect(body.success).toBe(true);
+    expect(body.detachedCdpTarget).toBe(true);
+    expect(body.detachedCdpTargetId).toBe('frame-1');
   });
 });

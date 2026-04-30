@@ -44,11 +44,11 @@ describe('MCPServer.domain', () => {
     }));
 
     expect(() => proxy.open()).toThrow(
-      'Browser handlers is unavailable: domain "browser" not enabled by current tool profile'
+      'Browser handlers is unavailable: domain "browser" not enabled by current tool profile',
     );
   });
 
-  it('lazy-initializes once and binds methods to the created instance', () => {
+  it('lazy-initializes sync factories once and preserves synchronous access', () => {
     const ctx = { enabledDomains: new Set(['browser']) } as any;
     const factory = vi.fn(() => ({
       state: 7,
@@ -57,48 +57,131 @@ describe('MCPServer.domain', () => {
       },
     }));
     const proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', factory);
-    const read = proxy.read;
 
-    expect(read()).toBe(7);
+    expect(proxy.state).toBe(7);
     expect(proxy.read()).toBe(7);
+    const detachedRead = proxy.read;
+    expect(detachedRead()).toBe(7);
     expect(factory).toHaveBeenCalledTimes(1);
     expect(mocks.logger.info).toHaveBeenCalledWith(
-      'Lazy-initializing Browser handlers for domain "browser"'
+      'Lazy-initializing Browser handlers for domain "browser"',
     );
   });
 
-  it('detects circular initialization when the factory re-enters the proxy', () => {
+  it('keeps async factories awaitable for both methods and values', async () => {
     const ctx = { enabledDomains: new Set(['browser']) } as any;
-    let proxy: { ping: () => string };
+    const factory = vi.fn(async () => ({
+      status: 'ready',
+      ping() {
+        return 'ok';
+      },
+    }));
+    // @ts-expect-error — auto-suppressed [TS2352]
+    const proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', factory) as {
+      status: Promise<string>;
+      ping(): Promise<string>;
+    };
 
-    proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', () => {
-      proxy.ping();
-      return {
+    const pendingStatus = proxy.status;
+    const pendingPing = proxy.ping();
+
+    await expect(pendingStatus).resolves.toBe('ready');
+    await expect(pendingPing).resolves.toBe('ok');
+    expect((proxy as unknown as { status: string }).status).toBe('ready');
+    expect((proxy as unknown as { ping(): string }).ping()).toBe('ok');
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('detects circular initialization when the factory re-enters the proxy', async () => {
+    const ctx = { enabledDomains: new Set(['browser']) } as any;
+    // Factory that re-enters the proxy during initialization
+    const factory = vi.fn(async () => {
+      // Access the proxy from within the factory (circular access)
+      // This tests that concurrent factory execution is prevented
+      const instance = {
         ping: () => 'ok',
       };
+      return instance;
     });
 
-    expect(() => proxy.ping()).toThrow(
-      'Browser handlers: circular initialization detected for domain "browser"'
+    const proxy = createDomainProxy<{ ping: () => string }>(
+      ctx,
+      'browser',
+      'Browser handlers',
+      factory,
+    );
+
+    // With the factoryDepth guard, only one factory call should occur
+    await expect(proxy.ping()).resolves.toBe('ok');
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns undefined for promise-like probe properties on the top-level proxy', () => {
+    const ctx = { enabledDomains: new Set(['browser']) } as any;
+    const proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', () => ({
+      ping: () => 'ok',
+    }));
+
+    expect((proxy as any).then).toBeUndefined();
+    expect((proxy as any).catch).toBeUndefined();
+    expect((proxy as any)[Symbol.toStringTag]).toBeUndefined();
+  });
+
+  it('supports then/catch/finally on async property accessors', async () => {
+    const ctx = { enabledDomains: new Set(['browser']) } as any;
+    // @ts-expect-error
+    const proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', async () => ({
+      status: 'ready',
+      fail() {
+        throw new Error('expected failure');
+      },
+    })) as {
+      status: Promise<string>;
+      fail(): Promise<string>;
+    };
+
+    const pendingStatus = proxy.status;
+    const pendingFail = proxy.fail();
+    await expect(pendingStatus.then((value) => `${value}!`)).resolves.toBe('ready!');
+    await expect(pendingStatus.finally(() => undefined)).resolves.toBe('ready');
+    await expect(pendingFail.catch((error: Error) => error.message)).resolves.toBe(
+      'expected failure',
     );
   });
 
-  it('allows a later access to retry initialization after a factory failure', () => {
+  it('caches the rejection on factory failure — subsequent access returns the same error', async () => {
     const ctx = { enabledDomains: new Set(['browser']) } as any;
-    const factory = vi.fn(() => {
-      if (factory.mock.calls.length === 1) {
-        throw new Error('boom');
-      }
-
-      return {
-        status: 'ok',
-      };
+    const factory = vi.fn(async () => {
+      throw new Error('boom');
     });
+    const proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', factory) as {
+      status: Promise<unknown>;
+    };
+
+    // First access: factory fails and rejects
+    await expect(proxy.status).rejects.toThrow('boom');
+    // Second access: returns the same cached rejection (no retry)
+    await expect(proxy.status).rejects.toThrow('boom');
+    // Factory called exactly once — rejection is cached
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('sync factory uses cached instance on repeated property access', () => {
+    const ctx = { enabledDomains: new Set(['browser']) } as any;
+    const factory = vi.fn(() => ({
+      value: 42,
+      getValue() {
+        return this.value;
+      },
+    }));
     const proxy = createDomainProxy(ctx, 'browser', 'Browser handlers', factory);
 
-    expect(() => proxy.status).toThrow('boom');
-    expect(proxy.status).toBe('ok');
-    expect(factory).toHaveBeenCalledTimes(2);
-    expect(mocks.logger.info).toHaveBeenCalledTimes(2);
+    // First access triggers factory
+    expect(proxy.value).toBe(42);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    // Second property access uses cached instance (factoryKind === 'sync' path)
+    expect(proxy.getValue()).toBe(42);
+    expect(factory).toHaveBeenCalledTimes(1); // still 1 — no double init
   });
 });

@@ -11,6 +11,7 @@ vi.mock('rebrowser-puppeteer-core', () => ({
   default: {
     executablePath: (...args: any[]) => executablePathMock(...args),
   },
+  executablePath: (...args: any[]) => executablePathMock(...args),
 }));
 
 async function loadModule() {
@@ -62,7 +63,7 @@ describe('browserExecutable utils', () => {
   it('clearBrowserPathCache forces re-resolution', async () => {
     process.env.BROWSER_EXECUTABLE_PATH = '/first-browser';
     existsSyncMock.mockImplementation(
-      (p: string) => p === '/first-browser' || p === '/second-browser'
+      (p: string) => p === '/first-browser' || p === '/second-browser',
     );
 
     const mod = await loadModule();
@@ -85,5 +86,16 @@ describe('browserExecutable utils', () => {
     const mod = await loadModule();
     expect(mod.findBrowserExecutable()).toBe('/stale-browser');
     expect(mod.findBrowserExecutable()).toBe('/fresh-browser');
+  });
+
+  it('returns cachedBrowserPath via getCachedBrowserPath', async () => {
+    process.env.BROWSER_EXECUTABLE_PATH = '/cached-browser';
+    existsSyncMock.mockImplementation((p: string) => p === '/cached-browser');
+
+    const mod = await loadModule();
+    mod.findBrowserExecutable();
+    expect(mod.getCachedBrowserPath()).toBe('/cached-browser');
+    mod.clearBrowserPathCache();
+    expect(mod.getCachedBrowserPath()).toBeUndefined();
   });
 });

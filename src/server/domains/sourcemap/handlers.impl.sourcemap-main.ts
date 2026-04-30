@@ -59,7 +59,7 @@ export class SourcemapToolHandlersMain extends SourcemapToolHandlersExtension {
           const sourceResponse = this.asRecord(
             await session.send('Debugger.getScriptSource', {
               scriptId: item.scriptId,
-            })
+            }),
           );
           const scriptSource = this.asString(sourceResponse.scriptSource);
           if (!scriptSource) {
@@ -82,7 +82,7 @@ export class SourcemapToolHandlersMain extends SourcemapToolHandlersExtension {
       const result: DiscoverItem[] = Array.from(scripts.values())
         .filter((item) => item.sourceMapUrl.length > 0)
         .filter((item) => includeInline || !item.isInline)
-        .sort((left, right) => {
+        .toSorted((left, right) => {
           const leftKey = `${left.scriptUrl}|${left.scriptId}`;
           const rightKey = `${right.scriptUrl}|${right.scriptId}`;
           return leftKey.localeCompare(rightKey);
@@ -133,7 +133,7 @@ export class SourcemapToolHandlersMain extends SourcemapToolHandlersExtension {
       const sourceMapUrl = this.requiredStringArg(args.sourceMapUrl, 'sourceMapUrl');
       const outputDir = this.optionalStringArg(args.outputDir);
 
-      const parsed = await this.parseSourceMap(sourceMapUrl, undefined);
+      const parsed = await this.parseSourceMapStats(sourceMapUrl, undefined);
 
       const artifactTarget = this.safeTarget(parsed.resolvedUrl);
       const artifactPath = await resolveArtifactPath({

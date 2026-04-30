@@ -1,24 +1,10 @@
 export interface Config {
-  llm: LLMConfig;
   puppeteer: PuppeteerConfig;
   mcp: MCPConfig;
   cache: CacheConfig;
+  paths: PathsConfig;
   performance: PerformanceConfig;
   search: SearchConfig;
-}
-
-export interface LLMConfig {
-  provider: 'openai' | 'anthropic';
-  openai?: {
-    apiKey: string;
-    model: string;
-    baseURL?: string;
-  };
-  anthropic?: {
-    apiKey: string;
-    model: string;
-    baseURL?: string;
-  };
 }
 
 export interface PuppeteerConfig {
@@ -45,6 +31,15 @@ export interface CacheConfig {
   ttl: number;
 }
 
+export interface PathsConfig {
+  screenshotDir: string;
+  captchaScreenshotDir: string;
+  debuggerSessionsDir: string;
+  extensionRegistryDir: string;
+  tlsKeyLogDir: string;
+  registryCacheDir: string;
+}
+
 export interface PerformanceConfig {
   maxConcurrentAnalysis: number;
   maxCodeSizeMB: number;
@@ -54,6 +49,10 @@ export interface SearchConfig {
   queryCategoryProfiles: SearchQueryCategoryProfileConfig[];
   cjkQueryAliases: SearchCjkQueryAliasConfig[];
   intentToolBoostRules: SearchIntentToolBoostRuleConfig[];
+  vectorEnabled?: boolean;
+  vectorModelId?: string;
+  vectorCosineWeight?: number;
+  vectorDynamicWeight?: boolean;
 }
 
 export interface SearchQueryCategoryProfileConfig {

@@ -7,21 +7,14 @@ const loggerState = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
-const promptState = vi.hoisted(() => ({
-  generateTaintAnalysisPrompt: vi.fn(() => [{ role: 'user', content: 'analyze taint' }]),
-}));
-
 const sanitizerState = vi.hoisted(() => ({
   checkSanitizer: vi.fn((call: any) => {
     const callee = call.callee;
-    return callee && callee.type === 'Identifier' && callee.name === 'sanitize';
+    return callee?.type === 'Identifier' && callee.name === 'sanitize';
   }),
 }));
 
 vi.mock('@utils/logger', () => ({ logger: loggerState }));
-vi.mock('@services/prompts/taint', () => ({
-  generateTaintAnalysisPrompt: promptState.generateTaintAnalysisPrompt,
-}));
 vi.mock('@modules/analyzer/SecurityCodeAnalyzer', () => ({
   checkSanitizer: sanitizerState.checkSanitizer,
 }));
@@ -45,7 +38,7 @@ describe('CodeAnalyzerDataFlow additional branch coverage', () => {
     });
     it('detects get post request axios', async () => {
       const r = await analyzeDataFlowWithTaint(
-        'const a=http.get("/"); const b=http.post("/"); const c=http.request("/"); const d=client.axios("/");'
+        'const a=http.get("/"); const b=http.post("/"); const c=http.request("/"); const d=client.axios("/");',
       );
       expect(r.sources.filter((s) => s.type === 'network').length).toBeGreaterThanOrEqual(4);
     });
@@ -66,7 +59,7 @@ describe('CodeAnalyzerDataFlow additional branch coverage', () => {
     });
     it('detects getElementsByClassName', async () => {
       const r = await analyzeDataFlowWithTaint(
-        'const els = document.getElementsByClassName("cls");'
+        'const els = document.getElementsByClassName("cls");',
       );
       expect(r.sources.some((s) => s.type === 'user_input')).toBe(true);
     });
@@ -223,7 +216,7 @@ describe('CodeAnalyzerDataFlow additional branch coverage', () => {
   describe('taint propagation', () => {
     it('propagates taint through direct variable assignment in second pass', async () => {
       const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\nconst c = s;\nconst d = c;'
+        'const s = location.href;\nconst c = s;\nconst d = c;',
       );
       // Second traversal propagates taint through identifiers
       // Verify sources and sinks are detected
@@ -269,7 +262,7 @@ describe('CodeAnalyzerDataFlow additional branch coverage', () => {
     it('removes taint when sanitizer applied', async () => {
       sanitizerState.checkSanitizer.mockReturnValue(true);
       const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\nconst c = sanitize(s);\ndocument.body.innerHTML = c;'
+        'const s = location.href;\nconst c = sanitize(s);\ndocument.body.innerHTML = c;',
       );
       expect(r.sources.length).toBeGreaterThan(0);
     });
@@ -293,140 +286,6 @@ describe('CodeAnalyzerDataFlow additional branch coverage', () => {
     });
   });
 
-  describe('LLM enhanced taint analysis', () => {
-    it('skips LLM when no taint paths', async () => {
-      const llm = { chat: vi.fn() };
-      await analyzeDataFlowWithTaint('const x = 1;', llm as any);
-      expect(llm.chat).not.toHaveBeenCalled();
-    });
-    it('calls LLM and adds unique paths', async () => {
-      const llm = {
-        chat: vi
-          .fn()
-          .mockResolvedValue({
-            content: JSON.stringify({
-              taintPaths: [
-                {
-                  source: { type: 'network', location: { file: 'current', line: 99 } },
-                  sink: { type: 'eval', location: { file: 'current', line: 100 } },
-                  path: [],
-                },
-              ],
-            }),
-          }),
-      };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      expect(llm.chat).toHaveBeenCalled();
-      expect(r.taintPaths.some((p) => p.source.location.line === 99)).toBe(true);
-    });
-    it('skips duplicate LLM paths', async () => {
-      const llm = {
-        chat: vi
-          .fn()
-          .mockResolvedValue({
-            content: JSON.stringify({
-              taintPaths: [
-                {
-                  source: { type: 'user_input', location: { file: 'current', line: 1 } },
-                  sink: { type: 'xss', location: { file: 'current', line: 2 } },
-                  path: [],
-                },
-              ],
-            }),
-          }),
-      };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      const xssPaths = r.taintPaths.filter((p) => p.sink.type === 'xss');
-      expect(xssPaths.length).toBe(1);
-    });
-    it('handles non-JSON LLM response', async () => {
-      const llm = { chat: vi.fn().mockResolvedValue({ content: 'This is not JSON at all' }) };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      expect(r.taintPaths.length).toBeGreaterThan(0);
-    });
-    it('handles LLM response without taintPaths', async () => {
-      const llm = {
-        chat: vi.fn().mockResolvedValue({ content: JSON.stringify({ analysis: 'no paths' }) }),
-      };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      expect(r.taintPaths.length).toBeGreaterThan(0);
-    });
-    it('handles LLM chat throwing', async () => {
-      const llm = { chat: vi.fn().mockRejectedValue(new Error('LLM fail')) };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      expect(r.taintPaths.length).toBeGreaterThan(0);
-    });
-    it('truncates code to 4000 chars', async () => {
-      const longCode =
-        'const s = location.href;\ndocument.body.innerHTML = s;\n' + 'x'.repeat(5000);
-      const llm = {
-        chat: vi.fn().mockResolvedValue({ content: JSON.stringify({ taintPaths: [] }) }),
-      };
-      await analyzeDataFlowWithTaint(longCode, llm as any);
-      const calls = promptState.generateTaintAnalysisPrompt.mock.calls;
-      if (calls.length > 0) {
-        const codeArg = (calls as unknown as string[][])[0]![0]!;
-        expect(codeArg.length).toBeLessThanOrEqual(4000);
-      }
-    });
-    it('handles LLM path without source or sink', async () => {
-      const llm = {
-        chat: vi
-          .fn()
-          .mockResolvedValue({
-            content: JSON.stringify({
-              taintPaths: [
-                { source: null, sink: null, path: [] },
-                { source: { type: 'network', location: { file: 'current', line: 50 } } },
-              ],
-            }),
-          }),
-      };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      expect(r.taintPaths.every((p) => p.source && p.sink)).toBe(true);
-    });
-    it('uses empty array for missing LLM path', async () => {
-      const llm = {
-        chat: vi
-          .fn()
-          .mockResolvedValue({
-            content: JSON.stringify({
-              taintPaths: [
-                {
-                  source: { type: 'network', location: { file: 'current', line: 88 } },
-                  sink: { type: 'eval', location: { file: 'current', line: 89 } },
-                },
-              ],
-            }),
-          }),
-      };
-      const r = await analyzeDataFlowWithTaint(
-        'const s = location.href;\ndocument.body.innerHTML = s;',
-        llm as any
-      );
-      const llmPath = r.taintPaths.find((p) => p.source.location.line === 88);
-      if (llmPath) expect(llmPath.path).toEqual([]);
-    });
-  });
-
   describe('combined scenarios', () => {
     it('handles multiple source and sink types', async () => {
       const code =
@@ -444,6 +303,66 @@ describe('CodeAnalyzerDataFlow additional branch coverage', () => {
       const r = await analyzeDataFlowWithTaint('const url: string = location.href;\neval(url);');
       expect(r.sources.length).toBeGreaterThan(0);
       expect(r.sinks.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('false branch coverage configurations', () => {
+    it('handles fetch without variable declarator', async () => {
+      const r = await analyzeDataFlowWithTaint('api.fetch("/url");');
+      expect(r.sources.some((s) => s.type === 'network')).toBe(true);
+    });
+
+    it('handles assignment to non-innerHTML properties', async () => {
+      const r = await analyzeDataFlowWithTaint(
+        'const el = location.href;\ndocument.body.innerText = el;',
+      );
+      // innerText doesn't trigger the XSS sink path for taint, so xss sink count is 0
+      expect(r.sinks.some((s) => s.type === 'xss')).toBe(false);
+    });
+
+    it('handles sanitizer with non-identifier or non-tainted argument', async () => {
+      sanitizerState.checkSanitizer.mockReturnValue(true);
+      const r = await analyzeDataFlowWithTaint(
+        'const c = sanitize(123); const d = sanitize(untainted);',
+      );
+      expect(r.sources.length).toBe(0);
+    });
+
+    it('handles binary expression with no tainted sides', async () => {
+      const r = await analyzeDataFlowWithTaint('const a = 1; const b = 2; const c = a + b;');
+      expect(r.sources.length).toBe(0);
+    });
+
+    it('handles VariableDeclarator with CallExpression and no taint', async () => {
+      const r = await analyzeDataFlowWithTaint('const c = normalFunc(123);');
+      expect(r.sources.length).toBe(0);
+    });
+
+    it('handles network source with non-identifier variable declarator (ObjectPattern)', async () => {
+      const r = await analyzeDataFlowWithTaint('const { data } = api.fetch("/url");');
+      expect(r.sources.some((s) => s.type === 'network')).toBe(true);
+    });
+
+    it('handles location source without variable declarator', async () => {
+      const r = await analyzeDataFlowWithTaint('console.log(location.href);');
+      expect(r.sources.some((s) => s.type === 'user_input')).toBe(true);
+    });
+
+    it('handles location source with non-identifier variable declarator (ObjectPattern)', async () => {
+      const r = await analyzeDataFlowWithTaint('const { length } = location.href;');
+      expect(r.sources.some((s) => s.type === 'user_input')).toBe(true);
+    });
+
+    it('handles assignment expression without member expression on left side', async () => {
+      const r = await analyzeDataFlowWithTaint('let x = 1; x = location.href;');
+      // xss sinks should be 0 because x is not a member expression (e.g. obj.innerHTML)
+      expect(r.sinks.some((s) => s.type === 'xss')).toBe(false);
+    });
+
+    it('handles location source with StringLiteral property (bracket notation)', async () => {
+      const r = await analyzeDataFlowWithTaint('const x = location["href"];');
+      // sources should be 0 because our static analyzer only looks for Identifier properties
+      expect(r.sources.some((s) => s.type === 'user_input')).toBe(false);
     });
   });
 });

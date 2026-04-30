@@ -76,7 +76,7 @@ describe('PatternDetectorAuthPatterns', () => {
           location: expect.stringContaining('(POST body)'),
           parameters: ['form-urlencoded data'],
         }),
-      ])
+      ]),
     );
   });
 
@@ -89,7 +89,7 @@ describe('PatternDetectorAuthPatterns', () => {
 
     expect(patterns).toEqual([]);
     expect(loggerState.debug).toHaveBeenCalledWith(
-      expect.stringContaining('URL parse failed for signature detection')
+      expect.stringContaining('URL parse failed for signature detection'),
     );
   });
 
@@ -140,7 +140,7 @@ describe('PatternDetectorAuthPatterns', () => {
           location: expect.stringContaining('(POST body)'),
           format: expect.stringContaining('form-urlencoded'),
         }),
-      ])
+      ]),
     );
   });
 
@@ -153,7 +153,7 @@ describe('PatternDetectorAuthPatterns', () => {
 
     expect(patterns).toEqual([]);
     expect(loggerState.debug).toHaveBeenCalledWith(
-      expect.stringContaining('URL parse failed for token detection')
+      expect.stringContaining('URL parse failed for token detection'),
     );
   });
 });

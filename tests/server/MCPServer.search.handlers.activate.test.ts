@@ -9,10 +9,10 @@ function tool(name: string, description = `desc_${name}`) {
 }
 
 const state = vi.hoisted(() => ({
-  createToolHandlerMap: vi.fn((_: unknown, names?: Set<string>) =>
+  createToolHandlerMap: vi.fn((_: any, names?: Set<string>) =>
     Object.fromEntries(
-      [...(names ?? new Set<string>())].map((name) => [name, vi.fn(async () => ({ name }))])
-    )
+      [...(names ?? new Set<string>())].map((name) => [name, vi.fn(async () => ({ name }))]),
+    ),
   ),
   logger: {
     info: vi.fn(),
@@ -47,6 +47,10 @@ vi.mock('@server/ToolHandlerMap', () => ({
 
 vi.mock('@utils/logger', () => ({
   logger: state.logger,
+}));
+
+vi.mock('@server/registry/index', () => ({
+  ensureAllDomainsLoaded: vi.fn().mockResolvedValue(undefined),
 }));
 
 import {
@@ -96,16 +100,16 @@ describe('MCPServer.search.handlers.activate', () => {
       totalActive: 2,
     });
     expect(ctx.registerSingleTool).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'page_navigate' })
+      expect.objectContaining({ name: 'page_navigate' }),
     );
     expect(ctx.activatedToolNames.has('page_navigate')).toBe(true);
     expect(ctx.enabledDomains.has('browser')).toBe(true);
     expect(state.createToolHandlerMap).toHaveBeenCalledWith(
       ctx.handlerDeps,
-      new Set(['page_navigate'])
+      new Set(['page_navigate']),
     );
     expect(ctx.router.addHandlers).toHaveBeenCalledWith(
-      expect.objectContaining({ page_navigate: expect.any(Function) })
+      expect.objectContaining({ page_navigate: expect.any(Function) }),
     );
     expect(ctx.server.sendToolListChanged).toHaveBeenCalledOnce();
   });
@@ -166,7 +170,7 @@ describe('MCPServer.search.handlers.activate', () => {
     expect(result.activated).toEqual(['network_get_requests']);
     expect(state.logger.warn).toHaveBeenCalledWith(
       'sendToolListChanged failed:',
-      expect.any(Error)
+      expect.any(Error),
     );
   });
 
@@ -214,8 +218,8 @@ describe('MCPServer.search.handlers.activate', () => {
       parseResponse(
         await handleDeactivateTools(ctx, {
           names: ['mcp__jshook__custom_tool', 'missing_tool'],
-        })
-      )
+        }),
+      ),
     ).toEqual({
       success: true,
       deactivated: ['custom_tool'],
@@ -244,7 +248,7 @@ describe('MCPServer.search.handlers.activate', () => {
     expect(ctx.router.removeHandler).toHaveBeenCalledWith('page_navigate');
     expect(state.logger.warn).toHaveBeenCalledWith(
       'Failed to remove activated tool "page_navigate":',
-      expect.any(Error)
+      expect.any(Error),
     );
   });
 

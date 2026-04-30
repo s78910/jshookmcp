@@ -1,5 +1,38 @@
 import { z } from 'zod';
 
+const TRUE_BOOLEAN_LITERALS = new Set(['true', '1', 'yes', 'on']);
+const FALSE_BOOLEAN_LITERALS = new Set(['false', '0', 'no', 'off']);
+
+function coerceBooleanInput(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (TRUE_BOOLEAN_LITERALS.has(normalized)) {
+    return true;
+  }
+  if (FALSE_BOOLEAN_LITERALS.has(normalized)) {
+    return false;
+  }
+
+  return value;
+}
+
+function coerceNumberInput(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const normalized = value.trim();
+  if (normalized === '') {
+    return value;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : value;
+}
+
 function jsonSchemaToZod(prop: Record<string, unknown>): z.ZodTypeAny {
   const schemaType = prop.type as string | undefined;
   const description = typeof prop.description === 'string' ? prop.description : undefined;
@@ -25,11 +58,11 @@ function jsonSchemaToZod(prop: Record<string, unknown>): z.ZodTypeAny {
       if (typeof prop.minimum === 'number') num = num.min(prop.minimum);
       if (typeof prop.maximum === 'number') num = num.max(prop.maximum);
       if (schemaType === 'integer') num = num.int();
-      zodType = num;
+      zodType = z.preprocess(coerceNumberInput, num);
       break;
     }
     case 'boolean':
-      zodType = z.boolean();
+      zodType = z.preprocess(coerceBooleanInput, z.boolean());
       break;
     case 'array':
       if (prop.items && typeof prop.items === 'object') {
@@ -42,7 +75,7 @@ function jsonSchemaToZod(prop: Record<string, unknown>): z.ZodTypeAny {
       if (prop.properties && typeof prop.properties === 'object') {
         const nested: Record<string, z.ZodTypeAny> = {};
         const nestedRequired = new Set(
-          Array.isArray(prop.required) ? (prop.required as string[]) : []
+          Array.isArray(prop.required) ? (prop.required as string[]) : [],
         );
         for (const [k, v] of Object.entries(prop.properties as Record<string, unknown>)) {
           const field = jsonSchemaToZod(v as Record<string, unknown>);
@@ -67,12 +100,12 @@ function jsonSchemaToZod(prop: Record<string, unknown>): z.ZodTypeAny {
 export function buildZodShape(inputSchema: Record<string, unknown>): Record<string, z.ZodTypeAny> {
   const props = (inputSchema.properties as Record<string, unknown>) ?? {};
   const requiredKeys = new Set(
-    Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : []
+    Array.isArray(inputSchema.required) ? (inputSchema.required as string[]) : [],
   );
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const [key, descriptor] of Object.entries(props)) {
     const zodType = jsonSchemaToZod(
-      descriptor && typeof descriptor === 'object' ? (descriptor as Record<string, unknown>) : {}
+      descriptor && typeof descriptor === 'object' ? (descriptor as Record<string, unknown>) : {},
     );
     shape[key] = requiredKeys.has(key) ? zodType : zodType.optional();
   }

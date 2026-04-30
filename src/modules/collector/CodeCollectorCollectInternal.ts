@@ -39,6 +39,11 @@ type CompressionResultItem = {
   compressionRatio: number;
 };
 
+interface TemporaryBrowserContext {
+  newPage(): Promise<Page>;
+  close(): Promise<void>;
+}
+
 interface CollectorInternals {
   cacheEnabled: boolean;
   cache: {
@@ -46,8 +51,13 @@ interface CollectorInternals {
     set(url: string, result: CollectCodeResult, options?: Record<string, unknown>): Promise<void>;
   };
   init: () => Promise<void>;
+  getActivePage?: () => Promise<Page>;
+  getActivePageIndex?: () => Promise<number | null>;
+  listPages?: () => Promise<Array<{ index: number; url: string; title: string }>>;
+  selectPage?: (index: number) => Promise<void>;
   browser: {
     newPage(): Promise<Page>;
+    createBrowserContext?: () => Promise<TemporaryBrowserContext>;
   } | null;
   config: {
     timeout?: number;
@@ -68,7 +78,7 @@ interface CollectorInternals {
     smartCollect(
       page: Page,
       files: CodeFile[],
-      options: SmartCollectOptions
+      options: SmartCollectOptions,
     ): Promise<CodeFile[] | CodeSummary[]>;
   };
   compressor: {
@@ -81,7 +91,7 @@ interface CollectorInternals {
         maxRetries?: number;
         concurrency?: number;
         onProgress?: (progress: number) => void;
-      }
+      },
     ): Promise<CompressionResultItem[]>;
     getStats(): CompressionStats;
   };
@@ -150,7 +160,7 @@ function assertCollectorInternals(value: unknown): asserts value is CollectorInt
 
 export async function collectInnerImpl(
   self: unknown,
-  options: CollectCodeOptions
+  options: CollectCodeOptions,
 ): Promise<CollectCodeResult> {
   assertCollectorInternals(self);
 
@@ -172,7 +182,46 @@ export async function collectInnerImpl(
     throw new Error('Browser not initialized');
   }
 
-  const page = await self.browser.newPage();
+  let previousActivePageIndex: number | null = null;
+  const activePages =
+    typeof self.listPages === 'function'
+      ? await self
+          .listPages()
+          .catch(() => [] as Array<{ index: number; url: string; title: string }>)
+      : [];
+  const activePageContext =
+    activePages.length > 0 && typeof self.getActivePage === 'function'
+      ? await self
+          .getActivePage()
+          .then((page) => page.browserContext())
+          .catch((error) => {
+            logger.debug('Failed to resolve active browser context before code collection:', error);
+            return null;
+          })
+      : null;
+
+  const temporaryContext =
+    activePageContext === null && typeof self.browser.createBrowserContext === 'function'
+      ? await self.browser.createBrowserContext()
+      : null;
+
+  if (
+    (activePageContext !== null || !temporaryContext) &&
+    typeof self.getActivePageIndex === 'function'
+  ) {
+    try {
+      previousActivePageIndex = await self.getActivePageIndex();
+    } catch (error) {
+      logger.debug('Failed to capture active page index before code collection:', error);
+    }
+  }
+
+  const page =
+    activePageContext !== null
+      ? await activePageContext.newPage()
+      : temporaryContext
+        ? await temporaryContext.newPage()
+        : await self.browser.newPage();
 
   try {
     const timeoutMs = options.timeout ?? self.config.timeout ?? 30000;
@@ -198,7 +247,7 @@ export async function collectInnerImpl(
 
       if (incoming.length > remaining) {
         logger.warn(
-          `Collected ${incoming.length} ${label}, limiting to remaining ${remaining} files`
+          `Collected ${incoming.length} ${label}, limiting to remaining ${remaining} files`,
         );
       }
 
@@ -220,7 +269,7 @@ export async function collectInnerImpl(
       if (files.length >= self.MAX_FILES_PER_COLLECT) {
         if (files.length === self.MAX_FILES_PER_COLLECT) {
           logger.warn(
-            `Reached max files limit (${self.MAX_FILES_PER_COLLECT}), will skip remaining files`
+            `Reached max files limit (${self.MAX_FILES_PER_COLLECT}), will skip remaining files`,
           );
         }
         return;
@@ -259,7 +308,7 @@ export async function collectInnerImpl(
             finalContent = content.substring(0, self.MAX_SINGLE_FILE_SIZE);
             truncated = true;
             logger.warn(
-              `[CDP] Large file truncated: ${url} (${(contentSize / 1024).toFixed(2)} KB -> ${(self.MAX_SINGLE_FILE_SIZE / 1024).toFixed(2)} KB)`
+              `[CDP] Large file truncated: ${url} (${(contentSize / 1024).toFixed(2)} KB -> ${(self.MAX_SINGLE_FILE_SIZE / 1024).toFixed(2)} KB)`,
             );
           }
 
@@ -285,7 +334,7 @@ export async function collectInnerImpl(
               self.collectedFilesCache.set(url, file);
 
               logger.debug(
-                `[CDP] Collected (${files.length}/${self.MAX_FILES_PER_COLLECT}): ${url} (${(finalContent.length / 1024).toFixed(2)} KB)${truncated ? ' [TRUNCATED]' : ''}`
+                `[CDP] Collected (${files.length}/${self.MAX_FILES_PER_COLLECT}): ${url} (${(finalContent.length / 1024).toFixed(2)} KB)${truncated ? ' [TRUNCATED]' : ''}`,
               );
             }
           }
@@ -308,7 +357,7 @@ export async function collectInnerImpl(
       const inlineScripts = await collectInlineScripts(
         page,
         self.MAX_SINGLE_FILE_SIZE,
-        self.MAX_FILES_PER_COLLECT
+        self.MAX_FILES_PER_COLLECT,
       );
       appendFilesWithinLimit(inlineScripts, 'inline scripts');
     }
@@ -316,7 +365,7 @@ export async function collectInnerImpl(
     if (options.includeServiceWorker !== false) {
       logger.info('Collecting Service Workers...');
       const serviceWorkerFiles = await collectServiceWorkers(page, (url) =>
-        self.shouldCollectUrl(url, options.filterRules)
+        self.shouldCollectUrl(url, options.filterRules),
       );
       appendFilesWithinLimit(serviceWorkerFiles, 'service workers');
     }
@@ -324,7 +373,7 @@ export async function collectInnerImpl(
     if (options.includeWebWorker !== false) {
       logger.info('Collecting Web Workers...');
       const webWorkerFiles = await collectWebWorkers(page, (url) =>
-        self.shouldCollectUrl(url, options.filterRules)
+        self.shouldCollectUrl(url, options.filterRules),
       );
       appendFilesWithinLimit(webWorkerFiles, 'web workers');
     }
@@ -352,7 +401,7 @@ export async function collectInnerImpl(
         const originalSize =
           typeof f.metadata?.originalSize === 'number' ? f.metadata.originalSize : f.size;
         logger.warn(
-          `  - ${f.url}: ${(originalSize / 1024).toFixed(2)} KB -> ${(f.size / 1024).toFixed(2)} KB`
+          `  - ${f.url}: ${(originalSize / 1024).toFixed(2)} KB -> ${(f.size / 1024).toFixed(2)} KB`,
         );
       });
     }
@@ -425,7 +474,7 @@ export async function collectInnerImpl(
           });
 
           const compressedMap = new Map<string, CompressionResultItem>(
-            compressedResults.map((r) => [r.url, r] as [string, CompressionResultItem])
+            compressedResults.map((r) => [r.url, r] as [string, CompressionResultItem]),
           );
 
           for (const file of processedFiles) {
@@ -444,10 +493,10 @@ export async function collectInnerImpl(
           const stats = self.compressor.getStats();
           logger.info(` Compressed ${compressedResults.length}/${processedFiles.length} files`);
           logger.info(
-            ` Compression stats: ${(stats.totalOriginalSize / 1024).toFixed(2)} KB -> ${(stats.totalCompressedSize / 1024).toFixed(2)} KB (${stats.averageRatio.toFixed(1)}% reduction)`
+            ` Compression stats: ${(stats.totalOriginalSize / 1024).toFixed(2)} KB -> ${(stats.totalCompressedSize / 1024).toFixed(2)} KB (${stats.averageRatio.toFixed(1)}% reduction)`,
           );
           logger.info(
-            ` Cache: ${stats.cacheHits} hits, ${stats.cacheMisses} misses (${stats.cacheHits > 0 ? ((stats.cacheHits / (stats.cacheHits + stats.cacheMisses)) * 100).toFixed(1) : 0}% hit rate)`
+            ` Cache: ${stats.cacheHits} hits, ${stats.cacheMisses} misses (${stats.cacheHits > 0 ? ((stats.cacheHits / (stats.cacheHits + stats.cacheMisses)) * 100).toFixed(1) : 0}% hit rate)`,
           );
         }
       } catch (error) {
@@ -459,7 +508,7 @@ export async function collectInnerImpl(
     const totalSize = processedFiles.reduce((sum, file) => sum + file.size, 0);
 
     logger.success(
-      `Collected ${processedFiles.length} files (${(totalSize / 1024).toFixed(2)} KB) in ${collectTime}ms`
+      `Collected ${processedFiles.length} files (${(totalSize / 1024).toFixed(2)} KB) in ${collectTime}ms`,
     );
 
     const result: CollectCodeResult = {
@@ -491,6 +540,21 @@ export async function collectInnerImpl(
       self.cdpSession = null;
       self.cdpListeners = {};
     }
-    await page.close();
+    if (temporaryContext) {
+      try {
+        await temporaryContext.close();
+      } catch (error) {
+        logger.debug('Failed to close temporary browser context after code collection:', error);
+      }
+    } else {
+      await page.close();
+      if (previousActivePageIndex !== null && typeof self.selectPage === 'function') {
+        try {
+          await self.selectPage(previousActivePageIndex);
+        } catch (error) {
+          logger.debug('Failed to restore active page after code collection:', error);
+        }
+      }
+    }
   }
 }

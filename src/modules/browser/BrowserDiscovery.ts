@@ -16,9 +16,9 @@ export interface BrowserSignature {
 }
 
 export class BrowserDiscovery {
-  private scriptLoader: ScriptLoader;
+  protected scriptLoader: ScriptLoader;
 
-  private browserSignatures: Map<string, BrowserSignature> = new Map([
+  protected browserSignatures: Map<string, BrowserSignature> = new Map([
     [
       'chrome',
       {
@@ -53,7 +53,7 @@ export class BrowserDiscovery {
   }
 
   /** Strip all characters that are dangerous in PowerShell contexts. */
-  private sanitizePsInput(value: string): string {
+  protected sanitizePsInput(value: string): string {
     return value.replace(/[`$"'{}();|<>@#%!\\\n\r]/g, '');
   }
 
@@ -78,7 +78,10 @@ export class BrowserDiscovery {
   /**
    * Discover browsers by signature
    */
-  private async findBySignature(type: string, signature: BrowserSignature): Promise<BrowserInfo[]> {
+  protected async findBySignature(
+    type: string,
+    signature: BrowserSignature,
+  ): Promise<BrowserInfo[]> {
     const results: BrowserInfo[] = [];
     const seenPids = new Set<number>();
 
@@ -144,7 +147,7 @@ export class BrowserDiscovery {
           '-ClassPattern',
           escapedPattern,
         ],
-        { maxBuffer: 1024 * 1024 * 10 }
+        { maxBuffer: 1024 * 1024 * 10 },
       );
 
       return this.parseWindowsResult(stdout, classNamePattern);
@@ -167,7 +170,7 @@ export class BrowserDiscovery {
       const { stdout } = await execFileAsync(
         'powershell.exe',
         ['-NoProfile', '-Command', psCommand],
-        { maxBuffer: 1024 * 1024 * 10 }
+        { maxBuffer: 1024 * 1024 * 10 },
       );
 
       return this.parseProcessResult(stdout, name);
@@ -180,7 +183,7 @@ export class BrowserDiscovery {
   /**
    * Parse Windows window results
    */
-  private parseWindowsResult(stdout: string, _classNamePattern: string): BrowserInfo[] {
+  protected parseWindowsResult(stdout: string, _classNamePattern: string): BrowserInfo[] {
     const results: BrowserInfo[] = [];
 
     if (!stdout.trim() || stdout.trim() === 'null') {
@@ -304,7 +307,7 @@ export class BrowserDiscovery {
       const { stdout } = await execFileAsync(
         'powershell.exe',
         ['-NoProfile', '-Command', psCommand],
-        { maxBuffer: 1024 * 1024 }
+        { maxBuffer: 1024 * 1024 },
       );
 
       if (!stdout.trim() || stdout.trim() === 'null') {
@@ -315,12 +318,12 @@ export class BrowserDiscovery {
       const commandLine = data.CommandLine || '';
 
       const match = commandLine.match(/--remote-debugging-port=(\d+)/);
-      if (match && match[1]) {
+      if (match?.[1]) {
         return parseInt(match[1], 10);
       }
 
       return null;
-    } catch (_error) {
+    } catch {
       return null;
     }
   }
@@ -342,7 +345,7 @@ export class BrowserDiscovery {
       const { stdout } = await execFileAsync(
         'powershell.exe',
         ['-NoProfile', '-Command', psCommand],
-        { maxBuffer: 1024 * 1024 }
+        { maxBuffer: 1024 * 1024 },
       );
 
       if (!stdout.trim() || stdout.trim() === 'null') {
@@ -359,7 +362,7 @@ export class BrowserDiscovery {
       }
 
       return false;
-    } catch (_error) {
+    } catch {
       return false;
     }
   }

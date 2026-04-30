@@ -1,6 +1,8 @@
 /**
- * Native Memory Manager using koffi FFI
- * High-performance memory operations using direct Win32 API calls
+ * Native Memory Manager — Cross-platform memory operations.
+ *
+ * Uses PlatformMemoryAPI for read/write/scan/regions/modules.
+ * Win32-only injection and debug methods remain guarded by platform checks.
  *
  * Performance improvement: 10-100x faster than PowerShell-based approach
  * - No process spawning overhead
@@ -14,24 +16,10 @@ import { logger } from '@utils/logger';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cpuLimit } from '../utils/concurrency';
-import {
-  PAGE,
-  MEM,
-  openProcessForMemory,
-  CloseHandle,
-  ReadProcessMemory,
-  WriteProcessMemory,
-  VirtualQueryEx,
-  VirtualProtectEx,
-  VirtualAllocEx,
-  CreateRemoteThread,
-  GetModuleHandle,
-  GetProcAddress,
-  NtQueryInformationProcess,
-  EnumProcessModules,
-  GetModuleBaseName,
-  GetModuleInformation,
-} from '@native/Win32API';
+import { createPlatformProvider } from './platform/factory.js';
+import type { PlatformMemoryAPI } from './platform/PlatformMemoryAPI.js';
+import { MemoryProtection } from './platform/types.js';
+import type { MemoryRegionInfo } from './platform/types.js';
 import type {
   MemoryRegion,
   ModuleInfo,
@@ -40,16 +28,7 @@ import type {
   NativeMemoryWriteResult,
   NativePatternType,
 } from '@native/NativeMemoryManager.types';
-import {
-  findPatternInBuffer,
-  getProtectionString,
-  getStateString,
-  getTypeString,
-  isExecutable,
-  isReadable,
-  isWritable,
-  parsePattern,
-} from '@native/NativeMemoryManager.utils';
+import { findPatternInBuffer, parsePattern } from '@native/NativeMemoryManager.utils';
 import { checkNativeMemoryAvailability } from '@native/NativeMemoryManager.availability';
 export type {
   MemoryRegion,
@@ -67,7 +46,7 @@ export function scanRegionInChunks(
   patternBytes: number[],
   mask: number[],
   readChunk: (address: bigint, size: number) => Buffer<ArrayBufferLike>,
-  chunkSize = SCAN_CHUNK_SIZE
+  chunkSize = SCAN_CHUNK_SIZE,
 ): bigint[] {
   if (patternBytes.length === 0 || region.regionSize < patternBytes.length || chunkSize <= 0) {
     return [];
@@ -104,34 +83,40 @@ export function scanRegionInChunks(
 // ── Native Memory Manager ──
 
 /**
- * High-performance memory manager using direct Win32 API calls
+ * High-performance cross-platform memory manager.
+ * Uses PlatformMemoryAPI for read/write/scan/regions/modules.
+ * Win32-only methods (injection, debug) are guarded by platform checks.
  */
 export class NativeMemoryManager {
-  /**
-   * Check if native memory operations are available
-   */
+  private _provider: PlatformMemoryAPI | null = null;
+
+  /** Lazily create the platform memory provider */
+  private get provider(): PlatformMemoryAPI {
+    if (!this._provider) {
+      this._provider = createPlatformProvider();
+    }
+    return this._provider;
+  }
+
   async checkAvailability(): Promise<{ available: boolean; reason?: string }> {
     return checkNativeMemoryAvailability(execAsync);
   }
 
   // ── Memory Read Operations ──
 
-  /**
-   * Read memory from a process
-   */
   async readMemory(pid: number, address: string, size: number): Promise<NativeMemoryReadResult> {
     try {
       const addrNum = BigInt(address.startsWith('0x') ? address : `0x${address}`);
 
-      const handle = openProcessForMemory(pid, false);
+      const handle = this.provider.openProcess(pid, false);
       try {
-        const buffer = ReadProcessMemory(handle, addrNum, size);
+        const { data: buffer } = this.provider.readMemory(handle, addrNum, size);
         return {
           success: true,
           data: buffer.toString('hex').toUpperCase().match(/.{2}/g)?.join(' ') || '',
         };
       } finally {
-        CloseHandle(handle);
+        this.provider.closeProcess(handle);
       }
     } catch (error) {
       logger.error('Native memory read failed', {
@@ -149,14 +134,11 @@ export class NativeMemoryManager {
 
   // ── Memory Write Operations ──
 
-  /**
-   * Write memory to a process
-   */
   async writeMemory(
     pid: number,
     address: string,
     data: string,
-    encoding: 'hex' | 'base64' = 'hex'
+    encoding: 'hex' | 'base64' = 'hex',
   ): Promise<NativeMemoryWriteResult> {
     try {
       const addrNum = BigInt(address.startsWith('0x') ? address : `0x${address}`);
@@ -168,15 +150,15 @@ export class NativeMemoryManager {
         buffer = Buffer.from(data.replace(/\s/g, ''), 'hex');
       }
 
-      const handle = openProcessForMemory(pid, true);
+      const handle = this.provider.openProcess(pid, true);
       try {
-        const bytesWritten = WriteProcessMemory(handle, addrNum, buffer);
+        const { bytesWritten } = this.provider.writeMemory(handle, addrNum, buffer);
         return {
           success: true,
           bytesWritten,
         };
       } finally {
-        CloseHandle(handle);
+        this.provider.closeProcess(handle);
       }
     } catch (error) {
       logger.error('Native memory write failed', {
@@ -195,14 +177,11 @@ export class NativeMemoryManager {
 
   // ── Memory Region Operations ──
 
-  /**
-   * Enumerate all memory regions in a process
-   */
   async enumerateRegions(
-    pid: number
+    pid: number,
   ): Promise<{ success: boolean; regions?: MemoryRegion[]; error?: string }> {
     try {
-      const handle = openProcessForMemory(pid, false);
+      const handle = this.provider.openProcess(pid, false);
       const regions: MemoryRegion[] = [];
 
       try {
@@ -210,30 +189,19 @@ export class NativeMemoryManager {
         const maxAddress = BigInt('0x7FFFFFFF0000');
 
         while (address < maxAddress) {
-          const { success, info } = VirtualQueryEx(handle, address);
+          const regionInfo = this.provider.queryRegion(handle, address);
 
-          if (!success || info.RegionSize === 0n) {
+          if (!regionInfo) {
             break;
           }
 
-          const region: MemoryRegion = {
-            baseAddress: `0x${info.BaseAddress.toString(16).toUpperCase()}`,
-            size: Number(info.RegionSize),
-            state: getStateString(info.State),
-            protection: getProtectionString(info.Protect),
-            isReadable: isReadable(info),
-            isWritable: isWritable(info.Protect),
-            isExecutable: isExecutable(info.Protect),
-            type: getTypeString(info.Type),
-          };
-
-          regions.push(region);
-          address = info.BaseAddress + info.RegionSize;
+          regions.push(regionInfoToMemoryRegion(regionInfo));
+          address = regionInfo.baseAddress + BigInt(regionInfo.size);
         }
 
         return { success: true, regions };
       } finally {
-        CloseHandle(handle);
+        this.provider.closeProcess(handle);
       }
     } catch (error) {
       logger.error('Native region enumeration failed', {
@@ -247,12 +215,9 @@ export class NativeMemoryManager {
     }
   }
 
-  /**
-   * Check memory protection at a specific address
-   */
   async checkMemoryProtection(
     pid: number,
-    address: string
+    address: string,
   ): Promise<{
     success: boolean;
     protection?: string;
@@ -265,26 +230,26 @@ export class NativeMemoryManager {
   }> {
     try {
       const addrNum = BigInt(address.startsWith('0x') ? address : `0x${address}`);
-      const handle = openProcessForMemory(pid, false);
+      const handle = this.provider.openProcess(pid, false);
 
       try {
-        const { success, info } = VirtualQueryEx(handle, addrNum);
+        const regionInfo = this.provider.queryRegion(handle, addrNum);
 
-        if (!success) {
+        if (!regionInfo) {
           return { success: false, error: 'Failed to query memory region' };
         }
 
         return {
           success: true,
-          protection: getProtectionString(info.Protect),
-          isWritable: isWritable(info.Protect),
-          isReadable: isReadable(info),
-          isExecutable: isExecutable(info.Protect),
-          regionStart: `0x${info.BaseAddress.toString(16).toUpperCase()}`,
-          regionSize: Number(info.RegionSize),
+          protection: protectionToString(regionInfo.protection),
+          isWritable: regionInfo.isWritable,
+          isReadable: regionInfo.isReadable,
+          isExecutable: regionInfo.isExecutable,
+          regionStart: `0x${regionInfo.baseAddress.toString(16).toUpperCase()}`,
+          regionSize: regionInfo.size,
         };
       } finally {
-        CloseHandle(handle);
+        this.provider.closeProcess(handle);
       }
     } catch (error) {
       logger.error('Native protection check failed', {
@@ -301,13 +266,10 @@ export class NativeMemoryManager {
 
   // ── Memory Scan Operations ──
 
-  /**
-   * Scan memory for a pattern
-   */
   async scanMemory(
     pid: number,
     pattern: string,
-    patternType: 'hex' | 'int32' | 'int64' | 'float' | 'double' | 'string' = 'hex'
+    patternType: 'hex' | 'int32' | 'int64' | 'float' | 'double' | 'string' = 'hex',
   ): Promise<NativeMemoryScanResult> {
     try {
       const { patternBytes, mask } = parsePattern(pattern, patternType as NativePatternType);
@@ -318,56 +280,55 @@ export class NativeMemoryManager {
 
       const maxResults = 10000;
       const readableRegions: Array<{ baseAddress: bigint; regionSize: number }> = [];
-      const handle = openProcessForMemory(pid, false);
+      const handle = this.provider.openProcess(pid, false);
+      let regionMatches: bigint[][] = [];
 
       try {
         let address = 0n;
         const maxAddress = BigInt('0x7FFFFFFF0000');
 
         while (address < maxAddress) {
-          const { success, info } = VirtualQueryEx(handle, address);
+          const regionInfo = this.provider.queryRegion(handle, address);
 
-          if (!success || info.RegionSize === 0n) {
+          if (!regionInfo) {
             break;
           }
 
           if (
-            isReadable(info) &&
-            info.RegionSize > 0n &&
-            info.RegionSize <= BigInt(Number.MAX_SAFE_INTEGER)
+            regionInfo.isReadable &&
+            regionInfo.size > 0 &&
+            regionInfo.size <= Number.MAX_SAFE_INTEGER
           ) {
             readableRegions.push({
-              baseAddress: info.BaseAddress,
-              regionSize: Number(info.RegionSize),
+              baseAddress: regionInfo.baseAddress,
+              regionSize: regionInfo.size,
             });
           }
 
-          address = info.BaseAddress + info.RegionSize;
+          address = regionInfo.baseAddress + BigInt(regionInfo.size);
         }
-      } finally {
-        CloseHandle(handle);
-      }
 
-      const regionMatches = await Promise.all(
-        readableRegions.map((region) =>
-          cpuLimit(async () => {
-            const scanHandle = openProcessForMemory(pid, false);
-
-            try {
+        const providerRef = this.provider;
+        regionMatches = await Promise.all(
+          readableRegions.map((region) =>
+            cpuLimit(async () => {
               try {
-                return scanRegionInChunks(region, patternBytes, mask, (address, size) =>
-                  ReadProcessMemory(scanHandle, address, size)
+                return scanRegionInChunks(
+                  region,
+                  patternBytes,
+                  mask,
+                  (addr, size) => providerRef.readMemory(handle, addr, size).data,
                 );
               } catch {
                 // Skip unreadable regions
                 return [];
               }
-            } finally {
-              CloseHandle(scanHandle);
-            }
-          })
-        )
-      );
+            }),
+          ),
+        );
+      } finally {
+        this.provider.closeProcess(handle);
+      }
 
       const addresses: string[] = [];
       for (const matches of regionMatches) {
@@ -408,43 +369,24 @@ export class NativeMemoryManager {
 
   // ── Module Operations ──
 
-  /**
-   * Enumerate loaded modules in a process
-   */
   async enumerateModules(
-    pid: number
+    pid: number,
   ): Promise<{ success: boolean; modules?: ModuleInfo[]; error?: string }> {
     try {
-      const handle = openProcessForMemory(pid, false);
+      const handle = this.provider.openProcess(pid, false);
 
       try {
-        const { success, modules: handles, count } = EnumProcessModules(handle);
+        const platformModules = this.provider.enumerateModules(handle);
 
-        if (!success) {
-          return { success: false, error: 'EnumProcessModules failed' };
-        }
-
-        const modules: ModuleInfo[] = [];
-
-        for (let i = 0; i < count; i++) {
-          const hModule = handles[i];
-          if (!hModule) continue;
-
-          const name = GetModuleBaseName(handle, hModule);
-          const { success: infoSuccess, info } = GetModuleInformation(handle, hModule);
-
-          if (infoSuccess && info) {
-            modules.push({
-              name,
-              baseAddress: `0x${info.lpBaseOfDll.toString(16).toUpperCase()}`,
-              size: info.SizeOfImage,
-            });
-          }
-        }
+        const modules: ModuleInfo[] = platformModules.map((m) => ({
+          name: m.name,
+          baseAddress: `0x${m.baseAddress.toString(16).toUpperCase()}`,
+          size: m.size,
+        }));
 
         return { success: true, modules };
       } finally {
-        CloseHandle(handle);
+        this.provider.closeProcess(handle);
       }
     } catch (error) {
       logger.error('Native module enumeration failed', {
@@ -458,16 +400,31 @@ export class NativeMemoryManager {
     }
   }
 
-  // ── Injection Operations ──
+  // ── Injection Operations (Win32-only) ──
 
-  /**
-   * Inject DLL into target process
-   */
+  /** Win32 only — uses CreateRemoteThread + LoadLibraryA */
   async injectDll(
     pid: number,
-    dllPath: string
+    dllPath: string,
   ): Promise<{ success: boolean; remoteThreadId?: number; error?: string }> {
+    if (process.platform !== 'win32') {
+      return { success: false, error: 'DLL injection is only supported on Windows' };
+    }
+
     try {
+      // Lazy import Win32-only APIs
+      const {
+        openProcessForMemory,
+        CloseHandle,
+        WriteProcessMemory,
+        VirtualAllocEx,
+        CreateRemoteThread,
+        GetModuleHandle,
+        GetProcAddress,
+        PAGE,
+        MEM,
+      } = await import('@native/Win32API');
+
       const handle = openProcessForMemory(pid, true);
 
       try {
@@ -484,7 +441,7 @@ export class NativeMemoryManager {
           0n,
           pathBuffer.length,
           MEM.COMMIT | MEM.RESERVE,
-          PAGE.READWRITE
+          PAGE.READWRITE,
         );
 
         if (!remoteMem) {
@@ -496,7 +453,7 @@ export class NativeMemoryManager {
         const { handle: threadHandle, threadId } = CreateRemoteThread(
           handle,
           loadLibraryAddr,
-          remoteMem
+          remoteMem,
         );
 
         if (!threadHandle) {
@@ -521,14 +478,16 @@ export class NativeMemoryManager {
     }
   }
 
-  /**
-   * Inject shellcode into target process
-   */
+  /** Win32 only — uses VirtualAllocEx + CreateRemoteThread */
   async injectShellcode(
     pid: number,
     shellcode: string,
-    encoding: 'hex' | 'base64' = 'hex'
+    encoding: 'hex' | 'base64' = 'hex',
   ): Promise<{ success: boolean; remoteThreadId?: number; error?: string }> {
+    if (process.platform !== 'win32') {
+      return { success: false, error: 'Shellcode injection is only supported on Windows' };
+    }
+
     try {
       let buffer: Buffer;
       if (encoding === 'base64') {
@@ -536,6 +495,18 @@ export class NativeMemoryManager {
       } else {
         buffer = Buffer.from(shellcode.replace(/\s/g, ''), 'hex');
       }
+
+      // Lazy import Win32-only APIs
+      const {
+        openProcessForMemory,
+        CloseHandle,
+        WriteProcessMemory,
+        VirtualAllocEx,
+        VirtualProtectEx,
+        CreateRemoteThread,
+        PAGE,
+        MEM,
+      } = await import('@native/Win32API');
 
       const handle = openProcessForMemory(pid, true);
 
@@ -545,7 +516,7 @@ export class NativeMemoryManager {
           0n,
           buffer.length,
           MEM.COMMIT | MEM.RESERVE,
-          PAGE.READWRITE
+          PAGE.READWRITE,
         );
 
         if (!remoteMem) {
@@ -558,7 +529,7 @@ export class NativeMemoryManager {
           handle,
           remoteMem,
           buffer.length,
-          PAGE.EXECUTE_READWRITE
+          PAGE.EXECUTE_READWRITE,
         );
 
         if (!protectSuccess) {
@@ -590,15 +561,20 @@ export class NativeMemoryManager {
     }
   }
 
-  // ── Anti-Debug Operations ──
+  // ── Anti-Debug Operations (Win32-only) ──
 
-  /**
-   * Check if process is being debugged
-   */
+  /** Win32 only — uses NtQueryInformationProcess */
   async checkDebugPort(
-    pid: number
+    pid: number,
   ): Promise<{ success: boolean; isDebugged?: boolean; error?: string }> {
+    if (process.platform !== 'win32') {
+      return { success: false, error: 'Debug port check is only supported on Windows' };
+    }
+
     try {
+      const { openProcessForMemory, CloseHandle, NtQueryInformationProcess } =
+        await import('@native/Win32API');
+
       const handle = openProcessForMemory(pid, false);
 
       try {
@@ -629,6 +605,43 @@ export class NativeMemoryManager {
       };
     }
   }
+}
+
+// ── Helpers ──
+
+/** Convert platform-agnostic MemoryRegionInfo to legacy MemoryRegion format */
+function regionInfoToMemoryRegion(info: MemoryRegionInfo): MemoryRegion {
+  return {
+    baseAddress: `0x${info.baseAddress.toString(16).toUpperCase()}`,
+    size: info.size,
+    state: info.state.toUpperCase(),
+    protection: protectionToString(info.protection),
+    isReadable: info.isReadable,
+    isWritable: info.isWritable,
+    isExecutable: info.isExecutable,
+    type: info.type.toUpperCase(),
+  };
+}
+
+/** Convert MemoryProtection flags to human-readable string */
+function protectionToString(prot: MemoryProtection): string {
+  if (prot === MemoryProtection.NoAccess) return 'NOACCESS';
+
+  const parts: string[] = [];
+  const hasRead = (prot & MemoryProtection.Read) !== 0;
+  const hasWrite = (prot & MemoryProtection.Write) !== 0;
+  const hasExec = (prot & MemoryProtection.Execute) !== 0;
+  const hasGuard = (prot & MemoryProtection.Guard) !== 0;
+
+  if (hasRead && hasWrite && hasExec) parts.push('RWX');
+  else if (hasRead && hasExec) parts.push('RX');
+  else if (hasRead && hasWrite) parts.push('RW');
+  else if (hasRead) parts.push('R');
+  else if (hasExec) parts.push('X');
+
+  if (hasGuard) parts.push('GUARD');
+
+  return parts.join(' ') || 'UNKNOWN';
 }
 
 // Export singleton instance

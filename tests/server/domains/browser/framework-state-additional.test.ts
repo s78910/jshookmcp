@@ -1,24 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { FrameworkStateHandlers } from '@server/domains/browser/handlers/framework-state';
-
-type JsonResponse = {
-  content: Array<{ text: string }>;
-};
-
-type FrameworkStateEntry = {
-  component?: string;
-  state?: Array<Record<string, unknown> | boolean>;
-  setupState?: Record<string, unknown>;
-  data?: Record<string, unknown> | null;
-};
-
-type FrameworkStateBody = {
-  detected?: string;
-  found?: boolean;
-  success?: boolean;
-  error?: string;
-  states?: FrameworkStateEntry[];
-};
 
 function createMockPage() {
   return {
@@ -31,19 +14,6 @@ function createHandlers(page: ReturnType<typeof createMockPage>) {
   return new FrameworkStateHandlers({
     getActivePage: vi.fn(async () => page),
   });
-}
-
-function getResponseText(response: JsonResponse): string {
-  const [content] = response.content;
-  expect(content).toBeDefined();
-  if (!content) {
-    throw new Error('Expected response content');
-  }
-  return content.text;
-}
-
-function parseJson<T = FrameworkStateBody>(response: JsonResponse): T {
-  return JSON.parse(getResponseText(response)) as T;
 }
 
 describe('FrameworkStateHandlers – additional coverage', () => {
@@ -71,7 +41,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.detected).toBe('react');
       expect(parsed.found).toBe(true);
       expect(parsed.states).toHaveLength(2);
@@ -88,7 +58,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'react',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.found).toBe(false);
       expect(parsed.states).toHaveLength(0);
     });
@@ -106,7 +76,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'vue3',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.detected).toBe('vue3');
       expect(parsed.found).toBe(true);
     });
@@ -124,7 +94,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'vue2',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.detected).toBe('vue2');
       expect(parsed.found).toBe(true);
     });
@@ -140,7 +110,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
 
       const result = await handlers.handleFrameworkStateExtract({});
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.detected).toBe('react');
     });
 
@@ -155,7 +125,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'auto',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.detected).toBe('vue3');
     });
 
@@ -170,7 +140,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'auto',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.detected).toBe('vue2');
     });
 
@@ -183,7 +153,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
 
       const result = await handlers.handleFrameworkStateExtract({});
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.found).toBe(false);
     });
   });
@@ -201,7 +171,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'react',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.found).toBe(true);
       // Verify the evaluate was called (args passed to page.evaluate)
       expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), {
@@ -260,7 +230,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.success).toBe(false);
       expect(parsed.error).toBe('Page navigation interrupted');
     });
@@ -270,7 +240,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
 
       const result = await handlers.handleFrameworkStateExtract({});
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.success).toBe(false);
       expect(parsed.error).toBe('string error');
     });
@@ -293,7 +263,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         maxDepth: 3,
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.states).toHaveLength(3);
       expect(parsed.states?.[0]).toMatchObject({
         component: 'App',
@@ -318,7 +288,7 @@ describe('FrameworkStateHandlers – additional coverage', () => {
         framework: 'vue3',
       });
 
-      const parsed = parseJson(result);
+      const parsed = parseJson<BrowserStatusResponse>(result);
       expect(parsed.states?.[0]).toMatchObject({
         setupState: { items: [1, 2, 3] },
       });

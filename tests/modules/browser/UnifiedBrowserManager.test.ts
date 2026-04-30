@@ -38,10 +38,10 @@ vi.mock('@src/modules/browser/BrowserModeManager', () => {
     private browser = { isConnected: vi.fn(() => true) };
     private page = { id: 'primary-browser-page' };
     launch = vi.fn(async () =>
-      chromeState.launchImpl ? chromeState.launchImpl(this) : this.browser
+      chromeState.launchImpl ? chromeState.launchImpl(this) : this.browser,
     );
     newPage = vi.fn(async () => this.page);
-    goto = vi.fn(async (_url: string, targetPage?: unknown) => targetPage ?? this.page);
+    goto = vi.fn(async (_url: string, targetPage?: any) => targetPage ?? this.page);
     close = vi.fn(async () => {});
     getBrowser = vi.fn(() => this.browser);
 
@@ -65,11 +65,11 @@ vi.mock('@src/modules/browser/CamoufoxBrowserManager', () => {
     private browser = { isConnected: vi.fn(() => true) };
     private page = { id: 'camoufox-page' };
     launch = vi.fn(async () =>
-      camoufoxState.launchImpl ? camoufoxState.launchImpl(this) : this.browser
+      camoufoxState.launchImpl ? camoufoxState.launchImpl(this) : this.browser,
     );
     connectToServer = vi.fn(async () => this.browser);
     newPage = vi.fn(async () => this.page);
-    goto = vi.fn(async (_url: string, targetPage?: unknown) => targetPage ?? this.page);
+    goto = vi.fn(async (_url: string, targetPage?: any) => targetPage ?? this.page);
     close = vi.fn(async () => {});
     getBrowser = vi.fn(() => this.browser);
 
@@ -170,7 +170,7 @@ describe('UnifiedBrowserManager', () => {
 
     expect(camoufoxState.instances[0]!.goto).toHaveBeenCalledWith(
       'https://vmoranv.github.io/jshookmcp/path',
-      page
+      page,
     );
   });
 
@@ -215,7 +215,7 @@ describe('UnifiedBrowserManager', () => {
   });
 
   it('does not wait for an in-flight Chrome launch before closing', async () => {
-    let resolveLaunch!: (value: unknown) => void;
+    let resolveLaunch!: (value: any) => void;
     const pendingLaunch = new Promise((resolve) => {
       resolveLaunch = resolve;
     });

@@ -25,6 +25,17 @@ vi.mock('@utils/logger', () => ({
   },
 }));
 
+function formatUnknownError(input: any): string {
+  if (input instanceof Error) {
+    return `${input.name}: ${input.message}`;
+  }
+  try {
+    return typeof input === 'string' ? input : JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
+
 vi.mock('@server/registry/index', () => ({
   initRegistry: vi.fn(async () => {}),
 }));
@@ -152,17 +163,6 @@ describe('src/index.ts — formatUnknownError logic', () => {
   /**
    * Testing the formatting logic for unknown error inputs.
    */
-  function formatUnknownError(input: unknown): string {
-    if (input instanceof Error) {
-      return `${input.name}: ${input.message}`;
-    }
-    try {
-      return typeof input === 'string' ? input : JSON.stringify(input);
-    } catch {
-      return String(input);
-    }
-  }
-
   it('formats Error instances', () => {
     const err = new TypeError('bad type');
     expect(formatUnknownError(err)).toBe('TypeError: bad type');

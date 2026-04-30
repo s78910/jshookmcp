@@ -86,7 +86,7 @@ describe('BreakpointsCoreExtended - conditional breakpoints', () => {
     expect(bp.condition).toBeUndefined();
     expect(ctx.cdpSession.send).toHaveBeenCalledWith(
       'Debugger.setBreakpointByUrl',
-      expect.objectContaining({ condition: undefined })
+      expect.objectContaining({ condition: undefined }),
     );
   });
 });
@@ -155,7 +155,7 @@ describe('BreakpointsCoreExtended - breakpoint removal', () => {
     const ctx = makeCtx();
 
     await expect(removeBreakpointCore(ctx, 'nonexistent')).rejects.toThrow(
-      'Breakpoint not found: nonexistent'
+      'Breakpoint not found: nonexistent',
     );
   });
 
@@ -163,7 +163,7 @@ describe('BreakpointsCoreExtended - breakpoint removal', () => {
     const ctx = makeCtx();
 
     await expect(removeBreakpointCore(ctx, '')).rejects.toThrow(
-      'breakpointId parameter is required'
+      'breakpointId parameter is required',
     );
   });
 
@@ -200,7 +200,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     });
 
     await expect(
-      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 0 })
+      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 0 }),
     ).rejects.toBeInstanceOf(PrerequisiteError);
     expect(loggerState.warn).toHaveBeenCalledWith(expect.stringContaining('auto-reconnect failed'));
   });
@@ -215,7 +215,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     });
 
     await expect(setBreakpointCore(ctx, { scriptId: 's1', lineNumber: 0 })).rejects.toBeInstanceOf(
-      PrerequisiteError
+      PrerequisiteError,
     );
   });
 
@@ -229,7 +229,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     });
 
     await expect(
-      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 0 })
+      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 0 }),
     ).rejects.toBeInstanceOf(PrerequisiteError);
     expect(loggerState.warn).toHaveBeenCalledWith(expect.stringContaining('string error'));
   });
@@ -238,7 +238,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     const ctx = makeCtx();
 
     await expect(
-      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: -1 })
+      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: -1 }),
     ).rejects.toThrow('lineNumber must be a non-negative number');
   });
 
@@ -246,7 +246,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     const ctx = makeCtx();
 
     await expect(
-      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 1, columnNumber: -5 })
+      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 1, columnNumber: -5 }),
     ).rejects.toThrow('columnNumber must be a non-negative number');
   });
 
@@ -254,7 +254,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     const ctx = makeCtx();
 
     await expect(setBreakpointCore(ctx, { scriptId: '', lineNumber: 1 })).rejects.toThrow(
-      'scriptId parameter is required'
+      'scriptId parameter is required',
     );
   });
 
@@ -262,7 +262,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     const ctx = makeCtx();
 
     await expect(
-      setBreakpointCore(ctx, { scriptId: 's1', lineNumber: 1, columnNumber: -3 })
+      setBreakpointCore(ctx, { scriptId: 's1', lineNumber: 1, columnNumber: -3 }),
     ).rejects.toThrow('columnNumber must be a non-negative number');
   });
 
@@ -273,7 +273,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     const ctx = makeCtx({ cdpSession: { send } });
 
     await expect(
-      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 1 })
+      setBreakpointByUrlCore(ctx, { url: 'https://x.com/a.js', lineNumber: 1 }),
     ).rejects.toThrow('Protocol method not found');
     expect(loggerState.error).toHaveBeenCalledWith('Failed to set breakpoint:', expect.any(Error));
   });
@@ -285,7 +285,7 @@ describe('BreakpointsCoreExtended - error handling', () => {
     const ctx = makeCtx({ cdpSession: { send } });
 
     await expect(setBreakpointCore(ctx, { scriptId: 's1', lineNumber: 1 })).rejects.toThrow(
-      'Session closed'
+      'Session closed',
     );
   });
 });
@@ -373,7 +373,7 @@ describe('BreakpointsCoreExtended - columnNumber edge cases', () => {
     expect(bp.location.columnNumber).toBe(0);
     expect(ctx.cdpSession.send).toHaveBeenCalledWith(
       'Debugger.setBreakpointByUrl',
-      expect.objectContaining({ columnNumber: 0 })
+      expect.objectContaining({ columnNumber: 0 }),
     );
   });
 

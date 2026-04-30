@@ -5,6 +5,8 @@ import { ToolRegistry } from '@modules/external/ToolRegistry';
 import { GHIDRA_BRIDGE_ENDPOINT, IDA_BRIDGE_ENDPOINT } from '@src/constants';
 import { getProjectRoot } from '@utils/outputPaths';
 import { getArtifactRetentionConfig } from '@utils/artifactRetention';
+import { probeBetterSqlite3 } from '@utils/betterSqlite3';
+import { ioLimit } from '@utils/concurrency';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -35,24 +37,71 @@ export interface EnvironmentDoctorReport {
   recommendations: string[];
 }
 
+let sharedRegistry: ToolRegistry | null = null;
+let sharedRegistryTimestamp = 0;
+const REGISTRY_CACHE_TTL_MS = 120_000;
+
+function getSharedRegistry(): ToolRegistry {
+  const now = Date.now();
+  if (!sharedRegistry || now - sharedRegistryTimestamp > REGISTRY_CACHE_TTL_MS) {
+    sharedRegistry = new ToolRegistry();
+    sharedRegistryTimestamp = now;
+  }
+  return sharedRegistry;
+}
+
 export async function runEnvironmentDoctor(options?: {
   includeBridgeHealth?: boolean;
 }): Promise<EnvironmentDoctorReport> {
   const includeBridgeHealth = options?.includeBridgeHealth ?? true;
-  const registry = new ToolRegistry();
-  const externalResults = await registry.probeAll(true);
+  const registry = getSharedRegistry();
+  const externalResultsPromise = registry.probeAll(true);
+  const gitCommandPromise = ioLimit(() => checkCommand('git', ['--version']));
+  const pythonCommandPromise = ioLimit(() => checkCommand('python', ['--version']));
+  const pnpmCommandPromise = ioLimit(() => checkPnpmCommand());
+  const corepackCheckPromise = ioLimit(() => checkCommand('corepack', ['--version']));
+  const bridgesPromise = includeBridgeHealth
+    ? Promise.all([
+        ioLimit(() =>
+          checkHttpEndpoint('ghidra-bridge', `${GHIDRA_BRIDGE_ENDPOINT.replace(/\/$/, '')}/health`),
+        ),
+        ioLimit(() =>
+          checkHttpEndpoint('ida-bridge', `${IDA_BRIDGE_ENDPOINT.replace(/\/$/, '')}/health`),
+        ),
+        ioLimit(() =>
+          checkHttpEndpoint(
+            'burp-mcp-sse',
+            process.env.BURP_MCP_SSE_URL?.trim() || 'http://127.0.0.1:9876',
+          ),
+        ),
+      ])
+    : Promise.resolve([] as DoctorCheck[]);
+
+  const [externalResults, gitCommand, pythonCommand, pnpmCommand, corepackCheck, bridges] =
+    await Promise.all([
+      externalResultsPromise,
+      gitCommandPromise,
+      pythonCommandPromise,
+      pnpmCommandPromise,
+      corepackCheckPromise,
+      bridgesPromise,
+    ]);
+  const corepackCommand = normalizeCorepackCheck(corepackCheck, pnpmCommand);
 
   const packages: DoctorCheck[] = [
     checkPackage('@modelcontextprotocol/sdk'),
     checkPackage('rebrowser-puppeteer-core'),
+    checkBetterSqlite3(),
     checkPackage('camoufox-js', 'Optional Firefox anti-detect driver'),
     checkPackage('playwright-core', 'Optional browser automation dependency'),
+    checkNativeMemory(),
   ];
 
   const commands: DoctorCheck[] = [
-    await checkCommand('git', ['--version']),
-    await checkCommand('python', ['--version']),
-    await checkCommand('pnpm', ['--version']),
+    gitCommand,
+    pythonCommand,
+    pnpmCommand,
+    corepackCommand,
     ...Object.entries(externalResults).map(([name, result]) => ({
       name,
       status: (result.available ? 'ok' : 'missing') as DoctorStatus,
@@ -61,17 +110,6 @@ export async function runEnvironmentDoctor(options?: {
         : (result.reason ?? 'Unavailable'),
     })),
   ];
-
-  const bridges: DoctorCheck[] = includeBridgeHealth
-    ? await Promise.all([
-        checkHttpEndpoint('ghidra-bridge', `${GHIDRA_BRIDGE_ENDPOINT.replace(/\/$/, '')}/health`),
-        checkHttpEndpoint('ida-bridge', `${IDA_BRIDGE_ENDPOINT.replace(/\/$/, '')}/health`),
-        checkHttpEndpoint(
-          'burp-mcp-sse',
-          process.env.BURP_MCP_SSE_URL?.trim() || 'http://127.0.0.1:9876'
-        ),
-      ])
-    : [];
 
   const limitations = buildPlatformLimitations();
   const recommendations = buildRecommendations(packages, commands, bridges, limitations);
@@ -113,7 +151,7 @@ export function formatEnvironmentDoctorReport(report: EnvironmentDoctorReport): 
   lines.push(`JSHook Environment Doctor — ${report.generatedAt}`);
   lines.push('');
   lines.push(
-    `Runtime: ${report.runtime.platform} ${report.runtime.arch} | Node ${report.runtime.node}`
+    `Runtime: ${report.runtime.platform} ${report.runtime.arch} | Node ${report.runtime.node}`,
   );
   lines.push(`CWD: ${report.runtime.cwd}`);
   lines.push(`Project root: ${report.runtime.projectRoot}`);
@@ -167,23 +205,142 @@ function checkPackage(packageName: string, missingHint?: string): DoctorCheck {
   }
 }
 
-async function checkCommand(command: string, args: string[]): Promise<DoctorCheck> {
+function checkBetterSqlite3(): DoctorCheck {
+  const result = probeBetterSqlite3();
+  return {
+    name: 'better-sqlite3',
+    status: result.status,
+    detail: result.detail,
+  };
+}
+
+function isPnpmOperational(pnpm: DoctorCheck): boolean {
+  return pnpm.status === 'ok' || pnpm.detail.includes('npx fallback works');
+}
+
+async function checkPnpmCommand(): Promise<DoctorCheck> {
+  const direct = await checkCommand('pnpm', ['--version']);
+  if (direct.status === 'ok') {
+    return direct;
+  }
+
+  const npxFallback = await checkCommand('npx', ['pnpm', '--version'], 10_000);
+  if (npxFallback.status === 'ok') {
+    return {
+      name: 'pnpm',
+      status: 'warn',
+      detail: `direct pnpm command unavailable; npx fallback works (${npxFallback.detail})`,
+    };
+  }
+
+  return direct;
+}
+
+function normalizeCorepackCheck(corepack: DoctorCheck, pnpm: DoctorCheck): DoctorCheck {
+  if (corepack.status !== 'missing' || !isPnpmOperational(pnpm)) {
+    return corepack;
+  }
+
+  return {
+    name: corepack.name,
+    status: 'warn',
+    detail:
+      process.platform === 'win32'
+        ? pnpm.detail.includes('npx fallback works')
+          ? 'corepack not found; use `npx pnpm` directly (common with nvm4w-managed Node on Windows)'
+          : 'corepack not found; standalone pnpm is available (common with nvm4w-managed Node on Windows)'
+        : pnpm.detail.includes('npx fallback works')
+          ? 'corepack not found; use `npx pnpm` directly'
+          : 'corepack not found; standalone pnpm is available',
+  };
+}
+
+/**
+ * Check koffi + platform-specific native library availability for memory tools.
+ * Only loads/unloads the library — does NOT call any native functions (avoids SIGBUS on SIP macOS).
+ */
+function checkNativeMemory(): DoctorCheck {
+  try {
+    const koffiPkg = require.resolve('koffi/package.json');
+    const koffiJson = require(koffiPkg) as { version?: string };
+    const koffiVersion = koffiJson.version ?? 'unknown';
+
+    if (process.platform === 'win32') {
+      return {
+        name: 'native-memory',
+        status: 'ok',
+        detail: `koffi ${koffiVersion} — Win32 kernel32.dll available`,
+      };
+    }
+
+    if (process.platform === 'darwin') {
+      try {
+        const koffi = require('koffi') as { load: (path: string) => { unload: () => void } };
+        const lib = koffi.load('/usr/lib/libSystem.B.dylib');
+        lib.unload();
+        delete (require.cache as Record<string, unknown>)[require.resolve('koffi')];
+        return {
+          name: 'native-memory',
+          status: 'ok',
+          detail: `koffi ${koffiVersion} — macOS libSystem.B.dylib available (Mach APIs need root + SIP config)`,
+        };
+      } catch {
+        return {
+          name: 'native-memory',
+          status: 'warn',
+          detail: `koffi ${koffiVersion} installed but cannot load libSystem.B.dylib`,
+        };
+      }
+    }
+
+    return {
+      name: 'native-memory',
+      status: 'warn',
+      detail: `koffi ${koffiVersion} — no native FFI memory provider for ${process.platform} (proc-based ops available on Linux)`,
+    };
+  } catch {
+    return {
+      name: 'native-memory',
+      status: 'missing',
+      detail: 'koffi not installed — native memory tools unavailable. Install with: pnpm add koffi',
+    };
+  }
+}
+
+async function checkCommand(command: string, args: string[], timeout = 4000): Promise<DoctorCheck> {
   try {
     const { stdout, stderr } = await execFileAsync(command, args, {
-      timeout: 4000,
+      timeout,
       windowsHide: true,
     });
     const detail = `${stdout || stderr}`.trim().split(/\r?\n/)[0] || 'available';
     return { name: command, status: 'ok', detail };
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    const missing = /ENOENT|not recognized|not found/i.test(detail);
-    return {
-      name: command,
-      status: missing ? 'missing' : 'warn',
-      detail,
-    };
+    if (process.platform === 'win32') {
+      try {
+        const { stdout, stderr } = await execFileAsync('cmd', ['/c', command, ...args], {
+          timeout,
+          windowsHide: true,
+        });
+        const detail = `${stdout || stderr}`.trim().split(/\r?\n/)[0] || 'available';
+        return { name: command, status: 'ok', detail: `${detail} (via cmd)` };
+      } catch (cmdError) {
+        return formatCommandError(command, cmdError);
+      }
+    }
+
+    return formatCommandError(command, error);
   }
+}
+
+function formatCommandError(command: string, error: unknown): DoctorCheck {
+  const detail = error instanceof Error ? error.message : String(error);
+  const missing = /ENOENT|not recognized|not found/i.test(detail);
+  return {
+    name: command,
+    status: missing ? 'missing' : 'warn',
+    detail,
+  };
 }
 
 async function checkHttpEndpoint(name: string, url: string): Promise<DoctorCheck> {
@@ -208,19 +365,24 @@ async function checkHttpEndpoint(name: string, url: string): Promise<DoctorCheck
 
 function buildPlatformLimitations(): string[] {
   const limitations: string[] = [];
-  if (process.platform !== 'win32') {
-    limitations.push(
-      'Memory write / injection tools are Windows-only; on Linux/macOS prefer browser hooks, network capture, or Frida-based alternatives.'
-    );
-  }
-  if (process.platform === 'linux') {
-    limitations.push(
-      'Camoufox runs on Linux, but some Chrome/CDP-heavy workflows are better served by the Chrome driver.'
-    );
-  }
   if (process.platform === 'darwin') {
     limitations.push(
-      'macOS users should expect some Windows-native process tooling to be unavailable.'
+      '26 cross-platform memory tools available (scan, pointer-chain, structure-analysis, heap). ' +
+        '15 Windows-only tools unavailable (PE analysis, anti-cheat, code injection, speedhack, hardware breakpoints).',
+    );
+    limitations.push(
+      'Native memory operations (mach_vm_read/write) require root privileges and may require SIP configuration on ARM64.',
+    );
+  } else if (process.platform === 'linux') {
+    limitations.push(
+      'Process management available via /proc. Native FFI memory provider not implemented — memory read/write uses /proc/pid/mem (requires root or CAP_SYS_PTRACE).',
+    );
+    limitations.push(
+      'Camoufox runs on Linux, but some Chrome/CDP-heavy workflows are better served by the Chrome driver.',
+    );
+  } else if (process.platform !== 'win32') {
+    limitations.push(
+      `Platform ${process.platform} is not supported for native memory operations. Use Windows or macOS.`,
     );
   }
   return limitations;
@@ -230,27 +392,50 @@ function buildRecommendations(
   packages: DoctorCheck[],
   commands: DoctorCheck[],
   bridges: DoctorCheck[],
-  limitations: string[]
+  limitations: string[],
 ): string[] {
   const recommendations: string[] = [];
+  const pnpmCommand = commands.find((item) => item.name === 'pnpm');
+  const corepackCommand = commands.find((item) => item.name === 'corepack');
+  if (packages.some((item) => item.name === 'better-sqlite3' && item.status !== 'ok')) {
+    recommendations.push(
+      'Install or rebuild the optional SQLite trace backend with `pnpm add -O better-sqlite3@12.6.2` or `npm rebuild better-sqlite3 --foreground-scripts` under the active Node version if you need trace tooling.',
+    );
+  }
   if (packages.some((item) => item.name === 'camoufox-js' && item.status !== 'ok')) {
     recommendations.push(
-      'Install optional browser dependencies with `pnpm run install:full` if you need Camoufox support.'
+      'Install optional browser dependencies with `pnpm run install:full` if you need Camoufox support.',
     );
   }
   if (commands.some((item) => item.name.startsWith('wabt.') && item.status !== 'ok')) {
     recommendations.push(
-      'Install wabt if you need full WASM disassembly/decompilation; otherwise the server will stay in basic mode.'
+      'Install wabt if you need full WASM disassembly/decompilation; otherwise the server will stay in basic mode.',
+    );
+  }
+  if (pnpmCommand && !isPnpmOperational(pnpmCommand)) {
+    recommendations.push(
+      'Install pnpm or enable Corepack (`corepack enable`) before running package-management workflows.',
+    );
+  } else if (pnpmCommand?.detail.includes('npx fallback works')) {
+    recommendations.push(
+      'Use `npx pnpm` directly on this machine or repair the local pnpm/Corepack shim if scripts expect bare `pnpm`.',
+    );
+  } else if (
+    corepackCommand?.status === 'warn' &&
+    corepackCommand.detail.includes('standalone pnpm')
+  ) {
+    recommendations.push(
+      'Use `pnpm` or `npx pnpm` directly on this machine; `corepack` is optional and may be absent on nvm4w-managed Windows installs.',
     );
   }
   if (bridges.some((item) => item.status !== 'ok')) {
     recommendations.push(
-      'Check local bridge endpoints (Ghidra / IDA / Burp) before relying on native-bridge workflows.'
+      'Check local bridge endpoints (Ghidra / IDA / Burp) before relying on native-bridge workflows.',
     );
   }
   if (limitations.length > 0) {
     recommendations.push(
-      'Review platform limitations before using process/memory tooling on non-Windows hosts.'
+      'Review platform limitations before using process/memory tooling on non-Windows hosts.',
     );
   }
   return recommendations;

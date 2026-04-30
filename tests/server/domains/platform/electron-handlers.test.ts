@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
       (): BrowserWindowHints => ({
         preloadScripts: [],
         devToolsEnabled: null,
-      })
+      }),
     ),
     readAsarEntryText: vi.fn(),
     findFilesystemPreloadScripts: vi.fn(async () => []),
@@ -93,7 +93,7 @@ function makeFileStats(overrides: Partial<{ isFile: boolean; isDirectory: boolea
 }
 
 function makeParsedAsar(
-  fileEntries: Array<{ path: string; size: number; offset: number; unpacked?: boolean }> = []
+  fileEntries: Array<{ path: string; size: number; offset: number; unpacked?: boolean }> = [],
 ) {
   return {
     files: fileEntries.map((e) => ({
@@ -150,14 +150,14 @@ describe('ElectronHandlers', () => {
         makeParsedAsar([
           { path: 'index.js', size: 50, offset: 0 },
           { path: 'package.json', size: 30, offset: 50 },
-        ])
+        ]),
       );
 
       const result = parsePayload(
         await handlers.handleAsarExtract({
           inputPath: '/app/resources/app.asar',
           listOnly: true,
-        })
+        }),
       );
 
       expect(result.success).toBe(true);
@@ -174,14 +174,14 @@ describe('ElectronHandlers', () => {
       mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
       mocks.readFile.mockResolvedValueOnce(fakeBuffer);
       mocks.parseAsarBuffer.mockReturnValueOnce(
-        makeParsedAsar([{ path: 'main.js', size: 10, offset: 0 }])
+        makeParsedAsar([{ path: 'main.js', size: 10, offset: 0 }]),
       );
 
       const result = parsePayload(
         await handlers.handleAsarExtract({
           inputPath: '/app/resources/app.asar',
           outputDir: '/tmp/output',
-        })
+        }),
       );
 
       expect(result.success).toBe(true);
@@ -197,14 +197,14 @@ describe('ElectronHandlers', () => {
         makeParsedAsar([
           { path: 'native.node', size: 10, offset: 0, unpacked: true },
           { path: 'index.js', size: 10, offset: 0 },
-        ])
+        ]),
       );
 
       const result = parsePayload(
         await handlers.handleAsarExtract({
           inputPath: '/app/resources/app.asar',
           outputDir: '/tmp/output',
-        })
+        }),
       );
 
       expect(result.extractedFiles).toBe(1);
@@ -223,14 +223,14 @@ describe('ElectronHandlers', () => {
       mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
       mocks.readFile.mockResolvedValueOnce(smallBuffer);
       mocks.parseAsarBuffer.mockReturnValueOnce(
-        makeParsedAsar([{ path: 'huge.js', size: 9999, offset: 0 }])
+        makeParsedAsar([{ path: 'huge.js', size: 9999, offset: 0 }]),
       );
 
       const result = parsePayload(
         await handlers.handleAsarExtract({
           inputPath: '/app/resources/app.asar',
           outputDir: '/tmp/output',
-        })
+        }),
       );
 
       const failedFiles = result.failedFiles as Array<{ path: string; reason: string }>;
@@ -247,7 +247,7 @@ describe('ElectronHandlers', () => {
       mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
       mocks.readFile.mockResolvedValueOnce(fakeBuffer);
       mocks.parseAsarBuffer.mockReturnValueOnce(
-        makeParsedAsar([{ path: 'index.js', size: 10, offset: 0 }])
+        makeParsedAsar([{ path: 'index.js', size: 10, offset: 0 }]),
       );
       mocks.writeFile.mockRejectedValueOnce(new Error('EACCES'));
 
@@ -255,7 +255,7 @@ describe('ElectronHandlers', () => {
         await handlers.handleAsarExtract({
           inputPath: '/app/resources/app.asar',
           outputDir: '/tmp/output',
-        })
+        }),
       );
 
       expect(result.extractedFiles).toBe(0);
@@ -322,12 +322,12 @@ describe('ElectronHandlers', () => {
           version: '1.0.0',
           main: 'main.js',
           dependencies: { electron: '^25.0.0' },
-        })
+        }),
       );
 
       // readAsarEntryText for main.js content (first candidate path)
       mocks.readAsarEntryText.mockReturnValueOnce(
-        'const { app, BrowserWindow } = require("electron");'
+        'const { app, BrowserWindow } = require("electron");',
       );
 
       mocks.parseBrowserWindowHints.mockReturnValueOnce({
@@ -362,7 +362,7 @@ describe('ElectronHandlers', () => {
           name: 'fs-app',
           version: '2.0.0',
           main: 'index.js',
-        })
+        }),
       );
 
       // pathExists for main script (stat succeeds)
@@ -382,7 +382,7 @@ describe('ElectronHandlers', () => {
       mocks.findFilesystemPreloadScripts.mockResolvedValueOnce([]);
 
       const result = parsePayload(
-        await handlers.handleElectronInspectApp({ appPath: '/app/myapp.exe' })
+        await handlers.handleElectronInspectApp({ appPath: '/app/myapp.exe' }),
       );
 
       expect(result.success).toBe(true);
@@ -417,7 +417,7 @@ describe('ElectronHandlers', () => {
       mocks.stat.mockRejectedValueOnce(new Error('EPERM'));
 
       const result = parsePayload(
-        await handlers.handleElectronInspectApp({ appPath: '/restricted/app' })
+        await handlers.handleElectronInspectApp({ appPath: '/restricted/app' }),
       );
 
       expect(result.success).toBe(false);
@@ -479,7 +479,7 @@ describe('ElectronHandlers', () => {
           name: 'deps-app',
           main: 'index.js',
           dependencies: { zebra: '1.0', alpha: '2.0', middle: '3.0' },
-        })
+        }),
       );
       // No main script found
       mocks.readAsarEntryText.mockReturnValue(undefined);
@@ -488,6 +488,118 @@ describe('ElectronHandlers', () => {
 
       expect(result.success).toBe(true);
       expect(result.dependencies).toEqual(['alpha', 'middle', 'zebra']);
+    });
+
+    it('uses fallback asar main script discovery when the direct candidate misses', async () => {
+      const fakeBuffer = Buffer.from('fake asar content');
+      const fakeParsedAsar = makeParsedAsar([
+        { path: 'app/package.json', size: 50, offset: 0 },
+        { path: 'app/scripts/main.js', size: 100, offset: 50 },
+      ]);
+
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isDirectory: true, isFile: false }));
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.readFile.mockResolvedValueOnce(fakeBuffer);
+      mocks.parseAsarBuffer.mockReturnValueOnce(fakeParsedAsar);
+
+      mocks.readAsarEntryText.mockReturnValueOnce(
+        JSON.stringify({
+          name: 'fallback-app',
+          version: '1.0.0',
+          main: 'dist/main.js',
+          dependencies: {},
+        }),
+      );
+      mocks.readAsarEntryText.mockReturnValueOnce(undefined);
+      mocks.readAsarEntryText.mockReturnValueOnce(undefined);
+      mocks.readAsarEntryText.mockReturnValueOnce(undefined);
+      mocks.readAsarEntryText.mockReturnValueOnce('const { BrowserWindow } = require("electron");');
+      mocks.parseBrowserWindowHints.mockReturnValueOnce({
+        preloadScripts: [],
+        devToolsEnabled: null,
+      });
+      mocks.findFilesystemPreloadScripts.mockResolvedValueOnce([]);
+
+      const result = parsePayload(await handlers.handleElectronInspectApp({ appPath: '/app' }));
+
+      expect(result.success).toBe(true);
+      expect(result.mainScriptPath).toBe('app/scripts/main.js');
+      expect(result.browserWindowDetected).toBe(true);
+    });
+
+    it('adds filesystem preload scripts when no hints or asar preload entries are found', async () => {
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true, isDirectory: false }));
+      mocks.stat.mockRejectedValueOnce(new Error('ENOENT'));
+      mocks.stat.mockRejectedValueOnce(new Error('ENOENT'));
+      mocks.stat.mockRejectedValueOnce(new Error('ENOENT'));
+
+      mocks.readFile.mockResolvedValueOnce(
+        JSON.stringify({
+          name: 'preload-app',
+          version: '3.0.0',
+          main: 'index.js',
+        }),
+      );
+
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.readFile.mockResolvedValueOnce('console.log("hello");');
+      mocks.parseBrowserWindowHints.mockReturnValueOnce({
+        preloadScripts: [],
+        devToolsEnabled: null,
+      });
+      mocks.findFilesystemPreloadScripts.mockResolvedValueOnce([
+        // @ts-expect-error
+        '/app/preload.js',
+        // @ts-expect-error
+        '/app/renderer/preload-helper.js',
+      ]);
+
+      const result = parsePayload(
+        await handlers.handleElectronInspectApp({ appPath: '/app/preload-app.exe' }),
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.preloadScripts).toEqual(['/app/preload.js', '/app/renderer/preload-helper.js']);
+    });
+
+    it('falls back to filesystem package.json when the asar package.json is invalid', async () => {
+      const fakeBuffer = Buffer.from('fake asar content');
+      const fakeParsedAsar = makeParsedAsar([
+        { path: 'package.json', size: 50, offset: 0 },
+        { path: 'main.js', size: 100, offset: 50 },
+      ]);
+
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isDirectory: true, isFile: false }));
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.readFile.mockResolvedValueOnce(fakeBuffer);
+      mocks.parseAsarBuffer.mockReturnValueOnce(fakeParsedAsar);
+      mocks.readAsarEntryText.mockReturnValueOnce('{not valid json');
+      mocks.readFile.mockResolvedValueOnce(
+        JSON.stringify({
+          name: 'fs-fallback-app',
+          version: '4.2.0',
+          main: 'app/main.js',
+        }),
+      );
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.stat.mockResolvedValueOnce(makeFileStats({ isFile: true }));
+      mocks.readFile.mockResolvedValueOnce('const { BrowserWindow } = require("electron");');
+      mocks.parseBrowserWindowHints.mockReturnValueOnce({
+        preloadScripts: [],
+        devToolsEnabled: false,
+      });
+      mocks.findFilesystemPreloadScripts.mockResolvedValueOnce([]);
+
+      const result = parsePayload(await handlers.handleElectronInspectApp({ appPath: '/app' }));
+
+      expect(result.success).toBe(true);
+      expect(result.packageSource).toBe('filesystem');
+      expect(result.devToolsEnabled).toBe(false);
+      expect(result.browserWindowDetected).toBe(true);
+      expect(result.mainScriptPath).toContain('app/main.js');
     });
   });
 });

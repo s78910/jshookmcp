@@ -1,4 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  CamoufoxBrowserManager,
+  type CamoufoxBrowserLike,
+  type CamoufoxPageLike,
+  type CamoufoxBrowserServerLike,
+} from '@modules/browser/CamoufoxBrowserManager';
 
 const loggerState = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -16,33 +22,31 @@ vi.mock('@src/utils/logger', () => ({
 }));
 
 vi.mock('camoufox-js', () => ({
-  Camoufox: (...args: any[]) => camoufoxLaunchMock(...args),
-  launchServer: (...args: any[]) => camoufoxServerLaunchMock(...args),
+  Camoufox: camoufoxLaunchMock,
+  launchServer: camoufoxServerLaunchMock,
 }));
 
 vi.mock('playwright-core', () => ({
   firefox: {
-    connect: (...args: any[]) => playwrightConnectMock(...args),
+    connect: playwrightConnectMock,
   },
 }));
 
-import { CamoufoxBrowserManager } from '@modules/browser/CamoufoxBrowserManager';
-
-function createFakeBrowser(connected = true) {
+function createFakeBrowser(connected = true): CamoufoxBrowserLike {
   return {
     newPage: vi.fn().mockResolvedValue(createFakePage()),
     close: vi.fn(async () => {}),
     isConnected: vi.fn(() => connected),
-  };
+  } as CamoufoxBrowserLike;
 }
 
-function createFakePage() {
+function createFakePage(): CamoufoxPageLike {
   return {
     goto: vi.fn(async () => {}),
     context: vi.fn(() => ({
       newCDPSession: vi.fn(async () => ({ send: vi.fn() })),
     })),
-  };
+  } as CamoufoxPageLike;
 }
 
 describe('CamoufoxBrowserManager — coverage expansion', () => {
@@ -106,6 +110,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       expect(b1).toBe(firstBrowser);
 
       // Simulate disconnection
+      // @ts-expect-error — auto-suppressed [TS2339]
       firstBrowser.isConnected.mockReturnValue(false);
 
       // Second launch - triggers doLaunch which closes first browser
@@ -113,12 +118,13 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       expect(b2).toBe(secondBrowser);
       expect(firstBrowser.close).toHaveBeenCalled();
       expect(loggerState.info).toHaveBeenCalledWith(
-        expect.stringContaining('Closing existing Camoufox browser before relaunch')
+        expect.stringContaining('Closing existing Camoufox browser before relaunch'),
       );
     });
 
     it('handles close error on previous browser during relaunch gracefully', async () => {
       const firstBrowser = createFakeBrowser(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       firstBrowser.close.mockRejectedValue(new Error('close err'));
       const secondBrowser = createFakeBrowser(true);
 
@@ -127,6 +133,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       const manager = new CamoufoxBrowserManager();
 
       await manager.launch();
+      // @ts-expect-error — auto-suppressed [TS2339]
       firstBrowser.isConnected.mockReturnValue(false);
 
       // Should not throw even if first browser.close fails
@@ -134,7 +141,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       expect(b2).toBe(secondBrowser);
       expect(loggerState.warn).toHaveBeenCalledWith(
         'Failed to close previous browser:',
-        expect.any(Error)
+        expect.any(Error),
       );
     });
   });
@@ -143,8 +150,8 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
 
   describe('close — pending launch interactions', () => {
     it('waits for pending launch to settle before finalizing close', async () => {
-      let launchResolve!: (value: any) => void;
-      const launchDeferred = new Promise<any>((res) => {
+      let launchResolve!: (value: CamoufoxBrowserLike) => void;
+      const launchDeferred = new Promise<CamoufoxBrowserLike>((res) => {
         launchResolve = res;
       });
       const fakeBrowser = createFakeBrowser(true);
@@ -190,6 +197,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
 
     it('resets isClosing even when browser.close throws', async () => {
       const fakeBrowser = createFakeBrowser(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       fakeBrowser.close.mockRejectedValue(new Error('Close error'));
       camoufoxLaunchMock.mockResolvedValue(fakeBrowser);
 
@@ -229,6 +237,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
     it('creates new page when none provided and navigates', async () => {
       const fakeBrowser = createFakeBrowser(true);
       const fakePage = createFakePage();
+      // @ts-expect-error — auto-suppressed [TS2339]
       fakeBrowser.newPage.mockResolvedValue(fakePage);
       camoufoxLaunchMock.mockResolvedValue(fakeBrowser);
 
@@ -277,7 +286,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       const fakeServer = {
         wsEndpoint: vi.fn(() => 'ws://127.0.0.1:8888/test'),
         close: vi.fn(async () => {}),
-      };
+      } as CamoufoxBrowserServerLike;
       camoufoxServerLaunchMock.mockResolvedValue(fakeServer);
 
       const manager = new CamoufoxBrowserManager({
@@ -303,7 +312,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
           proxy: { server: 'http://proxy:8080' },
           port: 9999,
           ws_path: '/ws',
-        })
+        }),
       );
     });
 
@@ -329,7 +338,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       expect(firstServer.close).toHaveBeenCalled();
       expect(loggerState.warn).toHaveBeenCalledWith(
         'Failed to close previous server:',
-        expect.any(Error)
+        expect.any(Error),
       );
     });
   });
@@ -364,12 +373,13 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       expect(existingBrowser.close).toHaveBeenCalled();
       expect(result).toBe(newBrowser);
       expect(loggerState.info).toHaveBeenCalledWith(
-        expect.stringContaining('Disconnecting existing browser')
+        expect.stringContaining('Disconnecting existing browser'),
       );
     });
 
     it('handles close error on existing browser when connecting', async () => {
       const existingBrowser = createFakeBrowser(true);
+      // @ts-expect-error — auto-suppressed [TS2339]
       existingBrowser.close.mockRejectedValue(new Error('disconnect fail'));
       camoufoxLaunchMock.mockResolvedValue(existingBrowser);
 
@@ -383,7 +393,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       expect(result).toBe(newBrowser);
       expect(loggerState.warn).toHaveBeenCalledWith(
         'Failed to close previous browser:',
-        expect.any(Error)
+        expect.any(Error),
       );
     });
   });
@@ -430,7 +440,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
       await manager.getCDPSession(fakePage);
 
       expect(loggerState.warn).toHaveBeenCalledWith(
-        expect.stringContaining('CDP sessions on camoufox')
+        expect.stringContaining('CDP sessions on camoufox'),
       );
     });
 
@@ -483,7 +493,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
           block_images: true,
           block_webrtc: true,
           proxy: { server: 'socks5://proxy:1080', username: 'user', password: 'pass' },
-        })
+        }),
       );
     });
 
@@ -502,7 +512,7 @@ describe('CamoufoxBrowserManager — coverage expansion', () => {
           humanize: false,
           block_images: false,
           block_webrtc: false,
-        })
+        }),
       );
     });
   });

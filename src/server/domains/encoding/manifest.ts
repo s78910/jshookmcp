@@ -1,8 +1,7 @@
 import type { DomainManifest, MCPServerContext } from '@server/domains/shared/registry';
-import { bindByDepKey, toolLookup } from '@server/domains/shared/registry';
+import { bindByDepKey, ensureBrowserCore, toolLookup } from '@server/domains/shared/registry';
 import { encodingTools } from '@server/domains/encoding/definitions';
-import { EncodingToolHandlers } from '@server/domains/encoding/index';
-import { CodeCollector } from '@server/domains/shared/modules';
+import type { EncodingToolHandlers } from '@server/domains/encoding/index';
 
 const DOMAIN = 'encoding' as const;
 const DEP_KEY = 'encodingHandlers' as const;
@@ -11,12 +10,15 @@ const t = toolLookup(encodingTools);
 const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<H>(DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
-  if (!ctx.collector) {
-    ctx.collector = new CodeCollector(ctx.config.puppeteer);
-    void ctx.registerCaches();
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { EncodingToolHandlers } = await import('@server/domains/encoding/index');
+  await ensureBrowserCore(ctx);
+  if (!ctx.encodingHandlers) {
+    ctx.encodingHandlers = new EncodingToolHandlers(
+      ctx.collector!,
+      async (requestId) => ctx.consoleMonitor?.getResponseBody(requestId) ?? null,
+    );
   }
-  if (!ctx.encodingHandlers) ctx.encodingHandlers = new EncodingToolHandlers(ctx.collector);
   return ctx.encodingHandlers;
 }
 

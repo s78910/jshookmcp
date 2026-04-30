@@ -18,7 +18,7 @@ const workerState = vi.hoisted(() => {
 
     constructor(
       public readonly script: string,
-      public readonly options: Record<string, unknown>
+      public readonly options: Record<string, unknown>,
     ) {}
 
     on(event: string, callback: Listener) {
@@ -83,10 +83,13 @@ describe('WorkerPool', () => {
   it('validates constructor options', () => {
     expect(() => new WorkerPool<any, any>({ workerScript: '   ' })).toThrow('workerScript');
     expect(
-      () => new WorkerPool<any, any>({ workerScript: 'x', minWorkers: 3, maxWorkers: 2 })
+      () => new WorkerPool<any, any>({ workerScript: 'x', minWorkers: 3, maxWorkers: 2 }),
     ).toThrow('minWorkers cannot be greater than maxWorkers');
     expect(() => new WorkerPool<any, any>({ workerScript: 'x', maxWorkers: 0 })).toThrow(
-      'maxWorkers'
+      'maxWorkers',
+    );
+    expect(() => new WorkerPool<any, any>({ workerScript: 'x', minWorkers: -1 })).toThrow(
+      'minWorkers',
     );
   });
 
@@ -174,5 +177,53 @@ describe('WorkerPool', () => {
     await pool.close();
     await expect(first).rejects.toThrow('pool is closed');
     await expect(second).rejects.toThrow('pool is closed');
+  });
+
+  it('rejects active job if worker exits unexpectedly', async () => {
+    const pool = new WorkerPool<{ value: number }, number>({
+      workerScript: 'mock-script',
+      minWorkers: 1,
+      maxWorkers: 1,
+    });
+    const task = pool.submit({ value: 1 });
+    const worker = workerState.instances[0]!;
+    worker.emit('exit', 1); // Simulate terminal crash
+    await expect(task).rejects.toThrow('worker exited unexpectedly with code 1');
+    await pool.close();
+  });
+
+  it('rejects active job if worker emits error event', async () => {
+    const pool = new WorkerPool<{ value: number }, number>({
+      workerScript: 'mock-script',
+      minWorkers: 1,
+      maxWorkers: 1,
+    });
+    const task = pool.submit({ value: 1 });
+    const worker = workerState.instances[0]!;
+    worker.emit('error', new Error('worker process fault'));
+    await expect(task).rejects.toThrow('worker process fault');
+    await pool.close();
+  });
+
+  it('evicts idle workers after idleTimeoutMs when above minWorkers', async () => {
+    const pool = new WorkerPool<{ value: number }, number>({
+      workerScript: 'mock-script',
+      minWorkers: 0,
+      maxWorkers: 1,
+      idleTimeoutMs: 1000,
+    });
+
+    const task = pool.submit({ value: 1 });
+    const worker = workerState.instances[0]!;
+
+    // Resolve job to return worker to idle pool
+    worker.emit('message', { jobId: 1, ok: true, result: 10 });
+    await expect(task).resolves.toBe(10);
+
+    // Fast-forward to trigger eviction timer
+    vi.advanceTimersByTime(1100);
+    expect(worker.terminate).toHaveBeenCalled();
+
+    await pool.close();
   });
 });

@@ -1,6 +1,6 @@
 # Tool Routing & Lifecycle Management
 
-`jshookmcp` implements a declarative, dynamically loaded routing architecture (249+ Tools / 17 Domains) using strict namespace isolation and on-demand activation. Hardcoding tool signatures or assuming payload availability in dispatcher layers is prohibited; all dependencies must be resolved dynamically via the routing bus.
+`jshookmcp` implements a declarative, dynamically loaded routing architecture using strict namespace isolation and on-demand activation. Hardcoding tool signatures or assuming payload availability in dispatcher layers is prohibited; all dependencies must be resolved dynamically via the routing bus.
 
 ## Core Routing Protocols
 
@@ -27,7 +27,7 @@ The global tool surface is gated by memory-resident strategies dictated by the `
 | -------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------- |
 | `search`             | maintenance                                                                                | Stripped variant exposing only meta-tooling. All operational dependencies are lazily loaded via `route_tool`             | Maximum |
 | `workflow` (Default) | analysis, browser, coordination, debugger, encoding, graphql, network, streaming, workflow | Covers 90% of Web/RE workflows. Core suites held memory-resident.                                                        | Low     |
-| `full`               | Static Preload (17 Domains)                                                                | Mounts all 249+ tools natively, eliminating JIT loading delay. Designed for heavy static analysis and full-stack audits. | Zero    |
+| `full`               | Static Preload (all domains)                                                               | Mounts all tools natively, eliminating JIT loading delay. Designed for heavy static analysis and full-stack audits. | Zero    |
 
 ---
 
@@ -35,9 +35,9 @@ The global tool surface is gated by memory-resident strategies dictated by the `
 
 When dispatching multiple tool executions natively, the following consistency boundaries must be strictly observed:
 
-- **Concurrency Permitted (Side-Effect Free)**: State-agnostic read probes (`page_get_local_storage`, `page_get_cookies`, `network_get_requests`, `console_get_logs`) support highly concurrent payload delivery.
+- **Concurrency Permitted (Side-Effect Free)**: State-agnostic read probes (`page_local_storage(action=get)`, `page_cookies(action=get)`, `network_get_requests`, `console_get_logs`) support highly concurrent payload delivery.
 - **Mutex Required (Side-Effect Heavy)**: DOM mutations (`page_click`, `page_type`), auth state transitions (CAPTCHA slider solving, generic SSO redirects) introduce strong side-effects. Execution must be synchronously blocked to prevent phantom triggers and race conditions.
-- **Persistent Context Serialization**: Long-polling traces like `web_api_capture_session` automatically serialize outbound requests into local HAR snapshots. Contexts can be destructed and reconstructed directly from archives, freeing up Headless lifecycle holds.
+- **Persistent Context Serialization**: Prefer the external workflow `workflow.web-api-capture-session.v1` for long-polling traces. It coordinates HAR export and request-capture steps so contexts can be reconstructed from archived artifacts without keeping the Headless lifecycle resident.
 
 ---
 

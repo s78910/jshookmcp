@@ -2,8 +2,13 @@ import puppeteer from 'rebrowser-puppeteer-core';
 import type { Browser, Page } from 'rebrowser-puppeteer-core';
 import type { DetectedEnvironmentVariables } from '@internal-types/index';
 import { logger } from '@utils/logger';
+import { EMULATOR_FETCH_GOTO_TIMEOUT_MS } from '@src/constants';
 
 type ManifestRecord = Record<string, unknown>;
+const launchBrowser = Reflect.get(
+  puppeteer,
+  'launch',
+) as typeof import('rebrowser-puppeteer-core').launch;
 
 interface FetchRealEnvironmentParams {
   browser?: Browser;
@@ -13,12 +18,12 @@ interface FetchRealEnvironmentParams {
   resolveExecutablePath: () => string | undefined;
   buildManifestFromTemplate: (
     detected: DetectedEnvironmentVariables,
-    browserType: string
+    browserType: string,
   ) => ManifestRecord;
 }
 
 export async function fetchRealEnvironmentData(
-  params: FetchRealEnvironmentParams
+  params: FetchRealEnvironmentParams,
 ): Promise<{ manifest: ManifestRecord; browser?: Browser }> {
   const { url, detected, depth, resolveExecutablePath, buildManifestFromTemplate } = params;
   const manifest: ManifestRecord = {};
@@ -29,7 +34,7 @@ export async function fetchRealEnvironmentData(
   try {
     if (!browser) {
       const executablePath = resolveExecutablePath();
-      const launchOptions: Parameters<typeof puppeteer.launch>[0] = {
+      const launchOptions: Parameters<typeof launchBrowser>[0] = {
         headless: true,
         args: [
           '--no-sandbox',
@@ -47,13 +52,13 @@ export async function fetchRealEnvironmentData(
       if (executablePath) {
         launchOptions.executablePath = executablePath;
       }
-      browser = await puppeteer.launch(launchOptions);
+      browser = await launchBrowser(launchOptions);
     }
 
     page = await browser.newPage();
 
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     );
 
     await page.evaluateOnNewDocument(() => {
@@ -89,7 +94,7 @@ export async function fetchRealEnvironmentData(
       };
 
       type PermissionsQuery = (
-        parameters: PermissionDescriptor
+        parameters: PermissionDescriptor,
       ) => Promise<PermissionStatus | { state: PermissionState | NotificationPermission }>;
 
       type WindowWithExtensions = Window & {
@@ -101,63 +106,59 @@ export async function fetchRealEnvironmentData(
 
       const typedWindow = window as WindowWithExtensions;
 
-      const setChromeObject = (target: WindowWithExtensions): void => {
-        target.chrome = {
-          runtime: {
-            connect: () => {},
-            sendMessage: () => {},
-            onMessage: {
-              addListener: () => {},
-              removeListener: () => {},
-            },
-          },
-          loadTimes: function () {
-            return {
-              commitLoadTime: Date.now() / 1000 - Math.random() * 10,
-              connectionInfo: 'http/1.1',
-              finishDocumentLoadTime: Date.now() / 1000 - Math.random() * 5,
-              finishLoadTime: Date.now() / 1000 - Math.random() * 3,
-              firstPaintAfterLoadTime: 0,
-              firstPaintTime: Date.now() / 1000 - Math.random() * 8,
-              navigationType: 'Other',
-              npnNegotiatedProtocol: 'http/1.1',
-              requestTime: Date.now() / 1000 - Math.random() * 15,
-              startLoadTime: Date.now() / 1000 - Math.random() * 12,
-              wasAlternateProtocolAvailable: false,
-              wasFetchedViaSpdy: false,
-              wasNpnNegotiated: true,
-            };
-          },
-          csi: function () {
-            return {
-              onloadT: Date.now(),
-              pageT: Math.random() * 1000,
-              startE: Date.now() - Math.random() * 5000,
-              tran: 15,
-            };
-          },
-          app: {
-            isInstalled: false,
-            InstallState: {
-              DISABLED: 'disabled',
-              INSTALLED: 'installed',
-              NOT_INSTALLED: 'not_installed',
-            },
-            RunningState: {
-              CANNOT_RUN: 'cannot_run',
-              READY_TO_RUN: 'ready_to_run',
-              RUNNING: 'running',
-            },
-          },
-        };
-      };
-
       Object.defineProperty(navigator, 'webdriver', {
         get: () => undefined,
         configurable: true,
       });
 
-      setChromeObject(typedWindow);
+      typedWindow.chrome = {
+        runtime: {
+          connect: () => {},
+          sendMessage: () => {},
+          onMessage: {
+            addListener: () => {},
+            removeListener: () => {},
+          },
+        },
+        loadTimes: function () {
+          return {
+            commitLoadTime: Date.now() / 1000 - Math.random() * 10,
+            connectionInfo: 'http/1.1',
+            finishDocumentLoadTime: Date.now() / 1000 - Math.random() * 5,
+            finishLoadTime: Date.now() / 1000 - Math.random() * 3,
+            firstPaintAfterLoadTime: 0,
+            firstPaintTime: Date.now() / 1000 - Math.random() * 8,
+            navigationType: 'Other',
+            npnNegotiatedProtocol: 'http/1.1',
+            requestTime: Date.now() / 1000 - Math.random() * 15,
+            startLoadTime: Date.now() / 1000 - Math.random() * 12,
+            wasAlternateProtocolAvailable: false,
+            wasFetchedViaSpdy: false,
+            wasNpnNegotiated: true,
+          };
+        },
+        csi: function () {
+          return {
+            onloadT: Date.now(),
+            pageT: Math.random() * 1000,
+            startE: Date.now() - Math.random() * 5000,
+            tran: 15,
+          };
+        },
+        app: {
+          isInstalled: false,
+          InstallState: {
+            DISABLED: 'disabled',
+            INSTALLED: 'installed',
+            NOT_INSTALLED: 'not_installed',
+          },
+          RunningState: {
+            CANNOT_RUN: 'cannot_run',
+            READY_TO_RUN: 'ready_to_run',
+            RUNNING: 'running',
+          },
+        },
+      };
 
       Object.defineProperty(navigator, 'plugins', {
         get: () => {
@@ -239,7 +240,7 @@ export async function fetchRealEnvironmentData(
       typedWindow._sdkGlueVersionMap = typedWindow._sdkGlueVersionMap || {};
     });
 
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: EMULATOR_FETCH_GOTO_TIMEOUT_MS });
 
     const allPaths = [
       ...detected.window,
@@ -264,16 +265,13 @@ export async function fetchRealEnvironmentData(
         const result: Record<string, SerializedValue> = {};
         const seen = new WeakSet<object>();
 
-        const isObjectLike = (value: unknown): value is object =>
-          typeof value === 'object' && value !== null;
-
         function extractValue(path: string): SerializedValue {
           try {
             const parts = path.split('.');
             let current: unknown = window;
 
             for (const part of parts) {
-              if (isObjectLike(current) && part in current) {
+              if (typeof current === 'object' && current !== null && part in current) {
                 current = (current as Record<string, unknown>)[part];
               } else {
                 return undefined;
@@ -288,10 +286,10 @@ export async function fetchRealEnvironmentData(
 
         function serializeValue(
           value: unknown,
-          depth: number,
-          seenObjects: WeakSet<object>
+          recurseDepth: number,
+          seenObjects: WeakSet<object>,
         ): SerializedValue {
-          if (depth <= 0) return '[Max Depth]';
+          if (recurseDepth <= 0) return '[Max Depth]';
 
           if (value === null) return null;
           if (value === undefined) return undefined;
@@ -315,7 +313,7 @@ export async function fetchRealEnvironmentData(
             }
           }
 
-          if (isObjectLike(value) && seenObjects.has(value)) {
+          if (typeof value === 'object' && value !== null && seenObjects.has(value)) {
             return '[Circular Reference]';
           }
 
@@ -323,14 +321,14 @@ export async function fetchRealEnvironmentData(
             seenObjects.add(value);
             const arr = value
               .slice(0, 20)
-              .map((item) => serializeValue(item, depth - 1, seenObjects));
+              .map((item) => serializeValue(item, recurseDepth - 1, seenObjects));
             if (value.length > 20) {
               arr.push(`[... ${value.length - 20} more items]`);
             }
             return arr;
           }
 
-          if (isObjectLike(value)) {
+          if (typeof value === 'object' && value !== null) {
             seenObjects.add(value);
             const serialized: { [key: string]: SerializedValue } = {};
 
@@ -346,14 +344,18 @@ export async function fetchRealEnvironmentData(
                     try {
                       serialized[key] = serializeValue(
                         (value as Record<string, unknown>)[key],
-                        depth - 1,
-                        seenObjects
+                        recurseDepth - 1,
+                        seenObjects,
                       );
                     } catch {
                       serialized[key] = '[Getter Error]';
                     }
                   } else if (descriptor.value !== undefined) {
-                    serialized[key] = serializeValue(descriptor.value, depth - 1, seenObjects);
+                    serialized[key] = serializeValue(
+                      descriptor.value,
+                      recurseDepth - 1,
+                      seenObjects,
+                    );
                   }
                 }
               } catch (e) {
@@ -431,7 +433,7 @@ export async function fetchRealEnvironmentData(
         return result;
       },
       allPaths,
-      depth
+      depth,
     );
 
     Object.assign(manifest, extractedValues);

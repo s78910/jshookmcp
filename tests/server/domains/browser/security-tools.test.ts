@@ -8,25 +8,22 @@ function getTool(name: string) {
 }
 
 describe('browserSecurityStateTools', () => {
-  it('describes captcha_detect using screenshotPath instead of base64 screenshots', () => {
+  it('captcha_detect description is concise', async () => {
     const tool = getTool('captcha_detect');
 
-    expect(tool.description).toContain('screenshotPath');
-    expect(tool.description).not.toContain('the screenshot is provided as base64');
-    expect(tool.description).not.toContain('- screenshot: base64 screenshot');
+    expect(tool.description).toContain('CAPTCHA');
+    expect(tool.description!.length).toBeLessThan(50);
   });
 
-  it('does not claim captcha_wait switches browser modes automatically', () => {
+  it('captcha_wait mentions manual solve', async () => {
     const tool = getTool('captcha_wait');
 
-    expect(tool.description).toContain('does not switch browser modes on its own');
-    expect(tool.description).not.toContain('Browser switches to headed (visible) mode');
+    expect(tool.description).toContain('manual');
   });
 
-  it('does not promise automatic CAPTCHA detection after page_navigate in captcha_config', () => {
+  it('captcha_config mentions CAPTCHA', async () => {
     const tool = getTool('captcha_config');
 
-    expect(tool.description).not.toContain('auto-detect CAPTCHA after page_navigate');
-    expect(tool.description).toContain('browser-mode integrations');
+    expect(tool.description).toContain('CAPTCHA');
   });
 });

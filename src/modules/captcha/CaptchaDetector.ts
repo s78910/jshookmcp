@@ -1,4 +1,4 @@
-import { Page } from 'rebrowser-puppeteer-core';
+import { type Page } from 'rebrowser-puppeteer-core';
 import { logger } from '@utils/logger';
 import {
   CAPTCHA_MATCH_RULES,
@@ -146,9 +146,9 @@ export class CaptchaDetector {
     }
   }
 
-  private toAssessmentSignal(
+  protected toAssessmentSignal(
     source: CaptchaSignalSource,
-    result: CaptchaDetectionResult
+    result: CaptchaDetectionResult,
   ): CaptchaSignal | null {
     if (result.detected) {
       return {
@@ -174,9 +174,9 @@ export class CaptchaDetector {
     return null;
   }
 
-  private toAssessmentCandidate(
+  protected toAssessmentCandidate(
     source: CaptchaSignalSource,
-    result: CaptchaDetectionResult
+    result: CaptchaDetectionResult,
   ): CaptchaCandidate | null {
     if (!result.detected || result.type === 'none') {
       return null;
@@ -191,7 +191,7 @@ export class CaptchaDetector {
     };
   }
 
-  private getSignalValue(source: CaptchaSignalSource, result: CaptchaDetectionResult): string {
+  protected getSignalValue(source: CaptchaSignalSource, result: CaptchaDetectionResult): string {
     switch (source) {
       case 'url':
         return result.url ?? 'url-match';
@@ -209,9 +209,9 @@ export class CaptchaDetector {
     }
   }
 
-  private matchRule(
+  protected matchRule(
     value: string,
-    rules: readonly CaptchaHeuristicRule[]
+    rules: readonly CaptchaHeuristicRule[],
   ): { rule: CaptchaHeuristicRule; matchText: string } | null {
     for (const rule of rules) {
       const match = value.match(rule.pattern);
@@ -222,7 +222,7 @@ export class CaptchaDetector {
     return null;
   }
 
-  private async confirmRuleWithDOM(page: Page, rule: CaptchaHeuristicRule): Promise<boolean> {
+  protected async confirmRuleWithDOM(page: Page, rule: CaptchaHeuristicRule): Promise<boolean> {
     if (!rule.requiresDomConfirmation) {
       return true;
     }
@@ -230,10 +230,10 @@ export class CaptchaDetector {
     return this.verifyByDOM(page);
   }
 
-  private buildExcludeResult(
+  protected buildExcludeResult(
     sourceLabel: string,
     rule: CaptchaHeuristicRule,
-    matchText: string
+    matchText: string,
   ): CaptchaDetectionResult {
     logger.debug(`${sourceLabel} matched exclusion rule: ${rule.id}`);
     return {
@@ -244,7 +244,7 @@ export class CaptchaDetector {
     };
   }
 
-  private buildCaptchaResult(payload: {
+  protected buildCaptchaResult(payload: {
     confidence: number;
     type: CaptchaDetectionResult['type'];
     providerHint?: CaptchaDetectionResult['providerHint'];
@@ -265,9 +265,9 @@ export class CaptchaDetector {
     };
   }
 
-  private async evaluateDomRule(
+  protected async evaluateDomRule(
     page: Page,
-    rule: CaptchaDomRule
+    rule: CaptchaDomRule,
   ): Promise<{ selector: string; rule: CaptchaDomRule } | null> {
     for (const selector of rule.selectors) {
       const element = await page.$(selector);
@@ -286,7 +286,7 @@ export class CaptchaDetector {
         const isRealSlider = await this.verifySliderElement(page, selector);
         if (!isRealSlider) {
           logger.debug(
-            `DOM rule ${rule.id} rejected selector after slider verification: ${selector}`
+            `DOM rule ${rule.id} rejected selector after slider verification: ${selector}`,
           );
           continue;
         }
@@ -328,7 +328,7 @@ export class CaptchaDetector {
     return 'observe';
   }
 
-  private async checkUrl(page: Page): Promise<CaptchaDetectionResult> {
+  protected async checkUrl(page: Page): Promise<CaptchaDetectionResult> {
     const url = page.url();
     const excludeRule = this.matchRule(url, CaptchaDetector.EXCLUDE_MATCH_RULES.url);
     if (excludeRule) {
@@ -365,7 +365,7 @@ export class CaptchaDetector {
     return { detected: false, type: 'none', confidence: 0 };
   }
 
-  private async checkTitle(page: Page): Promise<CaptchaDetectionResult> {
+  protected async checkTitle(page: Page): Promise<CaptchaDetectionResult> {
     const title = await page.title();
     const excludeRule = this.matchRule(title, CaptchaDetector.EXCLUDE_MATCH_RULES.title);
     if (excludeRule) {
@@ -377,7 +377,7 @@ export class CaptchaDetector {
       const domConfirmed = await this.confirmRuleWithDOM(page, matchRule.rule);
       if (!domConfirmed) {
         logger.debug(
-          `Title rule required DOM confirmation but none was found: ${matchRule.rule.id}`
+          `Title rule required DOM confirmation but none was found: ${matchRule.rule.id}`,
         );
         return {
           detected: false,
@@ -404,7 +404,7 @@ export class CaptchaDetector {
     return { detected: false, type: 'none', confidence: 0 };
   }
 
-  private async checkDOMElements(page: Page): Promise<CaptchaDetectionResult> {
+  protected async checkDOMElements(page: Page): Promise<CaptchaDetectionResult> {
     for (const rule of CaptchaDetector.DOM_MATCH_RULES) {
       const matched = await this.evaluateDomRule(page, rule);
       if (matched) {
@@ -425,7 +425,7 @@ export class CaptchaDetector {
     return { detected: false, type: 'none', confidence: 0 };
   }
 
-  private async checkPageText(page: Page): Promise<CaptchaDetectionResult> {
+  protected async checkPageText(page: Page): Promise<CaptchaDetectionResult> {
     const bodyText = await page.evaluate(() => document.body.innerText);
     const excludeRule = this.matchRule(bodyText, CaptchaDetector.EXCLUDE_MATCH_RULES.text);
     if (excludeRule) {
@@ -437,7 +437,7 @@ export class CaptchaDetector {
       const domConfirmed = await this.confirmRuleWithDOM(page, matchRule.rule);
       if (!domConfirmed) {
         logger.debug(
-          `Text rule required DOM confirmation but none was found: ${matchRule.rule.id}`
+          `Text rule required DOM confirmation but none was found: ${matchRule.rule.id}`,
         );
         return {
           detected: false,
@@ -463,7 +463,7 @@ export class CaptchaDetector {
     return { detected: false, type: 'none', confidence: 0 };
   }
 
-  private async checkVendorSpecific(_page: Page): Promise<CaptchaDetectionResult> {
+  protected async checkVendorSpecific(_page: Page): Promise<CaptchaDetectionResult> {
     return { detected: false, type: 'none', confidence: 0 };
   }
 
@@ -487,7 +487,7 @@ export class CaptchaDetector {
     return false;
   }
 
-  private async verifyByDOM(page: Page): Promise<boolean> {
+  protected async verifyByDOM(page: Page): Promise<boolean> {
     try {
       const hasSlider = await page.evaluate(() => {
         const sliderSelectors = [
@@ -522,7 +522,7 @@ export class CaptchaDetector {
     }
   }
 
-  private async verifySliderElement(page: Page, selector: string): Promise<boolean> {
+  protected async verifySliderElement(page: Page, selector: string): Promise<boolean> {
     try {
       const excludeSelectors = CaptchaDetector.EXCLUDE_SELECTORS;
 
@@ -627,14 +627,14 @@ export class CaptchaDetector {
 
           if (!isValid) {
             console.warn(
-              `[CaptchaDetector] Slider verification rejected - captcha:${hasCaptchaKeyword}, slider:${hasSliderClass}, parent:${hasParentCaptcha}`
+              `[CaptchaDetector] Slider verification rejected - captcha:${hasCaptchaKeyword}, slider:${hasSliderClass}, parent:${hasParentCaptcha}`,
             );
           }
 
           return isValid;
         },
         selector,
-        excludeSelectors
+        excludeSelectors,
       );
 
       return result;

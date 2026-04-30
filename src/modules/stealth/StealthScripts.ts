@@ -1,4 +1,4 @@
-import { Page } from 'rebrowser-puppeteer-core';
+import { type Page } from 'rebrowser-puppeteer-core';
 import { logger } from '@utils/logger';
 
 type PermissionQueryInput = Parameters<Permissions['query']>[0];
@@ -50,7 +50,11 @@ type ChromeLike = {
     startE: number;
     tran: number;
   };
-  app: Record<string, never>;
+  app: {
+    isInstalled: boolean;
+    InstallState: Record<string, string>;
+    RunningState: Record<string, string>;
+  };
 };
 
 type WindowWithChrome = Window & {
@@ -58,8 +62,10 @@ type WindowWithChrome = Window & {
 };
 
 export class StealthScripts {
+  protected constructor() {}
+
   /** Node.js-side idempotency guard: tracks which Page objects have been injected. */
-  private static injectedPages = new WeakSet<object>();
+  protected static injectedPages = new WeakSet<object>();
 
   static async injectAll(page: Page): Promise<void> {
     if (this.injectedPages.has(page as unknown as object)) {
@@ -82,8 +88,79 @@ export class StealthScripts {
       this.mockNotifications(page),
     ]);
 
+    // Timing defense is applied after all other stealth scripts
+    // to ensure it captures the final state of the page environment
+    await this.injectTimingDefense(page);
+
     this.injectedPages.add(page as unknown as object);
     logger.info(' ');
+  }
+
+  /**
+   * Inject timing defense scripts to compensate for CDP-induced overhead.
+   *
+   * Anti-bot systems measure:
+   * - performance.now() deltas between operations (CDP calls add ~1-5ms jitter)
+   * - Date.now() consistency with performance.now()
+   * - Event loop delay via setTimeout(0) timing
+   *
+   * This defense wraps the native timing APIs to subtract a configurable
+   * cumulative offset. CDPTimingProxy handles the CDP layer; this handles
+   * the in-page JS layer — the two are complementary.
+   */
+  static async injectTimingDefense(page: Page): Promise<void> {
+    await page.evaluateOnNewDocument(() => {
+      // ── performance.now() hijack ──
+      const _originalPerfNow = performance.now.bind(performance);
+      const _originalDateNow = Date.now;
+
+      // Accumulated offset from CDP operations (starts at 0,
+      // can be adjusted externally via __cdpTimingOffset)
+      let _cdpOffset = 0;
+
+      performance.now = function () {
+        // Read dynamic offset if set by CDPTimingProxy
+        const win = window as unknown as Record<string, unknown>;
+        if (typeof win.__cdpTimingOffset === 'number') {
+          _cdpOffset = win.__cdpTimingOffset as number;
+        }
+        return _originalPerfNow() - _cdpOffset;
+      };
+
+      // ── Date.now() hijack ──
+      Date.now = function () {
+        const win = window as unknown as Record<string, unknown>;
+        if (typeof win.__cdpTimingOffset === 'number') {
+          _cdpOffset = win.__cdpTimingOffset as number;
+        }
+        return _originalDateNow.call(Date) - Math.floor(_cdpOffset);
+      };
+
+      // ── performance.timeOrigin defense ──
+      // Some fingerprinters compare performance.now() + performance.timeOrigin
+      // We don't modify timeOrigin since it's supposed to be constant;
+      // instead we ensure our now() offset keeps the sum consistent.
+
+      // ── new Date() constructor defense ──
+      const _OriginalDate = Date;
+      const _ProxiedDate = function (...args: unknown[]) {
+        if (args.length === 0) {
+          // new Date() — use our compensated Date.now()
+          return new _OriginalDate(_OriginalDate.now());
+        }
+        // @ts-expect-error dynamic constructor call
+        return new _OriginalDate(...args);
+      } as unknown as DateConstructor;
+
+      // Copy static methods and prototype
+      _ProxiedDate.now = _OriginalDate.now;
+      _ProxiedDate.parse = _OriginalDate.parse.bind(_OriginalDate);
+      _ProxiedDate.UTC = _OriginalDate.UTC.bind(_OriginalDate);
+      Object.defineProperty(_ProxiedDate, 'prototype', { value: _OriginalDate.prototype });
+
+      // Override global Date
+      (globalThis as Record<string, unknown>).Date = _ProxiedDate;
+    });
   }
 
   static async hideWebDriver(page: Page): Promise<void> {
@@ -104,6 +181,16 @@ export class StealthScripts {
         const props = originalGetOwnPropertyNames(obj);
         return props.filter((prop) => prop !== 'webdriver');
       };
+
+      // Remove cdc_ prefixed ChromeDriver control variables
+      if (typeof document !== 'undefined') {
+        const doc = document as unknown as Record<string, unknown>;
+        for (const key of Object.keys(doc)) {
+          if (key.startsWith('cdc_') || key.startsWith('$cdc_')) {
+            delete doc[key];
+          }
+        }
+      }
     });
   }
 
@@ -144,7 +231,19 @@ export class StealthScripts {
             tran: 15,
           };
         },
-        app: {},
+        app: {
+          isInstalled: false,
+          InstallState: {
+            DISABLED: 'disabled',
+            INSTALLED: 'installed',
+            NOT_INSTALLED: 'not_installed',
+          },
+          RunningState: {
+            CANNOT_RUN: 'cannot_run',
+            READY_TO_RUN: 'ready_to_run',
+            RUNNING: 'running',
+          },
+        },
       };
     });
   }
@@ -209,7 +308,25 @@ export class StealthScripts {
       const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
       const originalGetImageData = CanvasRenderingContext2D.prototype.getImageData;
 
-      const addNoise = (imageData: ImageData) => {
+      HTMLCanvasElement.prototype.toDataURL = function (...args) {
+        const context = this.getContext('2d');
+        if (context) {
+          const imageData = context.getImageData(0, 0, this.width, this.height);
+          const data = imageData.data;
+          if (data) {
+            for (let i = 0; i < data.length; i += 4) {
+              data[i] = data[i]! ^ 1;
+              data[i + 1] = data[i + 1]! ^ 1;
+              data[i + 2] = data[i + 2]! ^ 1;
+            }
+          }
+          context.putImageData(imageData, 0, 0);
+        }
+        return originalToDataURL.apply(this, args);
+      };
+
+      CanvasRenderingContext2D.prototype.getImageData = function (...args) {
+        const imageData = originalGetImageData.apply(this, args);
         const data = imageData.data;
         if (data) {
           for (let i = 0; i < data.length; i += 4) {
@@ -219,21 +336,6 @@ export class StealthScripts {
           }
         }
         return imageData;
-      };
-
-      HTMLCanvasElement.prototype.toDataURL = function (...args) {
-        const context = this.getContext('2d');
-        if (context) {
-          const imageData = context.getImageData(0, 0, this.width, this.height);
-          addNoise(imageData);
-          context.putImageData(imageData, 0, 0);
-        }
-        return originalToDataURL.apply(this, args);
-      };
-
-      CanvasRenderingContext2D.prototype.getImageData = function (...args) {
-        const imageData = originalGetImageData.apply(this, args);
-        return addNoise(imageData);
       };
     });
   }
@@ -331,14 +433,14 @@ export class StealthScripts {
 
   static async setRealisticUserAgent(
     page: Page,
-    platform: 'windows' | 'mac' | 'linux' = 'windows'
+    platform: 'windows' | 'mac' | 'linux' = 'windows',
   ): Promise<void> {
     const userAgents = {
       windows:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      mac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      mac: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       linux:
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     };
 
     const platformMap = {
@@ -347,26 +449,37 @@ export class StealthScripts {
       linux: 'Linux x86_64',
     };
 
+    const concurrencyMap = {
+      windows: 16,
+      mac: 12,
+      linux: 8,
+    };
+
     await page.setUserAgent(userAgents[platform]);
 
-    await page.evaluateOnNewDocument((platformValue) => {
-      Object.defineProperty(navigator, 'platform', {
-        configurable: true,
-        get: () => platformValue,
-      });
-      Object.defineProperty(navigator, 'vendor', {
-        configurable: true,
-        get: () => 'Google Inc.',
-      });
-      Object.defineProperty(navigator, 'hardwareConcurrency', {
-        configurable: true,
-        get: () => 8,
-      });
-      Object.defineProperty(navigator, 'deviceMemory', {
-        configurable: true,
-        get: () => 8,
-      });
-    }, platformMap[platform]);
+    const cores = concurrencyMap[platform];
+    await page.evaluateOnNewDocument(
+      (platformValue: string, hwConcurrency: number) => {
+        Object.defineProperty(navigator, 'platform', {
+          configurable: true,
+          get: () => platformValue,
+        });
+        Object.defineProperty(navigator, 'vendor', {
+          configurable: true,
+          get: () => 'Google Inc.',
+        });
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+          configurable: true,
+          get: () => hwConcurrency,
+        });
+        Object.defineProperty(navigator, 'deviceMemory', {
+          configurable: true,
+          get: () => 8,
+        });
+      },
+      platformMap[platform],
+      cores,
+    );
   }
 
   static getRecommendedLaunchArgs(): string[] {
@@ -392,6 +505,25 @@ export class StealthScripts {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
+      // Patchright-compatible anti-detection args
+      ...StealthScripts.getPatchrightLaunchArgs(),
+    ];
+  }
+
+  /**
+   * Patchright-specific Chrome launch args for anti-detection.
+   * These suppress CDP origin checks, component updates, and telemetry.
+   */
+  static getPatchrightLaunchArgs(): string[] {
+    return [
+      // NOTE: --remote-allow-origins=* was intentionally REMOVED for security.
+      // It disables CDP origin checks, allowing any web page to issue CDP commands.
+      '--disable-component-update',
+      '--disable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationHints',
+      '--disable-hang-monitor',
+      '--disable-domain-reliability',
+      '--disable-client-side-phishing-detection',
+      '--disable-popup-blocking',
     ];
   }
 }

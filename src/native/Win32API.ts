@@ -114,7 +114,9 @@ export function isKoffiAvailable(): boolean {
     koffiAvailable = true;
     return true;
   } catch {
+    /* istanbul ignore next */
     koffiAvailable = false;
+    /* istanbul ignore next */
     return false;
   }
 }
@@ -159,6 +161,13 @@ function getPsapi(): koffi.IKoffiLib {
   return psapi;
 }
 
+function toPointerBigInt(value: unknown): bigint {
+  if (value === null || value === undefined) return 0n;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(value);
+  return koffi.address(value);
+}
+
 // ── kernel32.dll Functions ──
 
 /**
@@ -167,10 +176,10 @@ function getPsapi(): koffi.IKoffiLib {
 export function OpenProcess(
   dwDesiredAccess: number,
   bInheritHandle: boolean,
-  dwProcessId: number
+  dwProcessId: number,
 ): bigint {
   const fn = getKernel32().func('void * OpenProcess(uint32, int, uint32)');
-  return fn(dwDesiredAccess, bInheritHandle ? 1 : 0, dwProcessId);
+  return toPointerBigInt(fn(dwDesiredAccess, bInheritHandle ? 1 : 0, dwProcessId));
 }
 
 /**
@@ -186,7 +195,7 @@ export function CloseHandle(hObject: bigint): boolean {
  */
 export function ReadProcessMemory(hProcess: bigint, lpBaseAddress: bigint, size: number): Buffer {
   const fn = getKernel32().func(
-    'int ReadProcessMemory(void *, void *, _Out_ uint8_t[len], size_t len, _Out_ size_t *bytesRead)'
+    'int ReadProcessMemory(void *, void *, _Out_ uint8_t *, size_t, _Out_ size_t *)',
   );
   const buffer = Buffer.alloc(size);
   const bytesReadBuf = Buffer.alloc(8); // size_t on x64
@@ -206,7 +215,7 @@ export function ReadProcessMemory(hProcess: bigint, lpBaseAddress: bigint, size:
  */
 export function WriteProcessMemory(hProcess: bigint, lpBaseAddress: bigint, data: Buffer): number {
   const fn = getKernel32().func(
-    'int WriteProcessMemory(void *, void *, uint8_t[len], size_t len, _Out_ size_t *bytesWritten)'
+    'int WriteProcessMemory(void *, void *, uint8_t *, size_t, _Out_ size_t *)',
   );
   const bytesWrittenBuf = Buffer.alloc(8);
 
@@ -226,13 +235,13 @@ export function WriteProcessMemory(hProcess: bigint, lpBaseAddress: bigint, data
  */
 export function VirtualQueryEx(
   hProcess: bigint,
-  lpAddress: bigint
+  lpAddress: bigint,
 ): { success: boolean; info: MemoryBasicInfo } {
   // Define struct inline in the function signature
   // MEMORY_BASIC_INFORMATION on x64: 48 bytes
   // void* BaseAddress (8) + void* AllocationBase (8) + uint32 AllocationProtect (4) + padding (4)
   // + size_t RegionSize (8) + uint32 State (4) + uint32 Protect (4) + uint32 Type (4) + padding (4)
-  const fn = getKernel32().func('size_t VirtualQueryEx(void *, void *, _Out_ uint8_t[48], size_t)');
+  const fn = getKernel32().func('size_t VirtualQueryEx(void *, void *, _Out_ uint8_t *, size_t)');
 
   const structSize = 48;
   const buffer = Buffer.alloc(structSize);
@@ -265,10 +274,10 @@ export function VirtualProtectEx(
   hProcess: bigint,
   lpAddress: bigint,
   dwSize: number,
-  flNewProtect: number
+  flNewProtect: number,
 ): { success: boolean; oldProtect: number } {
   const fn = getKernel32().func(
-    'int VirtualProtectEx(void *, void *, size_t, uint32, _Out_ uint32 *)'
+    'int VirtualProtectEx(void *, void *, size_t, uint32, _Out_ uint32 *)',
   );
   const oldProtectBuf = Buffer.alloc(4);
 
@@ -288,10 +297,10 @@ export function VirtualAllocEx(
   lpAddress: bigint,
   dwSize: number,
   flAllocationType: number,
-  flProtect: number
+  flProtect: number,
 ): bigint {
   const fn = getKernel32().func('void * VirtualAllocEx(void *, void *, size_t, uint32, uint32)');
-  return fn(hProcess, lpAddress, BigInt(dwSize), flAllocationType, flProtect);
+  return toPointerBigInt(fn(hProcess, lpAddress, BigInt(dwSize), flAllocationType, flProtect));
 }
 
 /**
@@ -301,7 +310,7 @@ export function VirtualFreeEx(
   hProcess: bigint,
   lpAddress: bigint,
   dwSize: number,
-  dwFreeType: number
+  dwFreeType: number,
 ): boolean {
   const fn = getKernel32().func('int VirtualFreeEx(void *, void *, size_t, uint32)');
   return fn(hProcess, lpAddress, BigInt(dwSize), dwFreeType) !== 0;
@@ -313,14 +322,16 @@ export function VirtualFreeEx(
 export function CreateRemoteThread(
   hProcess: bigint,
   lpStartAddress: bigint,
-  lpParameter: bigint
+  lpParameter: bigint,
 ): { handle: bigint; threadId: number } {
   const fn = getKernel32().func(
-    'void * CreateRemoteThread(void *, void *, size_t, void *, void *, uint32, _Out_ uint32 *)'
+    'void * CreateRemoteThread(void *, void *, size_t, void *, void *, uint32, _Out_ uint32 *)',
   );
   const threadIdBuf = Buffer.alloc(4);
 
-  const handle = fn(hProcess, null, 0n, lpStartAddress, lpParameter, 0, threadIdBuf);
+  const handle = toPointerBigInt(
+    fn(hProcess, null, 0n, lpStartAddress, lpParameter, 0, threadIdBuf),
+  );
 
   return {
     handle,
@@ -333,7 +344,7 @@ export function CreateRemoteThread(
  */
 export function GetModuleHandle(lpModuleName: string | null): bigint {
   const fn = getKernel32().func('void * GetModuleHandleA(char *)');
-  return fn(lpModuleName);
+  return toPointerBigInt(fn(lpModuleName));
 }
 
 /**
@@ -341,7 +352,7 @@ export function GetModuleHandle(lpModuleName: string | null): bigint {
  */
 export function GetProcAddress(hModule: bigint, lpProcName: string): bigint {
   const fn = getKernel32().func('void * GetProcAddress(void *, char *)');
-  return fn(hModule, lpProcName);
+  return toPointerBigInt(fn(hModule, lpProcName));
 }
 
 /**
@@ -359,10 +370,10 @@ export function GetLastError(): number {
  */
 export function NtQueryInformationProcess(
   hProcess: bigint,
-  processInformationClass: number
+  processInformationClass: number,
 ): { status: number; debugPort: number } {
   const fn = getNtdll().func(
-    'int32 NtQueryInformationProcess(void *, uint32, _Out_ void *, uint32, void *)'
+    'int32 NtQueryInformationProcess(void *, uint32, _Out_ void *, uint32, void *)',
   );
   const debugPortBuf = Buffer.alloc(8);
 
@@ -381,10 +392,10 @@ export function NtQueryInformationProcess(
  */
 export function EnumProcessModules(
   hProcess: bigint,
-  maxModules: number = 1024
+  maxModules: number = 1024,
 ): { success: boolean; modules: bigint[]; count: number } {
   const fn = getPsapi().func(
-    'int EnumProcessModules(void *, _Out_ void *[], uint32, _Out_ uint32 *)'
+    'int EnumProcessModules(void *, _Out_ void *, uint32, _Out_ uint32 *)',
   );
   const moduleBuf = Buffer.alloc(maxModules * 8);
   const neededBuf = Buffer.alloc(4);
@@ -412,9 +423,9 @@ export function EnumProcessModules(
 export function GetModuleBaseName(
   hProcess: bigint,
   hModule: bigint,
-  maxSize: number = 260
+  maxSize: number = 260,
 ): string {
-  const fn = getPsapi().func('uint32 GetModuleBaseNameA(void *, void *, _Out_ char[], uint32)');
+  const fn = getPsapi().func('uint32 GetModuleBaseNameA(void *, void *, _Out_ char *, uint32)');
   const buffer = Buffer.alloc(maxSize);
 
   fn(hProcess, hModule, buffer, maxSize);
@@ -429,16 +440,40 @@ export function GetModuleBaseName(
 }
 
 /**
+ * Get full module path from a remote process.
+ * Returns null when the API is unavailable or the module path cannot be resolved.
+ */
+export function GetModuleFileNameEx(
+  hProcess: bigint,
+  hModule: bigint,
+  maxSize: number = 32_768,
+): string | null {
+  const fn = getPsapi().func('uint32 GetModuleFileNameExA(void *, void *, _Out_ char *, uint32)');
+  const buffer = Buffer.alloc(maxSize);
+  const result = fn(hProcess, hModule, buffer, maxSize);
+  if (typeof result !== 'number' || result <= 0) {
+    return null;
+  }
+
+  let len = 0;
+  while (len < maxSize && buffer[len] !== 0) {
+    len++;
+  }
+
+  return len > 0 ? buffer.toString('utf8', 0, len) : null;
+}
+
+/**
  * Get module information
  * Uses Buffer parsing to avoid koffi struct registration issues
  */
 export function GetModuleInformation(
   hProcess: bigint,
-  hModule: bigint
+  hModule: bigint,
 ): { success: boolean; info: ModuleInfoType } {
   // MODULEINFO on x64: 24 bytes
   // void* lpBaseOfDll (8) + uint32 SizeOfImage (4) + padding (4) + void* EntryPoint (8)
-  const fn = getPsapi().func('int GetModuleInformation(void *, void *, _Out_ uint8_t[24], uint32)');
+  const fn = getPsapi().func('int GetModuleInformation(void *, void *, _Out_ uint8_t *, uint32)');
 
   const buffer = Buffer.alloc(24);
   const result = fn(hProcess, hModule, buffer, 24);
@@ -473,7 +508,7 @@ export function openProcessForMemory(pid: number, writeAccess: boolean = false):
   if (handle === 0n) {
     const error = GetLastError();
     throw new Error(
-      `Failed to open process ${pid}. Error: 0x${error.toString(16)}. Run as Administrator.`
+      `Failed to open process ${pid}. Error: 0x${error.toString(16)}. Run as Administrator.`,
     );
   }
 

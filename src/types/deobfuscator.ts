@@ -34,7 +34,6 @@ export interface Transformation {
 
 export interface DeobfuscateOptions {
   code: string;
-  llm?: 'gpt-4' | 'claude';
   aggressive?: boolean;
   preserveLogic?: boolean;
   renameVariables?: boolean;
@@ -94,4 +93,5 @@ export interface DeobfuscateResult {
   warnings?: string[];
   engine?: 'legacy' | 'webcrack' | 'hybrid';
   webcrackApplied?: boolean;
+  cached?: boolean;
 }

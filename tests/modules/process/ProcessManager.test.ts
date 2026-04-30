@@ -56,9 +56,10 @@ vi.mock('@src/utils/logger', () => ({
 }));
 
 import { ProcessManager } from '@modules/process/ProcessManager';
+import { mockAs } from '../../test-utils';
 
 function createSpawnChild(pid = 9999) {
-  const child = new EventEmitter() as any;
+  const child = mockAs<any>(new EventEmitter());
   child.pid = pid;
   child.unref = vi.fn();
   return child;

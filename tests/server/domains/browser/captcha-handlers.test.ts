@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import type {
+  CommonSuccessResponse,
+  CaptchaDetectionResult,
+} from '@tests/shared/common-test-types';
 
 const { loggerState } = vi.hoisted(() => ({
   loggerState: {
@@ -12,19 +17,24 @@ vi.mock('@utils/logger', () => ({
 
 import { CaptchaHandlers } from '@server/domains/browser/handlers/captcha-handlers';
 
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
+interface PageControllerMock {
+  getPage: Mock<() => Promise<any>>;
+}
+
+interface CaptchaDetectorMock {
+  detect: Mock<(page: any) => Promise<any>>;
+  waitForCompletion: Mock<(page: any, timeout: number) => Promise<boolean>>;
 }
 
 describe('CaptchaHandlers', () => {
-  const page = { id: 'page-1' } as any;
-  const pageController = {
+  const page = { id: 'page-1' };
+  const pageController: PageControllerMock = {
     getPage: vi.fn(),
-  } as any;
-  const captchaDetector = {
+  };
+  const captchaDetector: CaptchaDetectorMock = {
     detect: vi.fn(),
     waitForCompletion: vi.fn(),
-  } as any;
+  };
 
   let deps: any;
   let handlers: CaptchaHandlers;
@@ -60,7 +70,9 @@ describe('CaptchaHandlers', () => {
       confidence: 0.91,
     });
 
-    const body = parseJson(await handlers.handleCaptchaDetect({}));
+    const body = parseJson<
+      CommonSuccessResponse & { captcha_detected: boolean; captcha_info: CaptchaDetectionResult }
+    >(await handlers.handleCaptchaDetect({}));
 
     expect(pageController.getPage).toHaveBeenCalledOnce();
     expect(captchaDetector.detect).toHaveBeenCalledWith(page);
@@ -78,35 +90,38 @@ describe('CaptchaHandlers', () => {
   it('waits with the configured default timeout and reports success', async () => {
     captchaDetector.waitForCompletion.mockResolvedValue(true);
 
-    const body = parseJson(await handlers.handleCaptchaWait({}));
+    const body = parseJson<CommonSuccessResponse & { message: string }>(
+      await handlers.handleCaptchaWait({}),
+    );
 
     expect(loggerState.info).toHaveBeenCalledWith('Waiting for CAPTCHA to be solved...');
     expect(captchaDetector.waitForCompletion).toHaveBeenCalledWith(page, 30000);
-    expect(body).toEqual({
-      success: true,
-      message: 'CAPTCHA solved',
-    });
+    expect(body.success).toBe(true);
+    expect(body.message).toBe('CAPTCHA solved');
   });
 
   it('uses an explicit timeout and reports timeout failures', async () => {
     captchaDetector.waitForCompletion.mockResolvedValue(false);
 
-    const body = parseJson(await handlers.handleCaptchaWait({ timeout: 1500 }));
+    const body = parseJson<CommonSuccessResponse & { message: string }>(
+      await handlers.handleCaptchaWait({ timeout: 1500 }),
+    );
 
     expect(captchaDetector.waitForCompletion).toHaveBeenCalledWith(page, 1500);
     expect(body).toEqual({
       success: false,
+      error: 'CAPTCHA wait timed out',
       message: 'CAPTCHA wait timed out',
     });
   });
 
   it('updates captcha configuration through setter callbacks', async () => {
-    const body = parseJson(
+    const body = parseJson<CommonSuccessResponse & { config: any }>(
       await handlers.handleCaptchaConfig({
         autoDetectCaptcha: false,
         autoSwitchHeadless: true,
         captchaTimeout: 120000,
-      })
+      }),
     );
 
     expect(deps.setAutoDetectCaptcha).toHaveBeenCalledWith(false);

@@ -9,6 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual as cryptoTimingSafeEqual } from 'node:crypto';
+import { HTTP_CLEANUP_INTERVAL_MS, HTTP_RATE_LIMIT_MAX_IPS } from '@src/constants';
 
 // ── Allowed origins for localhost CSRF protection ──
 const LOCALHOST_ORIGINS = new Set(['http://127.0.0.1', 'http://localhost', 'http://[::1]']);
@@ -61,7 +62,7 @@ export function checkAuth(req: IncomingMessage, res: ServerResponse): boolean {
     if (!isLocal && !['1', 'true'].includes((process.env.MCP_ALLOW_INSECURE ?? '').toLowerCase())) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end(
-        'Forbidden – MCP_AUTH_TOKEN is required when binding to non-localhost. Set MCP_ALLOW_INSECURE=1 to override.'
+        'Forbidden – MCP_AUTH_TOKEN is required when binding to non-localhost. Set MCP_ALLOW_INSECURE=1 to override.',
       );
       return false;
     }
@@ -69,7 +70,7 @@ export function checkAuth(req: IncomingMessage, res: ServerResponse): boolean {
   }
 
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
+  if (!header?.startsWith('Bearer ')) {
     res.writeHead(401, { 'Content-Type': 'text/plain' });
     res.end('Unauthorized – missing or malformed Authorization header');
     return false;
@@ -102,7 +103,7 @@ const DEFAULT_MAX_BODY_BYTES = (() => {
 export function readBodyWithLimit(
   req: IncomingMessage,
   res: ServerResponse,
-  maxBytes: number = DEFAULT_MAX_BODY_BYTES
+  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -169,10 +170,10 @@ interface RateLimitEntry {
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 /** Maximum number of tracked IPs to prevent unbounded memory growth under DDoS. */
-const RATE_LIMIT_MAX_IPS = 10_000;
+const RATE_LIMIT_MAX_IPS = HTTP_RATE_LIMIT_MAX_IPS;
 
-/** Periodic cleanup of stale entries (every 5 minutes). */
-const CLEANUP_INTERVAL_MS = 5 * 60_000;
+/** Periodic cleanup of stale entries. */
+const CLEANUP_INTERVAL_MS = HTTP_CLEANUP_INTERVAL_MS;
 let lastCleanup = Date.now();
 
 function rateLimitCleanup(now: number): void {
@@ -230,7 +231,7 @@ function getClientIP(req: IncomingMessage): string {
 export function checkRateLimit(
   req: IncomingMessage,
   res: ServerResponse,
-  authenticated = false
+  authenticated = false,
 ): boolean {
   // Allow disabling rate limiting (e.g. behind an external rate limiter)
   if (['0', 'false'].includes((process.env.MCP_RATE_LIMIT_ENABLED ?? '').toLowerCase())) {

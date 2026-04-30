@@ -6,7 +6,6 @@ Coordination domain for session insights and MCP Task Handoff, bridging the plan
 
 ## Profiles
 
-- workflow
 - full
 
 ## Typical scenarios
@@ -21,16 +20,22 @@ Coordination domain for session insights and MCP Task Handoff, bridging the plan
 
 ## Representative tools
 
-- `create_task_handoff` — Create a sub-task handoff for specialist agent delegation.
-- `complete_task_handoff` — Complete a previously created task handoff with results.
-- `get_task_context` — Read the context of a task handoff.
-- `append_session_insight` — Append a discovery to the session-level knowledge accumulator.
+- `create_task_handoff` — Create an in-session task handoff.
+- `complete_task_handoff` — Complete a task handoff.
+- `get_task_context` — Read task handoff context.
+- `append_session_insight` — Append a session insight.
+- `save_page_snapshot` — Save current page state.
+- `restore_page_snapshot` — Restore a saved page snapshot.
+- `list_page_snapshots` — List saved page snapshots.
 
-## Full tool list (4)
+## Full tool list (7)
 
-| Tool                     | Description                                                    |
-| ------------------------ | -------------------------------------------------------------- |
-| `create_task_handoff`    | Create a sub-task handoff for specialist agent delegation.     |
-| `complete_task_handoff`  | Complete a previously created task handoff with results.       |
-| `get_task_context`       | Read the context of a task handoff.                            |
-| `append_session_insight` | Append a discovery to the session-level knowledge accumulator. |
+| Tool | Description |
+| --- | --- |
+| `create_task_handoff` | Create an in-session task handoff. |
+| `complete_task_handoff` | Complete a task handoff. |
+| `get_task_context` | Read task handoff context. |
+| `append_session_insight` | Append a session insight. |
+| `save_page_snapshot` | Save current page state. |
+| `restore_page_snapshot` | Restore a saved page snapshot. |
+| `list_page_snapshots` | List saved page snapshots. |

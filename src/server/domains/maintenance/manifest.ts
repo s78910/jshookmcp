@@ -6,7 +6,7 @@ import {
   extensionTools,
   artifactTools,
 } from '@server/domains/maintenance/definitions';
-import {
+import type {
   CoreMaintenanceHandlers,
   ExtensionManagementHandlers,
 } from '@server/domains/maintenance/index';
@@ -22,15 +22,19 @@ const b = (invoke: (h: H, a: Record<string, unknown>) => Promise<unknown>) =>
 const be = (invoke: (h: E, a: Record<string, unknown>) => Promise<unknown>) =>
   bindByDepKey<E>(EXT_DEP_KEY, invoke);
 
-function ensure(ctx: MCPServerContext): H {
-  if (!ctx.coreMaintenanceHandlers) {
-    ctx.coreMaintenanceHandlers = new CoreMaintenanceHandlers({
-      tokenBudget: ctx.tokenBudget,
-      unifiedCache: ctx.unifiedCache,
-    });
-  }
-  if (!ctx.extensionManagementHandlers) {
-    ctx.extensionManagementHandlers = new ExtensionManagementHandlers(ctx);
+async function ensure(ctx: MCPServerContext): Promise<H> {
+  const { CoreMaintenanceHandlers, ExtensionManagementHandlers } =
+    await import('@server/domains/maintenance/index');
+  if (!ctx.coreMaintenanceHandlers || !ctx.extensionManagementHandlers) {
+    if (!ctx.coreMaintenanceHandlers) {
+      ctx.coreMaintenanceHandlers = new CoreMaintenanceHandlers({
+        tokenBudget: ctx.tokenBudget,
+        unifiedCache: ctx.unifiedCache,
+      });
+    }
+    if (!ctx.extensionManagementHandlers) {
+      ctx.extensionManagementHandlers = new ExtensionManagementHandlers(ctx);
+    }
   }
   return ctx.coreMaintenanceHandlers;
 }
@@ -41,13 +45,14 @@ const manifest = {
   domain: DOMAIN,
   depKey: DEP_KEY,
   secondaryDepKeys: ['extensionManagementHandlers'],
-  profiles: ['search', 'workflow', 'full'],
+  profiles: ['workflow', 'full'],
   ensure,
   registrations: [
     {
       tool: t('get_token_budget_stats'),
       domain: DOMAIN,
       bind: b((h) => h.handleGetTokenBudgetStats()),
+      profiles: ['workflow', 'full'],
     },
     {
       tool: t('manual_token_cleanup'),
@@ -58,9 +63,13 @@ const manifest = {
       tool: t('reset_token_budget'),
       domain: DOMAIN,
       bind: b((h) => h.handleResetTokenBudget()),
+    },
+    {
+      tool: t('get_cache_stats'),
+      domain: DOMAIN,
+      bind: b((h) => h.handleGetCacheStats()),
       profiles: ['workflow', 'full'],
     },
-    { tool: t('get_cache_stats'), domain: DOMAIN, bind: b((h) => h.handleGetCacheStats()) },
     {
       tool: t('smart_cache_cleanup'),
       domain: DOMAIN,
@@ -70,7 +79,6 @@ const manifest = {
       tool: t('clear_all_caches'),
       domain: DOMAIN,
       bind: b((h) => h.handleClearAllCaches()),
-      profiles: ['workflow', 'full'],
     },
     {
       tool: t('cleanup_artifacts'),
@@ -80,9 +88,8 @@ const manifest = {
           retentionDays: a.retentionDays as number | undefined,
           maxTotalBytes: a.maxTotalBytes as number | undefined,
           dryRun: a.dryRun as boolean | undefined,
-        })
+        }),
       ),
-      profiles: ['workflow', 'full'],
     },
     {
       tool: t('doctor_environment'),
@@ -90,11 +97,15 @@ const manifest = {
       bind: b((h, a) =>
         h.handleEnvironmentDoctor({
           includeBridgeHealth: a.includeBridgeHealth as boolean | undefined,
-        })
+        }),
       ),
+    },
+    {
+      tool: t('list_extensions'),
+      domain: DOMAIN,
+      bind: be((h) => h.handleListExtensions()),
       profiles: ['workflow', 'full'],
     },
-    { tool: t('list_extensions'), domain: DOMAIN, bind: be((h) => h.handleListExtensions()) },
     { tool: t('reload_extensions'), domain: DOMAIN, bind: be((h) => h.handleReloadExtensions()) },
     {
       tool: t('browse_extension_registry'),
@@ -106,9 +117,8 @@ const manifest = {
       tool: t('install_extension'),
       domain: DOMAIN,
       bind: be((h, a) =>
-        h.handleInstallExtension(a.slug as string, a.targetDir as string | undefined)
+        h.handleInstallExtension(a.slug as string, a.targetDir as string | undefined),
       ),
-      profiles: ['workflow', 'full'],
     },
   ],
 } satisfies DomainManifest<typeof DEP_KEY, H, typeof DOMAIN>;

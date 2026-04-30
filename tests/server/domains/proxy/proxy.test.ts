@@ -1,0 +1,237 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as child_process from 'child_process';
+import * as http from 'node:http';
+import * as net from 'node:net';
+import { once } from 'node:events';
+import { ProxyHandlers } from '@server/domains/proxy/index';
+
+vi.mock('child_process', () => {
+  return {
+    exec: vi.fn((_cmd: any, cb: any) => {
+      // simulate success
+      cb(null, { stdout: 'success', stderr: '' });
+    }),
+  };
+});
+
+function parseResponse(res: any) {
+  if (res.isError) throw new Error('Response is an error: ' + JSON.stringify(res, null, 2));
+  return JSON.parse(res.content[0].text);
+}
+
+async function listen(server: http.Server): Promise<number> {
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('Failed to resolve server address');
+  }
+  return address.port;
+}
+
+async function sendRawHttpRequest(port: number, requestText: string): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port }, () => {
+      socket.write(requestText);
+    });
+    const chunks: Buffer[] = [];
+    socket.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    socket.on('error', reject);
+  });
+}
+
+describe('ProxyHandlers (Integration)', () => {
+  let handlers: ProxyHandlers;
+  const testPort = 18081;
+
+  beforeEach(() => {
+    handlers = new ProxyHandlers();
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    // Attempt cleanup
+    await handlers.handleProxyStop({});
+  });
+
+  it('should start and stop the proxy smoothly (HTTP only)', async () => {
+    const startRes = await handlers.handleProxyStart({ port: testPort, useHttps: false });
+    const startData = parseResponse(startRes);
+    expect(startData.success).toBe(true);
+    expect(startData.port).toBe(testPort);
+
+    const statusRes = await handlers.handleProxyStatus({});
+    const statusData = parseResponse(statusRes);
+    expect(statusData.success).toBe(true);
+    expect(statusData.running).toBe(true);
+
+    const stopRes = await handlers.handleProxyStop({});
+    expect(parseResponse(stopRes).success).toBe(true);
+
+    const endStatusRes = await handlers.handleProxyStatus({});
+    expect(parseResponse(endStatusRes).running).toBe(false);
+  });
+
+  it('should generate CA and start with HTTPS enabled', async () => {
+    const port = testPort + 1;
+    const startRes: any = await handlers.handleProxyStart({ port, useHttps: true });
+    const startData = parseResponse(startRes);
+    expect(startData.success).toBe(true);
+    expect(startData.caCertPath).toBeTruthy();
+
+    const exportRes: any = await handlers.handleProxyExportCa({});
+    expect(parseResponse(exportRes).content).toContain('BEGIN CERTIFICATE');
+  });
+
+  it('should generate an error if exporting CA without HTTPS enabled', async () => {
+    // Remove CA cert so the handler can't find it
+    const fs = await import('fs');
+    const path = await import('path');
+    const home = process.env.HOME || process.env.USERPROFILE || '/tmp';
+    const certPath = path.join(home, '.jshookmcp', 'ca', 'ca.pem');
+    const certExisted = fs.existsSync(certPath);
+    let backup: string | null = null;
+    if (certExisted) {
+      backup = fs.readFileSync(certPath, 'utf8');
+      fs.unlinkSync(certPath);
+    }
+    try {
+      const tempHandler = new ProxyHandlers();
+      await tempHandler.handleProxyStart({ port: testPort + 5, useHttps: false });
+      const exportRes: any = await tempHandler.handleProxyExportCa({});
+      expect(exportRes.isError).toBe(true);
+      expect(exportRes.content[0].text).toContain('CA certificate not found');
+      await tempHandler.handleProxyStop({});
+    } finally {
+      if (backup) fs.writeFileSync(certPath, backup);
+    }
+  });
+
+  it('should buffer requests properly', async () => {
+    await handlers.handleProxyStart({ port: testPort + 2, useHttps: false });
+
+    // Test trying to add rule without server (will fail in unit test if handlers not started, but here it is started)
+    const ruleRes: any = await handlers.handleProxyAddRule({
+      action: 'mock_response',
+      method: 'GET',
+      urlPattern: 'http://example.com/api',
+      mockStatus: 201,
+      mockBody: '{"mocked": true}',
+    });
+
+    const ruleData = parseResponse(ruleRes);
+    expect(ruleData.success).toBe(true);
+    expect(ruleData.endpointId).toBeDefined();
+
+    const logsRes: any = await handlers.handleProxyGetRequests({});
+    expect(Array.isArray(parseResponse(logsRes).logs)).toBe(true);
+  });
+
+  it('forwards proxied requests with the upstream response body', async () => {
+    const upstreamBody = 'proxy-forward-marker-20260425';
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end(upstreamBody);
+    });
+    const upstreamPort = await listen(upstream);
+
+    try {
+      await handlers.handleProxyStart({ port: testPort + 6, useHttps: false });
+      const ruleRes = await handlers.handleProxyAddRule({
+        action: 'forward',
+        method: 'GET',
+        urlPattern: '/forward-test/',
+      });
+      const ruleData = parseResponse(ruleRes);
+      expect(ruleData.success).toBe(true);
+
+      const response = await sendRawHttpRequest(
+        testPort + 6,
+        [
+          `GET http://127.0.0.1:${upstreamPort}/forward-test HTTP/1.1`,
+          `Host: 127.0.0.1:${upstreamPort}`,
+          'Connection: close',
+          '',
+          '',
+        ].join('\r\n'),
+      );
+
+      expect(response).toContain('200 OK');
+      expect(response).toContain(upstreamBody);
+    } finally {
+      await new Promise((resolve, reject) => {
+        upstream.close((error) => (error ? reject(error) : resolve(undefined)));
+      });
+    }
+  });
+
+  it('should clear cached request logs', async () => {
+    const res = await handlers.handleProxyClearLogs({});
+    expect(parseResponse(res).success).toBe(true);
+  });
+
+  it('should successfully fully execute adb device configuration with mocked execution', async () => {
+    // Start proxy first so port is assigned and useHttps to generate cert
+    await handlers.handleProxyStart({ port: testPort + 3, useHttps: true });
+
+    const res = await handlers.handleProxySetupAdbDevice({ deviceSerial: 'test-device' });
+
+    expect(res.isError).toBeFalsy();
+    if (!res.isError) {
+      const data = parseResponse(res);
+      expect(data.success).toBe(true);
+      expect(data.instructions).toContain('Reversed forwarded tcp:');
+      expect(data.deviceId).toBe('test-device');
+    }
+
+    // Stop proxy to prevent conflict
+    await handlers.handleProxyStop({});
+  });
+
+  it('returns explicit capability details when adb is unavailable', async () => {
+    vi.mocked(child_process.exec as any).mockImplementationOnce((_cmd: any, cb: any) => {
+      if (typeof cb === 'function') {
+        cb(new Error('adb command failed'), { stdout: '', stderr: 'error' });
+      }
+      return {} as any;
+    });
+
+    await handlers.handleProxyStart({ port: testPort + 4, useHttps: true });
+
+    const res = await handlers.handleProxySetupAdbDevice({ deviceSerial: 'test-device' });
+    const data = parseResponse(res);
+    expect(data.success).toBe(false);
+    expect(data.available).toBe(false);
+    expect(data.capability).toBe('adb_binary');
+    expect(data.status).toBe('unavailable');
+    expect(data.error).toContain('ADB binary not available:');
+    expect(data.fix).toContain('Android Platform Tools');
+
+    await handlers.handleProxyStop({});
+  });
+
+  it('preserves runtime execution failures after adb preflight passes', async () => {
+    vi.mocked(child_process.exec as any)
+      .mockImplementationOnce((_cmd: any, cb: any) => {
+        if (typeof cb === 'function') {
+          cb(null, { stdout: 'Android Debug Bridge version 1.0.41', stderr: '' });
+        }
+        return {} as any;
+      })
+      .mockImplementationOnce((_cmd: any, cb: any) => {
+        if (typeof cb === 'function') {
+          cb(new Error('adb get-state failed'), { stdout: '', stderr: 'error' });
+        }
+        return {} as any;
+      });
+
+    await handlers.handleProxyStart({ port: testPort + 7, useHttps: true });
+
+    const res: any = await handlers.handleProxySetupAdbDevice({ deviceSerial: 'test-device' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Failed to configure ADB device: adb get-state failed');
+
+    await handlers.handleProxyStop({});
+  });
+});

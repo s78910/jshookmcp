@@ -4,11 +4,13 @@
  *
  * All state is in-memory for the lifetime of the MCP session.
  * No persistence — handoffs and insights are ephemeral by design
- * (use the knowledge-base workflow plugin for cross-session persistence).
+ * (use the knowledge-base plugin repository for cross-session persistence).
  */
 
 import { randomUUID } from 'node:crypto';
-import type { MCPServerContext } from '@server/MCPServer.context';
+import { COORDINATION_GOTO_TIMEOUT_MS } from '@src/constants';
+import type { MCPServerContext } from '@server/domains/shared/registry';
+export * from './definitions';
 
 // ── Types ──
 
@@ -101,7 +103,9 @@ export class CoordinationHandlers {
 
     const handoff = this.handoffs.get(taskId);
     if (!handoff) {
-      throw new Error(`Task handoff "${taskId}" not found. Active IDs: ${[...this.handoffs.keys()].join(', ') || '(none)'}`);
+      throw new Error(
+        `Task handoff "${taskId}" not found. Active IDs: ${[...this.handoffs.keys()].join(', ') || '(none)'}`,
+      );
     }
 
     if (handoff.status === 'completed') {
@@ -169,7 +173,9 @@ export class CoordinationHandlers {
     const confidence = (args.confidence as number) ?? 1.0;
 
     // Find the most recent in-progress handoff as source context
-    const activeHandoff = [...this.handoffs.values()].find((h) => h.status === 'in_progress' || h.status === 'pending');
+    const activeHandoff = [...this.handoffs.values()].find(
+      (h) => h.status === 'in_progress' || h.status === 'pending',
+    );
 
     const insight: SessionInsight = {
       id: randomUUID().slice(0, 8),
@@ -215,4 +221,176 @@ export class CoordinationHandlers {
     }
     return counts;
   }
+
+  // ── Page Snapshots ──
+
+  private readonly snapshots = new Map<string, PageSnapshot>();
+
+  async handleSavePageSnapshot(args: Record<string, unknown>): Promise<unknown> {
+    const label = args.label as string | undefined;
+
+    const pc = this.ctx.pageController;
+    if (!pc) throw new Error('No page controller available');
+
+    const page = await pc.getPage();
+    if (!page) throw new Error('No active page to snapshot');
+
+    const url = page.url();
+
+    // Capture cookies via CDP
+    let cookies: PageSnapshot['cookies'] = [];
+    try {
+      const cdp = await page.createCDPSession();
+      const result = (await cdp.send('Network.getAllCookies')) as {
+        cookies: Array<{ name: string; value: string; domain: string; path: string }>;
+      };
+      cookies = result.cookies.map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: c.path,
+      }));
+      await cdp.detach();
+    } catch {
+      // Cookie capture may fail without browser — proceed without
+    }
+
+    // Capture storage
+    let localStorage: Record<string, string> = {};
+    let sessionStorage: Record<string, string> = {};
+    try {
+      localStorage = await page.evaluate(() => {
+        const ls: Record<string, string> = {};
+        for (let i = 0; i < window.localStorage.length; i++) {
+          const key = window.localStorage.key(i);
+          if (key) ls[key] = window.localStorage.getItem(key) ?? '';
+        }
+        return ls;
+      });
+      sessionStorage = await page.evaluate(() => {
+        const ss: Record<string, string> = {};
+        for (let i = 0; i < window.sessionStorage.length; i++) {
+          const key = window.sessionStorage.key(i);
+          if (key) ss[key] = window.sessionStorage.getItem(key) ?? '';
+        }
+        return ss;
+      });
+    } catch {
+      // Storage capture may fail on some pages — proceed without
+    }
+
+    const snapshot: PageSnapshot = {
+      id: randomUUID().slice(0, 8),
+      url,
+      cookies,
+      localStorage,
+      sessionStorage,
+      timestamp: Date.now(),
+      label,
+    };
+
+    this.snapshots.set(snapshot.id, snapshot);
+
+    return {
+      snapshotId: snapshot.id,
+      url: snapshot.url,
+      cookieCount: snapshot.cookies.length,
+      localStorageKeys: Object.keys(snapshot.localStorage).length,
+      sessionStorageKeys: Object.keys(snapshot.sessionStorage).length,
+      label: snapshot.label,
+    };
+  }
+
+  async handleRestorePageSnapshot(args: Record<string, unknown>): Promise<unknown> {
+    const snapshotId = args.snapshotId as string;
+    if (!snapshotId) throw new Error('snapshotId is required');
+
+    const snapshot = this.snapshots.get(snapshotId);
+    if (!snapshot) throw new Error(`Snapshot "${snapshotId}" not found`);
+
+    const pc = this.ctx.pageController;
+    if (!pc) throw new Error('No page controller available');
+
+    const page = await pc.getPage();
+    if (!page) throw new Error('No active page for restoration');
+
+    // Navigate to saved URL
+    await page.goto(snapshot.url, {
+      waitUntil: 'domcontentloaded',
+      timeout: COORDINATION_GOTO_TIMEOUT_MS,
+    });
+
+    // Restore cookies via CDP
+    if (snapshot.cookies.length > 0) {
+      try {
+        const cdp = await page.createCDPSession();
+        await cdp.send('Network.setCookies', {
+          cookies: snapshot.cookies.map((c) => ({
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+          })),
+        });
+        await cdp.detach();
+      } catch {
+        // Cookie restore may fail — proceed
+      }
+    }
+
+    // Restore localStorage and sessionStorage
+    try {
+      await page.evaluate(
+        (ls: Record<string, string>, ss: Record<string, string>) => {
+          window.localStorage.clear();
+          for (const [k, v] of Object.entries(ls)) {
+            window.localStorage.setItem(k, v);
+          }
+          window.sessionStorage.clear();
+          for (const [k, v] of Object.entries(ss)) {
+            window.sessionStorage.setItem(k, v);
+          }
+        },
+        snapshot.localStorage,
+        snapshot.sessionStorage,
+      );
+    } catch {
+      // Storage restore may fail on some pages
+    }
+
+    return {
+      restored: true,
+      snapshotId: snapshot.id,
+      url: snapshot.url,
+      cookiesRestored: snapshot.cookies.length,
+      localStorageKeysRestored: Object.keys(snapshot.localStorage).length,
+      sessionStorageKeysRestored: Object.keys(snapshot.sessionStorage).length,
+    };
+  }
+
+  async handleListPageSnapshots(): Promise<unknown> {
+    const list = [...this.snapshots.values()].map((s) => ({
+      id: s.id,
+      url: s.url,
+      label: s.label,
+      cookieCount: s.cookies.length,
+      localStorageKeys: Object.keys(s.localStorage).length,
+      sessionStorageKeys: Object.keys(s.sessionStorage).length,
+      createdAt: new Date(s.timestamp).toISOString(),
+    }));
+
+    return { snapshots: list, total: list.length };
+  }
+}
+
+// ── Snapshot type ──
+
+export interface PageSnapshot {
+  id: string;
+  url: string;
+  cookies: Array<{ name: string; value: string; domain: string; path: string }>;
+  localStorage: Record<string, string>;
+  sessionStorage: Record<string, string>;
+  timestamp: number;
+  label?: string;
 }

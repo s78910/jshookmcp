@@ -1,9 +1,7 @@
+import { parseJson } from '@tests/server/domains/shared/mock-factories';
+import type { BrowserStatusResponse } from '@tests/shared/common-test-types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PageDataHandlers } from '@server/domains/browser/handlers/page-data';
-
-function parseJson(response: any) {
-  return JSON.parse(response.content[0].text);
-}
 
 describe('PageDataHandlers', () => {
   let pageController: any;
@@ -20,30 +18,10 @@ describe('PageDataHandlers', () => {
       emulateDevice: vi.fn(),
       getLocalStorage: vi.fn(),
       setLocalStorage: vi.fn(),
-      getAllLinks: vi.fn(),
     };
     handlers = new PageDataHandlers({
       pageController,
       getActiveDriver: () => 'chrome',
-      getCamoufoxPage: async () => null,
-    });
-  });
-
-  it('returns performance metrics', async () => {
-    pageController.getPerformanceMetrics.mockResolvedValue({
-      domContentLoaded: 120,
-      loadEvent: 180,
-    });
-
-    const body = parseJson(await handlers.handlePageGetPerformance({}));
-
-    expect(pageController.getPerformanceMetrics).toHaveBeenCalledOnce();
-    expect(body).toEqual({
-      success: true,
-      metrics: {
-        domContentLoaded: 120,
-        loadEvent: 180,
-      },
     });
   });
 
@@ -54,7 +32,7 @@ describe('PageDataHandlers', () => {
     ];
     pageController.setCookies.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handlePageSetCookies({ cookies }));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handlePageSetCookies({ cookies }));
 
     expect(pageController.setCookies).toHaveBeenCalledWith(cookies);
     expect(body).toEqual({
@@ -69,10 +47,11 @@ describe('PageDataHandlers', () => {
       { name: 'theme', value: 'dark' },
     ]);
 
-    const body = parseJson(await handlers.handlePageGetCookies({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handlePageGetCookies({}));
 
     expect(pageController.getCookies).toHaveBeenCalledOnce();
     expect(body).toEqual({
+      success: true,
       count: 2,
       cookies: [
         { name: 'session', value: 'abc' },
@@ -84,7 +63,7 @@ describe('PageDataHandlers', () => {
   it('clears cookies and returns success', async () => {
     pageController.clearCookies.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handlePageClearCookies({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handlePageClearCookies({}));
 
     expect(pageController.clearCookies).toHaveBeenCalledOnce();
     expect(body).toEqual({
@@ -96,7 +75,9 @@ describe('PageDataHandlers', () => {
   it('sets viewport dimensions and returns the applied viewport', async () => {
     pageController.setViewport.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handlePageSetViewport({ width: 1440, height: 900 }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handlePageSetViewport({ width: 1440, height: 900 }),
+    );
 
     expect(pageController.setViewport).toHaveBeenCalledWith(1440, 900);
     expect(body).toEqual({
@@ -108,7 +89,9 @@ describe('PageDataHandlers', () => {
   it('emulates a device and returns the selected device', async () => {
     pageController.emulateDevice.mockResolvedValue(undefined);
 
-    const body = parseJson(await handlers.handlePageEmulateDevice({ device: 'iPhone' }));
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handlePageEmulateDevice({ device: 'iPhone' }),
+    );
 
     expect(pageController.emulateDevice).toHaveBeenCalledWith('iPhone');
     expect(body).toEqual({
@@ -123,10 +106,11 @@ describe('PageDataHandlers', () => {
       theme: 'dark',
     });
 
-    const body = parseJson(await handlers.handlePageGetLocalStorage({}));
+    const body = parseJson<BrowserStatusResponse>(await handlers.handlePageGetLocalStorage({}));
 
     expect(pageController.getLocalStorage).toHaveBeenCalledOnce();
     expect(body).toEqual({
+      success: true,
       count: 2,
       storage: {
         token: 'abc',
@@ -138,8 +122,8 @@ describe('PageDataHandlers', () => {
   it('sets a local storage entry and returns the key', async () => {
     pageController.setLocalStorage.mockResolvedValue(undefined);
 
-    const body = parseJson(
-      await handlers.handlePageSetLocalStorage({ key: 'token', value: 'abc123' })
+    const body = parseJson<BrowserStatusResponse>(
+      await handlers.handlePageSetLocalStorage({ key: 'token', value: 'abc123' }),
     );
 
     expect(pageController.setLocalStorage).toHaveBeenCalledWith('token', 'abc123');
@@ -149,29 +133,14 @@ describe('PageDataHandlers', () => {
     });
   });
 
-  it('returns all links with a count', async () => {
-    pageController.getAllLinks.mockResolvedValue([
-      { text: 'Docs', href: 'https://vmoranv.github.io/jshookmcp/docs' },
-      { text: 'GitHub', href: 'https://github.com/vmoranv/jshookmcp' },
-    ]);
-
-    const body = parseJson(await handlers.handlePageGetAllLinks({}));
-
-    expect(pageController.getAllLinks).toHaveBeenCalledOnce();
-    expect(body).toEqual({
-      count: 2,
-      links: [
-        { text: 'Docs', href: 'https://vmoranv.github.io/jshookmcp/docs' },
-        { text: 'GitHub', href: 'https://github.com/vmoranv/jshookmcp' },
-      ],
-    });
-  });
-
-  it('rethrows page controller errors when setting cookies', async () => {
+  it('returns failure response when setting cookies fails', async () => {
     pageController.setCookies.mockRejectedValue(new Error('set cookies failed'));
 
-    await expect(
-      handlers.handlePageSetCookies({ cookies: [{ name: 'session', value: 'abc' }] })
-    ).rejects.toThrow('set cookies failed');
+    const response = await handlers.handlePageSetCookies({
+      cookies: [{ name: 'session', value: 'abc' }],
+    });
+    const body = parseJson<BrowserStatusResponse>(response);
+    expect(body.success).toBe(false);
+    expect(body.message).toContain('set cookies failed');
   });
 });
